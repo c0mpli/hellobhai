@@ -8,7 +8,7 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 - **Sees your screen.** Every question comes with a screenshot of all your displays.
 - **Points at things.** A purple cursor flies over to the button or menu it's talking about.
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your spoken "haan".
-- **Explains with live sketches.** When a picture helps, an Excalidraw-style whiteboard pops up beside your cursor and Claude draws on it in real time: boxes, arrows, icons, and things moving along the arrows.
+- **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: zones, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows. Narration follows your language; the board is always in English.
 - **Shows when it's talking.** A Dynamic-Island-style pill grows out of the notch while it speaks.
 
 ## How it works
@@ -19,7 +19,7 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 | Speech-to-text | WhisperKit (Whisper large-v3 turbo) on-device, with Apple Speech as the fallback |
 | Text-to-speech | Supertonic-3 on-device: one voice for English and Hindi, with the macOS voice as the fallback |
 | Actions | `CGEvent` clicks and keystrokes, plus an allowlist of Mac commands (`osascript`, `open`, `mdfind`, `shortcuts`, `ls`) |
-| Visuals | Claude streams JSON drawing commands into a sandboxed web view that sketches them with rough.js |
+| Visuals | Claude streams narration plus JSON drawing commands; each step is drawn with rough.js, Lucide icons and Excalidraw's Virgil font while its sentence is spoken |
 
 No servers, no analytics, no auto-updater. Network use is `claude -p` itself plus a one-time ~1GB model download from Hugging Face on first launch.
 
