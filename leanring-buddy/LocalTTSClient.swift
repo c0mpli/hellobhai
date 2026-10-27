@@ -61,6 +61,13 @@ final class LocalTTSClient {
         }
     }
 
+    /// Speaks `text` and returns once it has finished (or was interrupted),
+    /// so callers can line other things up with the speech.
+    func speakTextAndWaitUntilFinished(_ text: String) async {
+        speakText(text)
+        await playbackTask?.value
+    }
+
     private func speakSentences(_ sentences: [String], fullText: String) async {
         guard let supertonicManager, let supertonicVoiceStyle, !sentences.isEmpty else {
             await speakWithSystemVoiceUntilFinished(fullText)

@@ -4,9 +4,10 @@
 //
 //  A floating whiteboard near the cursor where Claude sketches an animated
 //  explanation live, Excalidraw-style. Claude streams one JSON drawing
-//  command per line (box, arrow, icon, text, flow, pulse…); each command is
-//  drawn the moment its line arrives, in hand-drawn rough.js strokes that
-//  animate in as if drawn by a pen. Nothing waits for the whole response.
+//  command per line (zones, boxes, icons, arrows, notes, step badges, flows,
+//  charts…); each command is drawn as it's handed over, in hand-drawn
+//  rough.js strokes and Excalidraw's Virgil handwriting font, animating in as
+//  if drawn by a pen. Icons are real vector drawings (Lucide), never emoji.
 //
 //  The web view is locked down: a CSP blocks all network loads, navigation
 //  away from the page is refused, storage is non-persistent, and commands are
@@ -18,7 +19,7 @@ import WebKit
 
 @MainActor
 final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
-    private static let panelContentSize = NSSize(width: 580, height: 450)
+    private static let panelContentSize = NSSize(width: 720, height: 490)
 
     private var panel: NSPanel?
     private var webView: WKWebView?
@@ -27,27 +28,50 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     private var pendingDrawingCommandLines: [String] = []
     private var isBoardPageReady = false
 
-    /// rough.js, loaded once from the app bundle and inlined into the page so
-    /// the panel never needs file or network access.
-    private static let roughJSScriptTag: String = {
-        guard let roughJSURL = Bundle.main.url(forResource: "rough", withExtension: "js"),
-              let roughJSSource = try? String(contentsOf: roughJSURL, encoding: .utf8) else {
-            print("⚠️ Visual panel: missing bundled rough.js")
-            return ""
+    // MARK: - Bundled Assets
+
+    /// Loaded once from the app bundle and inlined into the page so the panel
+    /// never needs file or network access.
+    private static func bundledResourceData(named resourceName: String, withExtension fileExtension: String) -> Data? {
+        guard let resourceURL = Bundle.main.url(forResource: resourceName, withExtension: fileExtension),
+              let resourceData = try? Data(contentsOf: resourceURL) else {
+            print("⚠️ Visual panel: missing bundled \(resourceName).\(fileExtension)")
+            return nil
         }
-        return "<script>\(roughJSSource)</script>"
+        return resourceData
+    }
+
+    private static let roughJSSource: String = bundledResourceData(named: "rough", withExtension: "js")
+        .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
+    /// Lucide icon shapes keyed by name, as compact arrays (see board renderer).
+    private static let iconShapesJSON: String = bundledResourceData(named: "icons", withExtension: "json")
+        .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+
+    private static let virgilFontBase64: String = bundledResourceData(named: "Virgil", withExtension: "woff2")?
+        .base64EncodedString() ?? ""
+
+    /// Icon names Claude may use, listed in its drawing instructions.
+    static let availableIconNames: [String] = {
+        guard let iconShapesData = iconShapesJSON.data(using: .utf8),
+              let iconShapesByName = try? JSONSerialization.jsonObject(with: iconShapesData) as? [String: Any] else {
+            return []
+        }
+        return iconShapesByName.keys.sorted()
     }()
 
-    /// Opens a blank board near the cursor, ready for streamed commands.
+    // MARK: - Drawing API
+
+    /// Opens a blank board beside the cursor, ready for streamed commands.
     func beginLiveDrawing() {
-        presentPanelNearCursorIfNeeded()
+        presentPanelNearCursor()
         isBoardPageReady = false
         pendingDrawingCommandLines.removeAll()
         webView?.loadHTMLString(Self.boardPageHTML, baseURL: nil)
     }
 
-    /// Draws one streamed line (one JSON command). Lines that aren't JSON
-    /// objects, like stray prose or code fences, are ignored by the board.
+    /// Draws one command line. Lines that aren't JSON objects, like stray
+    /// prose or code fences, are ignored by the board.
     func addDrawingCommandLine(_ drawingCommandLine: String) {
         guard isBoardPageReady else {
             pendingDrawingCommandLines.append(drawingCommandLine)
@@ -56,7 +80,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         callBoardFunction("add", withStringArgument: drawingCommandLine)
     }
 
-    /// Hides the "drawing…" indicator once the stream ends.
+    /// Hides the "drawing…" indicator once every step has been drawn.
     func finishLiveDrawing() {
         guard isBoardPageReady else {
             pendingDrawingCommandLines.append(Self.finishedDrawingMarker)
@@ -105,7 +129,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
     // MARK: - Panel
 
-    private func presentPanelNearCursorIfNeeded() {
+    private func presentPanelNearCursor() {
         if panel == nil {
             createPanel()
         }
@@ -131,7 +155,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         createdPanel.becomesKeyOnlyIfNeeded = true
         createdPanel.isReleasedWhenClosed = false
         createdPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        createdPanel.backgroundColor = NSColor(red: 0.063, green: 0.071, blue: 0.067, alpha: 1)
+        createdPanel.backgroundColor = NSColor(red: 0.071, green: 0.071, blue: 0.086, alpha: 1)
 
         let webViewConfiguration = WKWebViewConfiguration()
         // Nothing drawn here should ever be persisted to disk.
@@ -172,13 +196,20 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <html>
         <head>
         <meta charset="utf-8">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
-        <style>\(boardStylesheet)</style>
-        \(roughJSScriptTag)
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:">
+        <style>
+        @font-face { font-family: Virgil; src: url(data:font/woff2;base64,\(virgilFontBase64)) format("woff2"); }
+        \(boardStylesheet)
+        </style>
+        <script>\(roughJSSource)</script>
+        <script>const ICON_SHAPES = \(iconShapesJSON);</script>
         </head>
         <body>
-        <svg id="board" viewBox="0 0 560 400" preserveAspectRatio="xMidYMid meet"></svg>
-        <div id="drawing-indicator">✏️ drawing…</div>
+        <svg id="board" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid meet">
+          <g id="zone-layer"></g>
+          <g id="main-layer"></g>
+        </svg>
+        <div id="drawing-indicator">drawing…</div>
         <script>\(boardRendererScript)</script>
         </body>
         </html>
@@ -186,83 +217,156 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     }
 
     private static let boardStylesheet = """
-    html, body { margin: 0; height: 100%; background: #101211; overflow: hidden;
-      font-family: -apple-system, "SF Pro Rounded", system-ui, sans-serif; }
-    #board { position: absolute; inset: 28px 8px 8px 8px; width: calc(100% - 16px); height: calc(100% - 36px); }
-    #drawing-indicator { position: absolute; right: 14px; bottom: 10px; color: #a59fb3; font-size: 12px;
+    html, body { margin: 0; height: 100%; background: #121216; overflow: hidden; }
+    #board { position: absolute; inset: 26px 6px 6px 6px; width: calc(100% - 12px); height: calc(100% - 32px); }
+    #drawing-indicator { position: absolute; right: 14px; bottom: 8px; color: #8b8598; font: 15px Virgil, sans-serif;
       animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; }
     #drawing-indicator.finished { animation: none; opacity: 0; }
     /* A dark outline behind every label keeps it readable over strokes. */
-    text { font-family: -apple-system, "SF Pro Rounded", system-ui, sans-serif;
-      stroke: #101211; stroke-width: 5px; stroke-linejoin: round; paint-order: stroke; }
+    text { stroke: #121216; stroke-width: 4px; stroke-linejoin: round; paint-order: stroke; }
+    /* Text sitting on a filled shape (sticky notes, step badges) needs no outline. */
+    text.on-fill { stroke: none; }
     .hb-appear { animation: hb-appear 0.45s ease-out both; }
+    .hb-pop { transform-box: fill-box; transform-origin: center; animation: hb-pop 0.45s ease-out both; }
     .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s infinite ease-in-out; }
+    .hb-shake { animation: hb-shake 0.6s ease-in-out 2; }
+    .hb-grow { transform-box: fill-box; transform-origin: bottom; animation: hb-grow 0.8s ease-out both; }
     @keyframes hb-appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    @keyframes hb-pulse { 0%,100% { transform: scale(1); filter: none; } 50% { transform: scale(1.06); filter: drop-shadow(0 0 10px #a855f7); } }
+    @keyframes hb-pop { from { opacity: 0; transform: scale(0.3); } 70% { transform: scale(1.12); } to { opacity: 1; transform: scale(1); } }
+    @keyframes hb-pulse { 0%,100% { transform: scale(1); filter: none; } 50% { transform: scale(1.05); filter: drop-shadow(0 0 10px #a855f7); } }
+    @keyframes hb-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
+    @keyframes hb-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
     @keyframes hb-blink { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
     """
 
-    /// Draws streamed commands one at a time with a short gap, so even a
-    /// burst of lines still looks like it's being sketched live.
+    /// Draws handed-over commands one at a time with a short gap, so even a
+    /// burst of commands still looks like it's being sketched live.
     private static let boardRendererScript = """
     const SVG_NS = 'http://www.w3.org/2000/svg';
     const board = document.getElementById('board');
+    const zoneLayer = document.getElementById('zone-layer');
+    const mainLayer = document.getElementById('main-layer');
     const roughCanvas = rough.svg(board);
-    const palette = { accent: '#a855f7', accent2: '#c084fc', fg: '#f4f2f7', muted: '#a59fb3',
-      good: '#4ade80', warn: '#fbbf24', bad: '#f87171' };
+    const HAND_FONT = 'Virgil, "SF Pro Rounded", system-ui, sans-serif';
+    const COLORS = { purple: '#a855f7', blue: '#60a5fa', green: '#4ade80', orange: '#fb923c', pink: '#f472b6',
+      cyan: '#22d3ee', yellow: '#facc15', red: '#f87171', fg: '#f4f2f7', muted: '#a59fb3' };
     const elementsById = {};
     const arrowsById = {};
     const commandQueue = [];
     let isDrawingCommand = false;
     let isStreamFinished = false;
 
-    // Hide "drawing…" once the stream has ended and every queued shape is drawn.
-    function hideDrawingIndicatorIfComplete() {
-      if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0) {
-        document.getElementById('drawing-indicator').classList.add('finished');
-      }
+    function colorOf(colorName, fallbackName) { return COLORS[colorName] || COLORS[fallbackName] || COLORS.purple; }
+    function translucent(hexColor, alpha) {
+      const red = parseInt(hexColor.slice(1, 3), 16), green = parseInt(hexColor.slice(3, 5), 16), blue = parseInt(hexColor.slice(5, 7), 16);
+      return `rgba(${red},${green},${blue},${alpha})`;
+    }
+    function svgElement(tagName, attributes) {
+      const element = document.createElementNS(SVG_NS, tagName);
+      for (const [attributeName, attributeValue] of Object.entries(attributes || {})) { element.setAttribute(attributeName, attributeValue); }
+      return element;
     }
 
-    function resolveColor(colorName) { return palette[colorName] || colorName || palette.accent; }
-
-    function drawStrokesIn(groupElement) {
+    function drawStrokesIn(groupElement, durationSeconds) {
       groupElement.querySelectorAll('path').forEach((pathElement) => {
         const strokeLength = pathElement.getTotalLength();
         pathElement.style.strokeDasharray = strokeLength;
         pathElement.style.strokeDashoffset = strokeLength;
         pathElement.getBoundingClientRect();
-        pathElement.style.transition = 'stroke-dashoffset 0.55s ease-out';
+        pathElement.style.transition = `stroke-dashoffset ${durationSeconds || 0.55}s ease-out`;
         pathElement.style.strokeDashoffset = 0;
       });
     }
 
-    function addText(x, y, textContent, fontSize, colorName, fontWeight) {
-      const textElement = document.createElementNS(SVG_NS, 'text');
-      textElement.setAttribute('x', x);
-      textElement.setAttribute('y', y);
-      textElement.setAttribute('text-anchor', 'middle');
-      textElement.setAttribute('dominant-baseline', 'middle');
-      textElement.setAttribute('font-size', fontSize);
-      textElement.setAttribute('font-weight', fontWeight || 600);
-      textElement.setAttribute('fill', resolveColor(colorName || 'fg'));
-      textElement.textContent = textContent;
+    function wrapIntoLines(text, maxCharactersPerLine) {
+      const words = String(text).split(/\\s+/);
+      const lines = [];
+      let currentLine = '';
+      for (const word of words) {
+        if (currentLine && (currentLine + ' ' + word).length > maxCharactersPerLine) { lines.push(currentLine); currentLine = word; }
+        else { currentLine = currentLine ? currentLine + ' ' + word : word; }
+      }
+      if (currentLine) { lines.push(currentLine); }
+      return lines.slice(0, 4);
+    }
+
+    function addText(parentElement, x, centerY, text, options) {
+      const { size = 17, color = 'fg', anchor = 'middle', maxCharacters = 0, fill } = options || {};
+      const lines = maxCharacters ? wrapIntoLines(text, maxCharacters) : [String(text)];
+      const lineHeight = size * 1.15;
+      const textElement = svgElement('text', { x, y: centerY - (lines.length - 1) * lineHeight / 2,
+        'text-anchor': anchor, 'dominant-baseline': 'middle', 'font-size': size, 'font-family': HAND_FONT,
+        fill: fill || colorOf(color, 'fg') });
+      lines.forEach((lineText, lineIndex) => {
+        const lineElement = svgElement('tspan', { x, dy: lineIndex === 0 ? 0 : lineHeight });
+        lineElement.textContent = lineText;
+        textElement.appendChild(lineElement);
+      });
       textElement.classList.add('hb-appear');
-      board.appendChild(textElement);
+      if (fill) { textElement.classList.add('on-fill'); }
+      parentElement.appendChild(textElement);
       return textElement;
     }
 
-    function addShapeGroup(roughNode, id) {
-      const groupElement = document.createElementNS(SVG_NS, 'g');
-      groupElement.appendChild(roughNode);
-      board.appendChild(groupElement);
-      drawStrokesIn(groupElement);
+    function roundedRectanglePath(x, y, width, height, cornerRadius) {
+      const radius = Math.min(cornerRadius, width / 2, height / 2);
+      return `M${x + radius},${y} H${x + width - radius} Q${x + width},${y} ${x + width},${y + radius} V${y + height - radius} ` +
+        `Q${x + width},${y + height} ${x + width - radius},${y + height} H${x + radius} Q${x},${y + height} ${x},${y + height - radius} ` +
+        `V${y + radius} Q${x},${y} ${x + radius},${y} Z`;
+    }
+
+    function pointsFromString(pointsText) {
+      const numbers = pointsText.trim().split(/[\\s,]+/).map(Number);
+      const points = [];
+      for (let index = 0; index + 1 < numbers.length; index += 2) { points.push([numbers[index], numbers[index + 1]]); }
+      return points;
+    }
+
+    // Draws a Lucide icon (24x24 stroke shapes) sketchily at the given center.
+    function drawIcon(parentElement, iconName, centerX, centerY, size, colorName) {
+      const iconShapes = ICON_SHAPES[iconName];
+      if (!iconShapes) { return null; }
+      const scale = size / 24;
+      const groupElement = svgElement('g', { transform: `translate(${centerX - size / 2},${centerY - size / 2}) scale(${scale})` });
+      const strokeOptions = { stroke: colorOf(colorName, 'fg'), strokeWidth: 2.3 / scale, roughness: 0.45, bowing: 0.4 };
+      for (const shape of iconShapes) {
+        let roughNode = null;
+        if (shape[0] === 'p') { roughNode = roughCanvas.path(shape[1], strokeOptions); }
+        else if (shape[0] === 'c') { roughNode = roughCanvas.circle(shape[1], shape[2], shape[3] * 2, strokeOptions); }
+        else if (shape[0] === 'r') { roughNode = roughCanvas.rectangle(shape[1], shape[2], shape[3], shape[4], strokeOptions); }
+        else if (shape[0] === 'l') { roughNode = roughCanvas.line(shape[1], shape[2], shape[3], shape[4], strokeOptions); }
+        else if (shape[0] === 'pl') { roughNode = roughCanvas.linearPath(pointsFromString(shape[1]), strokeOptions); }
+        else if (shape[0] === 'pg') { roughNode = roughCanvas.polygon(pointsFromString(shape[1]), strokeOptions); }
+        else if (shape[0] === 'e') { roughNode = roughCanvas.ellipse(shape[1], shape[2], shape[3] * 2, shape[4] * 2, strokeOptions); }
+        if (roughNode) { groupElement.appendChild(roughNode); }
+      }
+      parentElement.appendChild(groupElement);
+      drawStrokesIn(groupElement, 0.7);
       return groupElement;
     }
 
-    function sketchOptions(colorName) {
-      return { stroke: resolveColor(colorName), strokeWidth: 2.2, roughness: 1.5, bowing: 1.3,
-        fill: 'rgba(168,85,247,0.18)', fillStyle: 'hachure', hachureGap: 7, fillWeight: 1.1 };
+    function shapeOptions(colorName) {
+      const strokeColor = colorOf(colorName, 'purple');
+      return { stroke: strokeColor, strokeWidth: 2.4, roughness: 1.4, bowing: 1.2,
+        fill: translucent(strokeColor, 0.2), fillStyle: 'hachure', hachureGap: 7, fillWeight: 1.1, hachureAngle: -41 };
     }
+
+    // Icon on top, label underneath, or whichever of the two is given.
+    function drawIconAndLabel(parentElement, centerX, centerY, availableWidth, availableHeight, command) {
+      const hasIcon = command.icon && ICON_SHAPES[command.icon];
+      if (hasIcon && command.label) {
+        const iconSize = Math.min(38, availableHeight * 0.42);
+        drawIcon(parentElement, command.icon, centerX, centerY - iconSize * 0.45, iconSize, command.color);
+        addText(parentElement, centerX, centerY + iconSize * 0.62, command.label,
+          { size: 17, maxCharacters: Math.max(8, Math.floor(availableWidth / 9)) });
+      } else if (hasIcon) {
+        drawIcon(parentElement, command.icon, centerX, centerY, Math.min(48, availableHeight * 0.6), command.color);
+      } else if (command.label) {
+        addText(parentElement, centerX, centerY, command.label, { size: 18, maxCharacters: Math.max(8, Math.floor(availableWidth / 9)) });
+      }
+    }
+
+    function registerElement(id, element) { if (id) { elementsById[id] = element; } }
 
     // A point on the element's outline in the direction of (towardX, towardY),
     // so arrows start and end at edges instead of centers.
@@ -270,92 +374,225 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       const deltaX = towardX - element.centerX, deltaY = towardY - element.centerY;
       if (element.radius) {
         const distance = Math.hypot(deltaX, deltaY) || 1;
-        return [element.centerX + deltaX / distance * (element.radius + 6), element.centerY + deltaY / distance * (element.radius + 6)];
+        return [element.centerX + deltaX / distance * (element.radius + 7), element.centerY + deltaY / distance * (element.radius + 7)];
       }
-      const halfWidth = element.width / 2 + 6, halfHeight = element.height / 2 + 6;
+      const halfWidth = element.width / 2 + 7, halfHeight = element.height / 2 + 7;
       const scale = 1 / Math.max(Math.abs(deltaX) / halfWidth, Math.abs(deltaY) / halfHeight, 1e-6);
       return [element.centerX + deltaX * scale, element.centerY + deltaY * scale];
     }
 
+    // Quadratic curve through start, end, and a point bent sideways at the middle.
+    function arrowGeometry(fromElement, toElement, bend) {
+      const centerDeltaX = toElement.centerX - fromElement.centerX, centerDeltaY = toElement.centerY - fromElement.centerY;
+      const centerDistance = Math.hypot(centerDeltaX, centerDeltaY) || 1;
+      const perpendicularX = -centerDeltaY / centerDistance, perpendicularY = centerDeltaX / centerDistance;
+      const aimX = (fromElement.centerX + toElement.centerX) / 2 + perpendicularX * bend * centerDistance;
+      const aimY = (fromElement.centerY + toElement.centerY) / 2 + perpendicularY * bend * centerDistance;
+      const [startX, startY] = outlinePointToward(fromElement, aimX, aimY);
+      const [endX, endY] = outlinePointToward(toElement, aimX, aimY);
+      const chordLength = Math.hypot(endX - startX, endY - startY) || 1;
+      const midX = (startX + endX) / 2 + perpendicularX * bend * chordLength;
+      const midY = (startY + endY) / 2 + perpendicularY * bend * chordLength;
+      // Bezier control point that makes the curve pass through (midX, midY).
+      const controlX = 2 * midX - (startX + endX) / 2, controlY = 2 * midY - (startY + endY) / 2;
+      const pointAt = (progress) => [
+        (1 - progress) ** 2 * startX + 2 * (1 - progress) * progress * controlX + progress ** 2 * endX,
+        (1 - progress) ** 2 * startY + 2 * (1 - progress) * progress * controlY + progress ** 2 * endY ];
+      return { startX, startY, endX, endY, midX, midY, controlX, controlY, perpendicularX, perpendicularY, pointAt };
+    }
+
     function drawCommand(command) {
       const commandType = command.t;
+
       if (commandType === 'title') {
-        addText(280, 22, command.text, 22, command.color || 'fg', 700);
-      } else if (commandType === 'text') {
-        addText(command.x, command.y, command.text, command.size || 15, command.color || 'muted', command.bold ? 700 : 500);
+        addText(mainLayer, 400, 28, command.text, { size: 30, color: command.color || 'fg' });
+
+      } else if (commandType === 'zone') {
+        const zoneColor = colorOf(command.color, 'blue');
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.path(roundedRectanglePath(command.x, command.y, command.w, command.h, 18),
+          { stroke: zoneColor, strokeWidth: 1.8, roughness: 1.1, strokeLineDash: [9, 7], fill: translucent(zoneColor, 0.06), fillStyle: 'solid' }));
+        zoneLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.8);
+        if (command.label) { addText(zoneLayer, command.x + 14, command.y + 18, command.label, { size: 16, color: command.color || 'blue', anchor: 'start' }); }
+
       } else if (commandType === 'box' || commandType === 'circle') {
         const isCircle = commandType === 'circle';
-        const width = command.w || 120, height = command.h || 70, radius = command.r || 42;
+        const width = command.w || 140, height = command.h || 90, radius = command.r || 50;
         const centerX = isCircle ? command.x : command.x + width / 2;
         const centerY = isCircle ? command.y : command.y + height / 2;
-        const roughNode = isCircle
-          ? roughCanvas.circle(centerX, centerY, radius * 2, sketchOptions(command.color))
-          : roughCanvas.rectangle(command.x, command.y, width, height, sketchOptions(command.color));
-        const groupElement = addShapeGroup(roughNode);
-        if (command.icon && command.label) {
-          addText(centerX, centerY - 13, command.icon, 26);
-          addText(centerX, centerY + 19, command.label, 14, 'fg', 600);
-        } else if (command.icon) {
-          addText(centerX, centerY, command.icon, 30);
-        } else if (command.label) {
-          addText(centerX, centerY, command.label, 15, 'fg', 600);
-        }
-        if (command.id) {
-          elementsById[command.id] = { centerX, centerY, width: isCircle ? radius * 2 : width,
-            height: isCircle ? radius * 2 : height, radius: isCircle ? radius : 0, groupElement };
-        }
+        const groupElement = svgElement('g');
+        groupElement.appendChild(isCircle
+          ? roughCanvas.circle(centerX, centerY, radius * 2, shapeOptions(command.color))
+          : roughCanvas.path(roundedRectanglePath(command.x, command.y, width, height, 14), shapeOptions(command.color)));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement);
+        drawIconAndLabel(groupElement, centerX, centerY, isCircle ? radius * 1.5 : width, isCircle ? radius * 1.6 : height, command);
+        registerElement(command.id, { centerX, centerY, width: isCircle ? radius * 2 : width, height: isCircle ? radius * 2 : height,
+          radius: isCircle ? radius : 0, groupElement });
+
       } else if (commandType === 'icon') {
-        const iconSize = command.size || 40;
-        const textElement = addText(command.x, command.y, command.emoji, iconSize);
-        if (command.label) { addText(command.x, command.y + iconSize * 0.75, command.label, 13, 'muted', 600); }
-        if (command.id) {
-          elementsById[command.id] = { centerX: command.x, centerY: command.y, width: iconSize, height: iconSize,
-            radius: iconSize * 0.55, groupElement: textElement };
-        }
+        const iconSize = command.size || 54;
+        const groupElement = svgElement('g');
+        mainLayer.appendChild(groupElement);
+        drawIcon(groupElement, command.name, command.x, command.y, iconSize, command.color || 'fg');
+        if (command.label) { addText(groupElement, command.x, command.y + iconSize * 0.5 + 16, command.label, { size: 16, maxCharacters: 16 }); }
+        registerElement(command.id, { centerX: command.x, centerY: command.y, width: iconSize, height: iconSize,
+          radius: iconSize * 0.6, groupElement });
+
       } else if (commandType === 'arrow') {
         const fromElement = elementsById[command.from], toElement = elementsById[command.to];
         if (!fromElement || !toElement) { return; }
-        const [startX, startY] = outlinePointToward(fromElement, toElement.centerX, toElement.centerY);
-        const [endX, endY] = outlinePointToward(toElement, fromElement.centerX, fromElement.centerY);
-        const arrowAngle = Math.atan2(endY - startY, endX - startX);
-        const headLength = 12;
-        const strokeOptions = { stroke: resolveColor(command.color || 'accent2'), strokeWidth: 2.2, roughness: 1.2, bowing: 1.5 };
-        const groupElement = document.createElementNS(SVG_NS, 'g');
-        groupElement.appendChild(roughCanvas.line(startX, startY, endX, endY, strokeOptions));
-        groupElement.appendChild(roughCanvas.line(endX, endY,
-          endX - headLength * Math.cos(arrowAngle - 0.45), endY - headLength * Math.sin(arrowAngle - 0.45), strokeOptions));
-        groupElement.appendChild(roughCanvas.line(endX, endY,
-          endX - headLength * Math.cos(arrowAngle + 0.45), endY - headLength * Math.sin(arrowAngle + 0.45), strokeOptions));
-        board.appendChild(groupElement);
-        drawStrokesIn(groupElement);
-        if (command.label) {
-          // Sit the label beside the arrow (perpendicular offset) so the line
-          // and travelling emoji never run through it.
-          const labelOffset = 16;
-          const offsetX = Math.sin(arrowAngle) * labelOffset, offsetY = -Math.cos(arrowAngle) * labelOffset;
-          addText((startX + endX) / 2 + offsetX, (startY + endY) / 2 + offsetY, command.label, 13, 'muted', 600);
+        const geometry = arrowGeometry(fromElement, toElement, command.bend || 0);
+        const strokeOptions = { stroke: colorOf(command.color, 'muted'), strokeWidth: 2.3, roughness: 1.1, bowing: 0.8,
+          strokeLineDash: command.style === 'dashed' ? [8, 7] : undefined };
+        const headAngle = Math.atan2(geometry.endY - geometry.controlY, geometry.endX - geometry.controlX);
+        const headLength = 13;
+        const groupElement = svgElement('g');
+        groupElement.appendChild(command.bend
+          ? roughCanvas.curve([[geometry.startX, geometry.startY], [geometry.midX, geometry.midY], [geometry.endX, geometry.endY]], strokeOptions)
+          : roughCanvas.line(geometry.startX, geometry.startY, geometry.endX, geometry.endY, strokeOptions));
+        const solidHeadOptions = { ...strokeOptions, strokeLineDash: undefined };
+        for (const headSide of [-0.45, 0.45]) {
+          groupElement.appendChild(roughCanvas.line(geometry.endX, geometry.endY,
+            geometry.endX - headLength * Math.cos(headAngle + headSide), geometry.endY - headLength * Math.sin(headAngle + headSide), solidHeadOptions));
         }
-        const arrowId = command.id || (command.from + '>' + command.to);
-        arrowsById[arrowId] = { startX, startY, endX, endY };
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.6);
+        const labelOffset = command.bend ? Math.sign(command.bend) * 18 : 18;
+        const labelX = geometry.midX + geometry.perpendicularX * labelOffset, labelY = geometry.midY + geometry.perpendicularY * labelOffset;
+        if (command.label) { addText(mainLayer, labelX, labelY, command.label, { size: 15, color: command.color || 'muted', maxCharacters: 18 }); }
+        arrowsById[command.id || (command.from + '>' + command.to)] = { ...geometry, labelX, labelY };
+
+      } else if (commandType === 'text') {
+        addText(mainLayer, command.x, command.y, command.text, { size: command.size || 17, color: command.color || 'muted', maxCharacters: command.wrap || 0 });
+
+      } else if (commandType === 'note') {
+        // A slightly tilted sticky note, optionally tied to an element.
+        const noteWidth = command.w || 170;
+        const noteLines = wrapIntoLines(command.text, Math.floor(noteWidth / 9));
+        const noteHeight = 26 + noteLines.length * 19;
+        const noteColor = colorOf(command.color, 'yellow');
+        if (command.to && elementsById[command.to]) {
+          const targetElement = elementsById[command.to];
+          const [targetX, targetY] = outlinePointToward(targetElement, command.x + noteWidth / 2, command.y + noteHeight / 2);
+          const connectorGroup = svgElement('g');
+          connectorGroup.appendChild(roughCanvas.line(command.x + noteWidth / 2, command.y + noteHeight / 2, targetX, targetY,
+            { stroke: noteColor, strokeWidth: 1.6, roughness: 1.2, strokeLineDash: [5, 6] }));
+          mainLayer.appendChild(connectorGroup);
+          drawStrokesIn(connectorGroup);
+        }
+        const noteGroup = svgElement('g', { transform: `rotate(-2 ${command.x + noteWidth / 2} ${command.y + noteHeight / 2})` });
+        noteGroup.appendChild(roughCanvas.rectangle(command.x, command.y, noteWidth, noteHeight,
+          { stroke: noteColor, strokeWidth: 1.6, roughness: 1.3, fill: noteColor, fillStyle: 'solid' }));
+        noteGroup.classList.add('hb-pop');
+        mainLayer.appendChild(noteGroup);
+        addText(noteGroup, command.x + noteWidth / 2, command.y + noteHeight / 2, command.text,
+          { size: 16, fill: '#1c1917', maxCharacters: Math.floor(noteWidth / 9) });
+
+      } else if (commandType === 'step') {
+        // Numbered badge on an element's top-left corner, or beside an arrow's label.
+        const targetElement = elementsById[command.on];
+        const targetArrow = arrowsById[command.on];
+        let badgeX, badgeY;
+        if (targetElement) { badgeX = targetElement.centerX - targetElement.width / 2 - 2; badgeY = targetElement.centerY - targetElement.height / 2 - 2; }
+        else if (targetArrow) {
+          // Near the arrow's start, on the side away from its label.
+          const [pointX, pointY] = targetArrow.pointAt(0.18);
+          badgeX = pointX - targetArrow.perpendicularX * 18; badgeY = pointY - targetArrow.perpendicularY * 18;
+        }
+        else { return; }
+        const badgeColor = colorOf(command.color, 'orange');
+        const badgeGroup = svgElement('g');
+        badgeGroup.appendChild(roughCanvas.circle(badgeX, badgeY, 28, { stroke: badgeColor, strokeWidth: 2, roughness: 1, fill: badgeColor, fillStyle: 'solid' }));
+        addText(badgeGroup, badgeX, badgeY + 1, command.n, { size: 17, fill: '#1c1917' });
+        badgeGroup.classList.add('hb-pop');
+        mainLayer.appendChild(badgeGroup);
+
+      } else if (commandType === 'highlight' || commandType === 'cross' || commandType === 'tick') {
+        const targetElement = elementsById[command.id];
+        if (!targetElement) { return; }
+        const markGroup = svgElement('g');
+        const halfWidth = targetElement.width / 2, halfHeight = targetElement.height / 2;
+        if (commandType === 'highlight') {
+          // Marker scribble around the element.
+          markGroup.appendChild(roughCanvas.ellipse(targetElement.centerX, targetElement.centerY, targetElement.width + 46, targetElement.height + 40,
+            { stroke: colorOf(command.color, 'yellow'), strokeWidth: 3, roughness: 2.2, bowing: 2 }));
+        } else if (commandType === 'cross') {
+          const crossOptions = { stroke: colorOf(command.color, 'red'), strokeWidth: 4, roughness: 1.6 };
+          markGroup.appendChild(roughCanvas.line(targetElement.centerX - halfWidth, targetElement.centerY - halfHeight,
+            targetElement.centerX + halfWidth, targetElement.centerY + halfHeight, crossOptions));
+          markGroup.appendChild(roughCanvas.line(targetElement.centerX + halfWidth, targetElement.centerY - halfHeight,
+            targetElement.centerX - halfWidth, targetElement.centerY + halfHeight, crossOptions));
+        } else {
+          const tickX = targetElement.centerX + halfWidth - 4, tickY = targetElement.centerY - halfHeight + 4;
+          markGroup.appendChild(roughCanvas.linearPath([[tickX - 14, tickY], [tickX - 4, tickY + 11], [tickX + 16, tickY - 14]],
+            { stroke: colorOf(command.color, 'green'), strokeWidth: 4.5, roughness: 1.2 }));
+        }
+        mainLayer.appendChild(markGroup);
+        drawStrokesIn(markGroup, 0.8);
+
+      } else if (commandType === 'bars') {
+        // Bars that grow from the baseline, with labels and values.
+        const values = command.values || [];
+        const maximumValue = Math.max(...values, 1);
+        const slotWidth = command.w / Math.max(values.length, 1);
+        const barWidth = slotWidth * 0.58;
+        values.forEach((value, barIndex) => {
+          const barHeight = (command.h - 30) * value / maximumValue;
+          const barX = command.x + barIndex * slotWidth + (slotWidth - barWidth) / 2;
+          const barY = command.y + command.h - 22 - barHeight;
+          const barColorName = (command.colors && command.colors[barIndex]) || command.color || 'purple';
+          const barGroup = svgElement('g');
+          barGroup.appendChild(roughCanvas.rectangle(barX, barY, barWidth, barHeight, shapeOptions(barColorName)));
+          barGroup.classList.add('hb-grow');
+          barGroup.style.animationDelay = `${barIndex * 0.18}s`;
+          mainLayer.appendChild(barGroup);
+          addText(mainLayer, barX + barWidth / 2, barY - 12, (command.prefix || '') + value + (command.suffix || ''), { size: 15, color: barColorName });
+          if (command.labels && command.labels[barIndex]) {
+            addText(mainLayer, barX + barWidth / 2, command.y + command.h - 6, command.labels[barIndex], { size: 14, color: 'muted' });
+          }
+        });
+
       } else if (commandType === 'flow') {
-        // An emoji travelling along an arrow on a loop: shows things moving.
-        const arrow = arrowsById[command.along] || arrowsById[command.from + '>' + command.to];
+        // Something travelling along an arrow on a loop: an icon, or a glowing dot.
+        const arrow = arrowsById[command.along];
         if (!arrow) { return; }
-        const travellerElement = addText(arrow.startX, arrow.startY, command.emoji || '✨', 22);
-        const travelMilliseconds = (command.seconds || 1.6) * 1000;
+        const travellerGroup = svgElement('g');
+        if (command.icon && ICON_SHAPES[command.icon]) {
+          drawIcon(travellerGroup, command.icon, 0, 0, 24, command.color || 'yellow');
+        } else {
+          const dotElement = svgElement('circle', { cx: 0, cy: 0, r: 6, fill: colorOf(command.color, 'yellow') });
+          dotElement.style.filter = `drop-shadow(0 0 6px ${colorOf(command.color, 'yellow')})`;
+          travellerGroup.appendChild(dotElement);
+        }
+        const [firstX, firstY] = arrow.pointAt(0);
+        travellerGroup.setAttribute('transform', `translate(${firstX},${firstY})`);
+        travellerGroup.style.opacity = 0;
+        mainLayer.appendChild(travellerGroup);
+        const travelMilliseconds = (command.seconds || 1.8) * 1000;
+        const pauseMilliseconds = 450;
         const loopStartTime = performance.now();
         function moveTraveller(currentTime) {
-          const progress = ((currentTime - loopStartTime) % (travelMilliseconds + 500)) / travelMilliseconds;
-          const clampedProgress = Math.min(progress, 1);
-          travellerElement.setAttribute('x', arrow.startX + (arrow.endX - arrow.startX) * clampedProgress);
-          travellerElement.setAttribute('y', arrow.startY + (arrow.endY - arrow.startY) * clampedProgress);
-          travellerElement.style.opacity = progress > 1 ? 0 : 1;
+          const loopProgress = ((currentTime - loopStartTime) % (travelMilliseconds + pauseMilliseconds)) / travelMilliseconds;
+          const travelProgress = Math.min(loopProgress, 1);
+          const [travellerX, travellerY] = arrow.pointAt(travelProgress);
+          travellerGroup.setAttribute('transform', `translate(${travellerX},${travellerY})`);
+          travellerGroup.style.opacity = loopProgress > 1 ? 0 : Math.min(1, travelProgress * 8, (1 - travelProgress) * 8);
           requestAnimationFrame(moveTraveller);
         }
         requestAnimationFrame(moveTraveller);
-      } else if (commandType === 'pulse') {
-        const element = elementsById[command.id];
-        if (element) { element.groupElement.classList.add('hb-pulse'); }
+
+      } else if (commandType === 'pulse' || commandType === 'shake') {
+        const targetElement = elementsById[command.id];
+        if (targetElement) { targetElement.groupElement.classList.add(commandType === 'pulse' ? 'hb-pulse' : 'hb-shake'); }
+      }
+    }
+
+    // Hide "drawing…" once the stream has ended and every queued shape is drawn.
+    function hideDrawingIndicatorIfComplete() {
+      if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0) {
+        document.getElementById('drawing-indicator').classList.add('finished');
       }
     }
 
@@ -365,7 +602,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       isDrawingCommand = true;
       const nextCommand = commandQueue.shift();
       try { drawCommand(nextCommand); } catch (drawError) { console.log(drawError); }
-      setTimeout(() => { isDrawingCommand = false; drawNextQueuedCommand(); }, 260);
+      setTimeout(() => { isDrawingCommand = false; drawNextQueuedCommand(); }, 280);
     }
 
     window.hb = {

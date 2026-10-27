@@ -414,7 +414,7 @@ final class CompanionManager: ObservableObject {
     - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
 
     visual explanations:
-    when a picture would explain something better than words — how something works, a process or flow, a comparison, numbers, cause and effect — append [SHOW:what to draw] with a one-line description of the visual (for example [SHOW:how a request goes from browser to server to database and back]). the app draws an animated visual in a panel next to the cursor while you speak, so refer to it naturally ("dekho, screen pe dikha raha hoon"). use it generously for explanations, never for simple factual answers or while doing tasks for the user.
+    when a picture would explain something better than words — how something works, a process or flow, an architecture, a comparison, numbers, cause and effect — append [SHOW:what to explain, in one line]. the app then explains it step by step: a narrated sketch drawn live on a whiteboard next to the cursor, each part drawn exactly as it's spoken. so when you use SHOW, your own spoken reply must be only one short intro sentence, like "चलो, ड्रॉ करके समझाता हूँ" — the narration covers the rest. use it generously for how, why, and explain questions; never for simple factual answers or while doing tasks for the user.
 
     doing things for the user:
     when the user asks you to do something (open an app, find a file, send something, search, fill in a field), do it. you have two ways, and you can mix them:
@@ -620,42 +620,67 @@ final class CompanionManager: ObservableObject {
                 visualDescription.isEmpty ? nil : visualDescription)
     }
 
-    /// Sketches the visual with a separate claude -p call so speech never waits
-    /// on it. Each drawing command is drawn the moment its line streams in.
+    /// Narrates and sketches the visual with a separate claude -p call. The
+    /// stream is split into steps (a spoken sentence plus its drawing
+    /// commands) that play in lockstep: each step's shapes are drawn while its
+    /// sentence is spoken, and the next step waits for the speech to finish.
     private func startDrawingVisual(visualDescription: String, userRequest: String, spokenExplanation: String) {
         currentVisualTask?.cancel()
         visualExplanationPanelManager.beginLiveDrawing()
         print("🎨 Drawing visual: \(visualDescription)")
 
         currentVisualTask = Task {
-            let streamedLineForwarder = StreamedLineForwarder { [weak self] completeLine in
-                self?.visualExplanationPanelManager.addDrawingCommandLine(completeLine)
+            let narratedDrawingQueue = NarratedDrawingQueue { [weak self] drawingCommandLine in
+                self?.visualExplanationPanelManager.addDrawingCommandLine(drawingCommandLine)
             }
+            let streamedLineForwarder = StreamedLineForwarder { completeLine in
+                narratedDrawingQueue.receiveLine(completeLine)
+            }
+
+            async let spokenNarrations = narratedDrawingQueue.playSteps(
+                waitUntilVoiceIsFree: { @MainActor [weak self] in
+                    // Let the intro sentence finish before the first narrated step.
+                    while self?.isSpeakingAloud == true {
+                        try? await Task.sleep(for: .milliseconds(80))
+                    }
+                },
+                speak: { @MainActor [weak self] narration in
+                    await self?.localTTSClient.speakTextAndWaitUntilFinished(narration)
+                }
+            )
+
             do {
                 let visualRequestPrompt = """
-                draw: \(visualDescription)
+                explain: \(visualDescription)
 
                 the user asked: \(userRequest)
-                the assistant is saying out loud: \(spokenExplanation)
+                you already said, as an intro: \(spokenExplanation)
                 """
-                let (fullDrawingScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
+                let (fullVisualScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
                     images: [],
                     systemPrompt: Self.visualExplanationSystemPrompt,
                     userPrompt: visualRequestPrompt,
-                    onTextChunk: { accumulatedDrawingScript in
-                        streamedLineForwarder.forwardNewCompleteLines(in: accumulatedDrawingScript)
+                    onTextChunk: { accumulatedVisualScript in
+                        streamedLineForwarder.forwardNewCompleteLines(in: accumulatedVisualScript)
                     }
                 )
-                guard !Task.isCancelled else { return }
                 // The last line has no trailing newline, so it's only complete now.
-                streamedLineForwarder.forwardRemainingLine(in: fullDrawingScript)
-                visualExplanationPanelManager.finishLiveDrawing()
-                print("🎨 Visual finished in \(String(format: "%.1f", visualDuration))s (\(streamedLineForwarder.forwardedLineCount) commands)")
+                streamedLineForwarder.forwardRemainingLine(in: fullVisualScript)
+                print("🎨 Visual script streamed in \(String(format: "%.1f", visualDuration))s (\(streamedLineForwarder.forwardedLineCount) lines)")
             } catch is CancellationError {
                 // A newer request replaced this visual
             } catch {
                 print("⚠️ Visual generation failed: \(error)")
-                visualExplanationPanelManager.finishLiveDrawing()
+            }
+            narratedDrawingQueue.markStreamFinished()
+
+            let narrationsSpoken = await spokenNarrations
+            guard !Task.isCancelled else { return }
+            visualExplanationPanelManager.finishLiveDrawing()
+
+            // Keep what was explained in the history so follow-ups have context.
+            if !narrationsSpoken.isEmpty && !conversationHistory.isEmpty {
+                conversationHistory[conversationHistory.count - 1].assistantResponse += " " + narrationsSpoken.joined(separator: " ")
             }
         }
     }
@@ -837,33 +862,52 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Onboarding Demo Interaction
 
-    /// Instructions for the separate claude -p call that sketches the visual.
-    /// Output is one JSON drawing command per line, so the board can draw
-    /// each shape the moment its line streams in.
+    /// Instructions for the separate claude -p call that narrates and sketches
+    /// the visual. Output is JSON lines: a "say" sentence followed by the
+    /// drawing commands for it, so speech and drawing can play in lockstep.
     private static let visualExplanationSystemPrompt = """
-    you sketch an animated explanation live on a whiteboard, like drawing on excalidraw, while a voice assistant explains the same idea out loud.
+    you are a fun, sharp teacher explaining an idea out loud while sketching it live on a whiteboard, excalidraw-style. the user hears your narration and watches each part get drawn exactly as you talk about it.
 
-    output only drawing commands: one json object per line, nothing else — no prose, no markdown, no code fences. each line is drawn the moment it arrives, so order them like you're explaining step by step, and send the title first.
+    output only json lines — one object per line, nothing else. no prose, no markdown, no code fences.
 
-    the board is 560 wide and 400 tall, origin at the top-left. the title sits at the top (keep shapes below y=50).
+    structure: first a title line. then 4 to 8 steps. each step is:
+    {"t":"say","text":"..."}   one spoken sentence, under about 18 words
+    followed by the 1 to 5 drawing commands that show exactly what that sentence says. they are drawn while the sentence is spoken, so the words and the drawing must match one to one.
 
-    commands:
-    {"t":"title","text":"..."}
-    {"t":"box","id":"a","x":40,"y":150,"w":120,"h":70,"label":"...","icon":"🏦","color":"accent"}   x,y is the top-left corner
-    {"t":"circle","id":"b","x":300,"y":185,"r":42,"label":"...","icon":"🔐"}   x,y is the center
-    {"t":"icon","id":"c","x":480,"y":185,"emoji":"📱","size":44,"label":"..."}   a big standalone emoji
-    {"t":"arrow","id":"a-b","from":"a","to":"b","label":"..."}   connects two ids, edge to edge
-    {"t":"text","x":280,"y":370,"text":"...","size":15,"color":"muted"}   x,y is the center
-    {"t":"flow","along":"a-b","emoji":"💸"}   an emoji travels along an arrow on a loop
-    {"t":"pulse","id":"b"}   makes an element glow and breathe, for emphasis
+    narration language: if the user spoke hindi or hinglish, natural hinglish (hindi grammar, everyday english words) written in devanagari, like "अब तुम्हारा बैंक ये रिक्वेस्ट NPCI को भेजता है". if they spoke english, english. sound like a friend explaining, a little playful, never like a textbook.
 
-    colors: accent (purple, default), accent2, good (green), warn (yellow), bad (red), muted, fg.
+    everything drawn on the board is in english: title, labels, notes.
 
-    rules:
-    - always animated: after the shapes and arrows, end with flow commands showing what moves (money, data, requests, messages) and a pulse on the key element. every visual needs at least one flow or pulse.
-    - graphics over text: icons, boxes, arrows. labels of one to three words. at most one short text line besides the title.
-    - simple: one idea, 3 to 6 main elements, 8 to 20 commands in total. leave space between elements so labels don't overlap.
-    - write labels in the user's language. for hindi or hinglish use natural hinglish in devanagari (english words are fine, e.g. "पेमेंट रिक्वेस्ट"); short technical terms like UPI or API can stay in english letters.
+    board: 800 wide, 500 tall, origin top-left. the title sits at the top; keep everything else between y=60 and y=490 and between x=10 and x=790. leave at least 40px between elements so labels never overlap.
+
+    drawing commands:
+    {"t":"title","text":"How UPI works"}
+    {"t":"zone","x":20,"y":70,"w":360,"h":250,"label":"Your bank network","color":"blue"}   dashed region that groups things into layers or systems. draw a zone before what goes inside it.
+    {"t":"box","id":"bank","x":60,"y":120,"w":150,"h":95,"label":"Your bank","icon":"landmark","color":"purple"}   x,y is the top-left corner
+    {"t":"circle","id":"npci","x":400,"y":250,"r":55,"label":"NPCI","icon":"network","color":"orange"}   x,y is the center
+    {"t":"icon","id":"you","name":"smartphone","x":80,"y":400,"size":56,"label":"You","color":"cyan"}   a standalone drawn icon, x,y is the center
+    {"t":"arrow","id":"pay","from":"you","to":"bank","label":"PIN (encrypted)","color":"pink","bend":0.2,"style":"dashed"}   bend from -0.4 to 0.4 curves it; dashed suits replies and async things; the label says what travels
+    {"t":"flow","along":"pay","icon":"banknote","color":"yellow"}   something travels along an arrow on a loop; without an icon it's a glowing dot (good for data)
+    {"t":"step","n":1,"on":"pay"}   numbered badge on an element or arrow, showing the order of events
+    {"t":"note","x":560,"y":380,"w":190,"text":"Your PIN never leaves the bank","to":"bank"}   yellow sticky note for the key insight or a fun fact
+    {"t":"highlight","id":"npci"}   marker scribble around the star of the show
+    {"t":"cross","id":"..."}   red scribbled X: this doesn't happen
+    {"t":"tick","id":"..."}   green tick: done, success
+    {"t":"shake","id":"..."}   wiggle: errors, failures, surprises
+    {"t":"pulse","id":"..."}   glow and breathe: what's active right now
+    {"t":"bars","x":520,"y":300,"w":240,"h":160,"values":[10,45,80],"labels":["2019","2022","2025"],"prefix":"₹","suffix":"B","colors":["blue","purple","pink"]}   bar chart that grows, for numbers
+    {"t":"text","x":400,"y":470,"text":"...","size":17,"color":"muted"}   x,y is the center; use sparingly
+
+    colors: purple, blue, green, orange, pink, cyan, yellow, red, muted, fg. use several; give each actor or system its own color.
+
+    icons (use these exact names; never emoji, never invent a name): \(VisualExplanationPanelManager.availableIconNames.joined(separator: ", "))
+
+    make it great:
+    - in depth: show the real mechanics — the actors, the layers they live in (zones), what actually travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note). 6 to 12 elements, 20 to 45 commands in total.
+    - fun: playful narration, a surprising fact in a note, and highlight, tick, cross, or shake where they land a point.
+    - always animated: by the end there must be flows on the main arrows and a pulse or highlight on the key element.
+    - each step's drawing matches its sentence exactly. build left to right or top to bottom so it reads like a story.
+    - clean layout: plan positions so arrows run between neighbours and never cut through other shapes, zones, or notes. keep bend at 0.25 or less and use it only to separate two arrows between the same pair. put notes and text in genuinely empty space.
     """
 
     private static let onboardingDemoSystemPrompt = """
@@ -957,5 +1001,94 @@ final class StreamedLineForwarder {
             forwardCompleteLine(allLines[forwardedLineCount])
             forwardedLineCount += 1
         }
+    }
+}
+
+/// Splits a streamed visual into steps: a spoken "say" sentence plus the
+/// drawing commands that illustrate it. Steps play in order — a step's shapes
+/// are drawn while its sentence is spoken, and the next step starts only once
+/// that speech has finished, so the drawing never runs ahead of the voice.
+@MainActor
+final class NarratedDrawingQueue {
+    private struct NarratedStep {
+        var narration: String?
+        var drawingCommandLines: [String]
+    }
+
+    private var narratedSteps: [NarratedStep] = []
+    private var isStreamFinished = false
+    /// Index of the step currently being spoken, or -1 before playback starts.
+    private var playingStepIndex = -1
+    private let drawCommandLine: (String) -> Void
+
+    init(drawCommandLine: @escaping (String) -> Void) {
+        self.drawCommandLine = drawCommandLine
+    }
+
+    func receiveLine(_ streamedLine: String) {
+        let trimmedLine = streamedLine.trimmingCharacters(in: .whitespaces)
+        guard trimmedLine.hasPrefix("{") else { return }
+
+        if let narration = Self.narrationText(in: trimmedLine) {
+            narratedSteps.append(NarratedStep(narration: narration, drawingCommandLines: []))
+            return
+        }
+
+        // Lines before the first "say" (like the title) form a silent first step.
+        if narratedSteps.isEmpty {
+            narratedSteps.append(NarratedStep(narration: nil, drawingCommandLines: []))
+        }
+        let lastStepIndex = narratedSteps.count - 1
+        narratedSteps[lastStepIndex].drawingCommandLines.append(trimmedLine)
+
+        // Shapes for the step that's already playing go straight to the board.
+        if lastStepIndex <= playingStepIndex {
+            drawCommandLine(trimmedLine)
+        }
+    }
+
+    func markStreamFinished() {
+        isStreamFinished = true
+    }
+
+    /// Plays every step in order and returns the sentences that were spoken.
+    func playSteps(
+        waitUntilVoiceIsFree: @MainActor () async -> Void,
+        speak: @MainActor (String) async -> Void
+    ) async -> [String] {
+        var spokenNarrations: [String] = []
+        var nextStepIndex = 0
+
+        while !Task.isCancelled {
+            guard nextStepIndex < narratedSteps.count else {
+                if isStreamFinished { break }
+                try? await Task.sleep(for: .milliseconds(60))
+                continue
+            }
+
+            let nextStep = narratedSteps[nextStepIndex]
+            if let narration = nextStep.narration {
+                await waitUntilVoiceIsFree()
+                playingStepIndex = nextStepIndex
+                narratedSteps[nextStepIndex].drawingCommandLines.forEach(drawCommandLine)
+                spokenNarrations.append(narration)
+                await speak(narration)
+            } else {
+                playingStepIndex = nextStepIndex
+                nextStep.drawingCommandLines.forEach(drawCommandLine)
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+            nextStepIndex += 1
+        }
+        return spokenNarrations
+    }
+
+    private static func narrationText(in jsonLine: String) -> String? {
+        guard let lineData = jsonLine.data(using: .utf8),
+              let lineObject = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              lineObject["t"] as? String == "say" else {
+            return nil
+        }
+        return lineObject["text"] as? String
     }
 }
