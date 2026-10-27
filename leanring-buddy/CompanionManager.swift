@@ -338,7 +338,7 @@ final class CompanionManager: ObservableObject {
             currentResponseTask?.cancel()
             currentVisualTask?.cancel()
             localTTSClient.stopPlayback()
-            visualExplanationPanelManager.finishLiveDrawing()
+            visualExplanationPanelManager.finishLiveContent()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -418,7 +418,11 @@ final class CompanionManager: ObservableObject {
 
     visual explanations:
     when a picture would explain something better than words — how something works, a process or flow, an architecture, a comparison, numbers, cause and effect — append [SHOW:what to explain, in one line]. the app then explains it step by step: a narrated sketch drawn live on a whiteboard next to the cursor, each part drawn exactly as it's spoken. so when you use SHOW, your own spoken reply must be only one short intro sentence, like "चलो, ड्रॉ करके समझाता हूँ" — the narration covers the rest. use it generously for how, why, and explain questions; never for simple factual answers or while doing tasks for the user.
-    if the user asks to close, hide, or get rid of the drawing, append [CLOSE_DRAWING].
+    if the user asks to close, hide, or get rid of the drawing or notes, append [CLOSE_DRAWING].
+
+    live notes:
+    when the user wants something summarized or noted down — the page, email, document, video, code, spreadsheet, or chat on their screen, or your conversation so far — or asks for notes, key points, a list, a comparison, or steps, append [NOTES:what to cover, in one line]. the app writes live notes (with tables, code, and charts when useful) on a panel next to the cursor while narrating the highlights, so your own spoken reply must be only one short intro sentence, like "ठीक है, नोट्स बना देता हूँ". prefer SHOW for how something works, NOTES for summaries, lists, and anything text-heavy, and never use both in one reply.
+    if the user asks to save the notes, save them to the apple notes app with osascript, for example: osascript -e 'tell application "Notes" to make new note with properties {name:"title", body:"<h1>title</h1><ul><li>point</li></ul>"}'. the notes you wrote are in the conversation so far.
 
     doing things for the user:
     when the user asks you to do something (open an app, find a file, send something, search, fill in a field), do it. you have two ways, and you can mix them:
@@ -531,16 +535,28 @@ final class CompanionManager: ObservableObject {
                         visualExplanationPanelManager.close()
                     }
 
-                    // Pull out a [SHOW:...] visual request, then parse [POINT:...] from what's left.
-                    let (responseTextWithoutVisualRequest, visualDescription) = Self.extractVisualRequest(from: responseTextWithoutDrawingCommands)
-                    let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutVisualRequest)
+                    // Pull out [SHOW:...] and [NOTES:...] requests, then parse [POINT:...] from what's left.
+                    let (textWithoutVisualRequest, visualDescription) = Self.extractTaggedRequest(named: "SHOW", from: responseTextWithoutDrawingCommands)
+                    let (textWithoutNotesRequest, notesDescription) = Self.extractTaggedRequest(named: "NOTES", from: textWithoutVisualRequest)
+                    let parseResult = Self.parsePointingCoordinates(from: textWithoutNotesRequest)
                     let spokenText = parseResult.spokenText
 
                     if let visualDescription {
-                        startDrawingVisual(
-                            visualDescription: visualDescription,
+                        startNarratedPanel(
+                            liveContentKind: .drawing,
+                            contentDescription: visualDescription,
                             userRequest: transcript,
-                            spokenExplanation: spokenText
+                            spokenIntro: spokenText,
+                            screenImages: []
+                        )
+                    } else if let notesDescription {
+                        // Notes summarize what's on screen, so they need the screenshots.
+                        startNarratedPanel(
+                            liveContentKind: .notes,
+                            contentDescription: notesDescription,
+                            userRequest: transcript,
+                            spokenIntro: spokenText,
+                            screenImages: labeledImages
                         )
                     }
 
@@ -620,32 +636,38 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Visual Explanations
 
-    /// Finds a [SHOW:description] tag anywhere in the reply. Returns the reply
-    /// without it, plus the description if there was one.
-    private static func extractVisualRequest(from responseText: String) -> (textWithoutVisualRequest: String, visualDescription: String?) {
-        guard let showTagRange = responseText.range(of: #"\[SHOW:([^\]]*)\]"#, options: .regularExpression) else {
+    /// Finds a [TAGNAME:description] tag (like SHOW or NOTES) anywhere in the
+    /// reply. Returns the reply without it, plus the description if any.
+    private static func extractTaggedRequest(named tagName: String, from responseText: String) -> (remainingText: String, requestDescription: String?) {
+        guard let tagRange = responseText.range(of: "\\[\(tagName):([^\\]]*)\\]", options: .regularExpression) else {
             return (responseText, nil)
         }
-        let visualDescription = String(responseText[showTagRange].dropFirst("[SHOW:".count).dropLast())
+        let requestDescription = String(responseText[tagRange].dropFirst(tagName.count + 2).dropLast())
             .trimmingCharacters(in: .whitespaces)
-        var textWithoutVisualRequest = responseText
-        textWithoutVisualRequest.removeSubrange(showTagRange)
-        return (textWithoutVisualRequest.trimmingCharacters(in: .whitespacesAndNewlines),
-                visualDescription.isEmpty ? nil : visualDescription)
+        var remainingText = responseText
+        remainingText.removeSubrange(tagRange)
+        return (remainingText.trimmingCharacters(in: .whitespacesAndNewlines),
+                requestDescription.isEmpty ? nil : requestDescription)
     }
 
-    /// Narrates and sketches the visual with a separate claude -p call. The
-    /// stream is split into steps (a spoken sentence plus its drawing
-    /// commands) that play in lockstep: each step's shapes are drawn while its
-    /// sentence is spoken, and the next step waits for the speech to finish.
-    private func startDrawingVisual(visualDescription: String, userRequest: String, spokenExplanation: String) {
+    /// Narrates a whiteboard sketch or live notes with a separate claude -p
+    /// call. The stream is split into steps (a spoken sentence plus its
+    /// drawing or note lines) that play in lockstep: each step's lines appear
+    /// while its sentence is spoken, and the next step waits for the speech.
+    private func startNarratedPanel(
+        liveContentKind: VisualExplanationPanelManager.LiveContentKind,
+        contentDescription: String,
+        userRequest: String,
+        spokenIntro: String,
+        screenImages: [(data: Data, label: String)]
+    ) {
         currentVisualTask?.cancel()
-        visualExplanationPanelManager.beginLiveDrawing()
-        print("🎨 Drawing visual: \(visualDescription)")
+        visualExplanationPanelManager.beginLiveContent(liveContentKind)
+        print(liveContentKind == .drawing ? "🎨 Drawing visual: \(contentDescription)" : "📝 Writing notes: \(contentDescription)")
 
         currentVisualTask = Task {
-            let narratedDrawingQueue = NarratedDrawingQueue { [weak self] drawingCommandLine in
-                self?.visualExplanationPanelManager.addDrawingCommandLine(drawingCommandLine)
+            let narratedDrawingQueue = NarratedStepQueue { [weak self] drawingCommandLine in
+                self?.visualExplanationPanelManager.addCommandLine(drawingCommandLine)
             }
             let streamedLineForwarder = StreamedLineForwarder { completeLine in
                 narratedDrawingQueue.receiveLine(completeLine)
@@ -665,14 +687,14 @@ final class CompanionManager: ObservableObject {
 
             do {
                 let visualRequestPrompt = """
-                explain: \(visualDescription)
+                \(liveContentKind == .drawing ? "explain" : "write notes on"): \(contentDescription)
 
                 the user asked: \(userRequest)
-                you already said, as an intro: \(spokenExplanation)
+                you already said, as an intro: \(spokenIntro)
                 """
                 let (fullVisualScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
-                    images: [],
-                    systemPrompt: Self.visualExplanationSystemPrompt,
+                    images: screenImages,
+                    systemPrompt: liveContentKind == .drawing ? Self.visualExplanationSystemPrompt : Self.liveNotesSystemPrompt,
                     userPrompt: visualRequestPrompt,
                     onTextChunk: { accumulatedVisualScript in
                         streamedLineForwarder.forwardNewCompleteLines(in: accumulatedVisualScript)
@@ -690,11 +712,16 @@ final class CompanionManager: ObservableObject {
 
             let narrationsSpoken = await spokenNarrations
             guard !Task.isCancelled else { return }
-            visualExplanationPanelManager.finishLiveDrawing()
+            visualExplanationPanelManager.finishLiveContent()
 
-            // Keep what was explained in the history so follow-ups have context.
+            // Keep what was explained (and the notes text) in the history so
+            // follow-ups like "save these notes" have the context.
             if !narrationsSpoken.isEmpty && !conversationHistory.isEmpty {
-                conversationHistory[conversationHistory.count - 1].assistantResponse += " " + narrationsSpoken.joined(separator: " ")
+                var explainedContent = " " + narrationsSpoken.joined(separator: " ")
+                if liveContentKind == .notes {
+                    explainedContent += "\n(notes written:\n" + narratedDrawingQueue.plainTextOfVisibleLines() + ")"
+                }
+                conversationHistory[conversationHistory.count - 1].assistantResponse += explainedContent
             }
         }
     }
@@ -892,36 +919,69 @@ final class CompanionManager: ObservableObject {
 
     everything drawn on the board is in english: title, labels, notes.
 
-    board: an infinite canvas, origin top-left, y grows downward. start in the area x 0 to 800, y 0 to 500 with the title at the top (it's drawn at x=400, y=28) and the first elements below y=60. when the explanation needs more room, keep going to the right or downward as far as you need — the view zooms out to follow as you draw. leave at least 40px between elements so labels never overlap.
+    layout is automatic: never give coordinates or sizes. declare the shapes and arrows in the order you explain them and a layout engine places everything neatly, sliding existing shapes aside as new ones appear. the flow runs left to right by default; send {"t":"layout","direction":"TB"} first if the idea reads better top to bottom (hierarchies, step lists).
 
     drawing commands:
     {"t":"title","text":"How UPI works"}
-    {"t":"zone","x":20,"y":70,"w":360,"h":250,"label":"Your bank network","color":"blue"}   dashed region that groups things into layers or systems. draw a zone before what goes inside it.
-    {"t":"box","id":"bank","x":60,"y":120,"w":150,"h":95,"label":"Your bank","icon":"landmark","color":"purple"}   x,y is the top-left corner
-    {"t":"circle","id":"npci","x":400,"y":250,"r":55,"label":"NPCI","icon":"network","color":"orange"}   x,y is the center
-    {"t":"icon","id":"you","name":"smartphone","x":80,"y":400,"size":56,"label":"You","color":"cyan"}   a standalone drawn icon, x,y is the center
-    {"t":"arrow","id":"pay","from":"you","to":"bank","label":"PIN (encrypted)","color":"pink","bend":0.2,"style":"dashed"}   bend from -0.4 to 0.4 curves it; dashed suits replies and async things; the label says what travels
+    {"t":"group","id":"banks","label":"Bank network","color":"blue"}   a dashed cluster; put shapes inside it with "in". declare a group before the shapes that go in it.
+    {"t":"box","id":"bank","label":"Your bank","icon":"landmark","color":"purple","in":"banks"}
+    {"t":"circle","id":"npci","label":"NPCI","icon":"network","color":"orange"}   for hubs and central pieces
+    {"t":"icon","id":"you","name":"smartphone","label":"You","color":"cyan"}   a standalone drawn icon, for people and devices
+    {"t":"arrow","id":"pay","from":"you","to":"bank","label":"PIN (encrypted)","color":"pink","style":"dashed"}   the label says what travels; dashed suits replies and async things. both ends must already be declared.
     {"t":"flow","along":"pay","icon":"banknote","color":"yellow"}   something travels along an arrow on a loop; without an icon it's a glowing dot (good for data)
-    {"t":"step","n":1,"on":"pay"}   numbered badge on an element or arrow, showing the order of events
-    {"t":"note","x":560,"y":380,"w":190,"text":"Your PIN never leaves the bank","to":"bank"}   yellow sticky note for the key insight or a fun fact
+    {"t":"step","n":1,"on":"pay"}   numbered badge on a shape or an arrow, showing the order of events
+    {"t":"note","id":"n1","text":"Your PIN never leaves the bank","to":"bank"}   yellow sticky note tied to a shape, for the key insight or a fun fact
+    {"t":"bars","id":"growth","values":[10,45,80],"labels":["2019","2022","2025"],"prefix":"₹","suffix":"B","colors":["blue","purple","pink"]}   bar chart that grows, for numbers
     {"t":"highlight","id":"npci"}   marker scribble around the star of the show
     {"t":"cross","id":"..."}   red scribbled X: this doesn't happen
     {"t":"tick","id":"..."}   green tick: done, success
     {"t":"shake","id":"..."}   wiggle: errors, failures, surprises
     {"t":"pulse","id":"..."}   glow and breathe: what's active right now
-    {"t":"bars","x":520,"y":300,"w":240,"h":160,"values":[10,45,80],"labels":["2019","2022","2025"],"prefix":"₹","suffix":"B","colors":["blue","purple","pink"]}   bar chart that grows, for numbers
-    {"t":"text","x":400,"y":470,"text":"...","size":17,"color":"muted"}   x,y is the center; use sparingly
+    {"t":"text","text":"..."}   a caption under the whole diagram; use at most once
 
     colors: purple, blue, green, orange, pink, cyan, yellow, red, muted, fg. use several; give each actor or system its own color.
 
     icons (use these exact names; never emoji, never invent a name): \(VisualExplanationPanelManager.availableIconNames.joined(separator: ", "))
 
     make it great:
-    - in depth: show the real mechanics — the actors, the layers they live in (zones), what actually travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note). 6 to 12 elements, 20 to 45 commands in total.
+    - in depth: show the real mechanics — the actors, the layers they live in (groups), what actually travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note). 6 to 12 shapes, 20 to 45 commands in total.
     - fun: playful narration, a surprising fact in a note, and highlight, tick, cross, or shake where they land a point.
     - always animated: by the end there must be flows on the main arrows and a pulse or highlight on the key element.
     - each step's drawing matches its sentence exactly. build left to right or top to bottom so it reads like a story.
-    - clean layout: plan positions so arrows run between neighbours and never cut through other shapes, zones, or notes. keep bend at 0.25 or less and use it only to separate two arrows between the same pair. put notes and text in genuinely empty space.
+    - keep labels short (one to three words) so the layout stays compact; ids are short lowercase words.
+    """
+
+    /// Instructions for the separate claude -p call that writes live notes.
+    /// Same lockstep format as visuals: a "say" sentence, then its note lines.
+    private static let liveNotesSystemPrompt = """
+    you write live notes for the user on a panel next to their cursor while narrating the highlights out loud, like a sharp friend summarizing for them. they hear each sentence while the matching lines appear.
+
+    output only json lines — one object per line, nothing else. no prose, no markdown, no code fences.
+
+    structure: first a title line. then 3 to 7 steps. each step is:
+    {"t":"say","text":"..."}   one spoken sentence, under about 18 words
+    followed by the 1 to 5 note lines it covers. they appear while that sentence is spoken, so they must match.
+
+    narration language: if the user spoke hindi or hinglish, natural hinglish (hindi grammar, everyday english words) written in devanagari. if they spoke english, english.
+
+    the notes themselves are always in english: short, scannable fragments, never paragraphs.
+
+    note lines:
+    {"t":"title","text":"..."}
+    {"t":"heading","text":"..."}
+    {"t":"bullet","text":"...","level":1}   level 1, or 2 for a sub-point. wrap the key words in ==double equals== to highlight them.
+    {"t":"remember","text":"..."}   the single most important takeaway (use once or twice)
+    {"t":"todo","text":"..."}   an action item for the user
+    {"t":"quote","text":"..."}   a short exact quote from the source, when it matters
+    {"t":"code","lang":"python","text":"..."}   a short code snippet; put newlines in the json string as \\n. languages: javascript, typescript, jsx, tsx, python, swift, java, kotlin, go, rust, c, cpp, csharp, ruby, php, sql, bash, json, yaml, css, markup, markdown
+    {"t":"table","columns":["Plan","Price","Limit"],"rows":[["Free","₹0","5/day"],["Pro","₹499","unlimited"]]}   for comparisons and structured data
+    {"t":"chart","kind":"bar","title":"Revenue","labels":["Q1","Q2","Q3"],"values":[12,19,31],"prefix":"₹","suffix":"L"}   kind is bar or line, for numbers worth seeing
+
+    rules:
+    - summarize what is actually on the screen or in the conversation. never invent facts, numbers, or names. if something isn't readable, say so.
+    - lead with the gist, then the details, and end with remember and any todos.
+    - use a table for comparisons, code when explaining code, and a chart when numbers tell a story.
+    - 8 to 30 note lines in total. highlight one to three key terms per bullet at most.
     """
 
     private static let onboardingDemoSystemPrompt = """
@@ -1018,12 +1078,12 @@ final class StreamedLineForwarder {
     }
 }
 
-/// Splits a streamed visual into steps: a spoken "say" sentence plus the
-/// drawing commands that illustrate it. Steps play in order — a step's shapes
+/// Splits a streamed visual or notes script into steps: a spoken "say"
+/// sentence plus the drawing or note lines that illustrate it. Steps play in order — a step's shapes
 /// are drawn while its sentence is spoken, and the next step starts only once
 /// that speech has finished, so the drawing never runs ahead of the voice.
 @MainActor
-final class NarratedDrawingQueue {
+final class NarratedStepQueue {
     private struct NarratedStep {
         var narration: String?
         var drawingCommandLines: [String]
@@ -1097,6 +1157,33 @@ final class NarratedDrawingQueue {
             nextStepIndex += 1
         }
         return spokenNarrations
+    }
+
+    /// The note lines as plain text (title, headings, bullets, callouts), for
+    /// keeping notes in the conversation history.
+    func plainTextOfVisibleLines() -> String {
+        narratedSteps.flatMap(\.drawingCommandLines).compactMap { jsonLine -> String? in
+            guard let lineData = jsonLine.data(using: .utf8),
+                  let lineObject = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let lineType = lineObject["t"] as? String else {
+                return nil
+            }
+            let plainLineText = ((lineObject["text"] as? String) ?? "").replacingOccurrences(of: "==", with: "")
+            switch lineType {
+            case "title": return "# \(plainLineText)"
+            case "heading": return "## \(plainLineText)"
+            case "bullet": return (lineObject["level"] as? Int == 2 ? "    - " : "- ") + plainLineText
+            case "remember": return "Remember: \(plainLineText)"
+            case "todo": return "[ ] \(plainLineText)"
+            case "quote": return "> \(plainLineText)"
+            case "code": return "```\n\(plainLineText)\n```"
+            case "table":
+                let tableColumns = (lineObject["columns"] as? [String]) ?? []
+                let tableRows = (lineObject["rows"] as? [[Any]]) ?? []
+                return ([tableColumns.joined(separator: " | ")] + tableRows.map { $0.map { "\($0)" }.joined(separator: " | ") }).joined(separator: "\n")
+            default: return nil
+            }
+        }.joined(separator: "\n")
     }
 
     private static func narrationText(in jsonLine: String) -> String? {
