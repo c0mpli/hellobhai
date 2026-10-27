@@ -418,6 +418,7 @@ final class CompanionManager: ObservableObject {
 
     visual explanations:
     when a picture would explain something better than words — how something works, a process or flow, an architecture, a comparison, numbers, cause and effect — append [SHOW:what to explain, in one line]. the app then explains it step by step: a narrated sketch drawn live on a whiteboard next to the cursor, each part drawn exactly as it's spoken. so when you use SHOW, your own spoken reply must be only one short intro sentence, like "चलो, ड्रॉ करके समझाता हूँ" — the narration covers the rest. use it generously for how, why, and explain questions; never for simple factual answers or while doing tasks for the user.
+    if the user asks to close, hide, or get rid of the drawing, append [CLOSE_DRAWING].
 
     doing things for the user:
     when the user asks you to do something (open an app, find a file, send something, search, fill in a field), do it. you have two ways, and you can mix them:
@@ -520,8 +521,18 @@ final class CompanionManager: ObservableObject {
                     // [POINT] parser nor the spoken text ever sees them.
                     let (responseTextWithoutActions, computerActions) = ComputerControl.extractActions(from: fullResponseText)
 
+                    // [CLOSE_DRAWING] dismisses the whiteboard (and stops any narration on it).
+                    var responseTextWithoutDrawingCommands = responseTextWithoutActions
+                    if responseTextWithoutDrawingCommands.contains("[CLOSE_DRAWING]") {
+                        responseTextWithoutDrawingCommands = responseTextWithoutDrawingCommands
+                            .replacingOccurrences(of: "[CLOSE_DRAWING]", with: "")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        currentVisualTask?.cancel()
+                        visualExplanationPanelManager.close()
+                    }
+
                     // Pull out a [SHOW:...] visual request, then parse [POINT:...] from what's left.
-                    let (responseTextWithoutVisualRequest, visualDescription) = Self.extractVisualRequest(from: responseTextWithoutActions)
+                    let (responseTextWithoutVisualRequest, visualDescription) = Self.extractVisualRequest(from: responseTextWithoutDrawingCommands)
                     let parseResult = Self.parsePointingCoordinates(from: responseTextWithoutVisualRequest)
                     let spokenText = parseResult.spokenText
 
