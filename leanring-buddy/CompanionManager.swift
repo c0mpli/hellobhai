@@ -881,7 +881,7 @@ final class CompanionManager: ObservableObject {
 
     everything drawn on the board is in english: title, labels, notes.
 
-    board: 800 wide, 500 tall, origin top-left. the title sits at the top; keep everything else between y=60 and y=490 and between x=10 and x=790. leave at least 40px between elements so labels never overlap.
+    board: an infinite canvas, origin top-left, y grows downward. start in the area x 0 to 800, y 0 to 500 with the title at the top (it's drawn at x=400, y=28) and the first elements below y=60. when the explanation needs more room, keep going to the right or downward as far as you need — the view zooms out to follow as you draw. leave at least 40px between elements so labels never overlap.
 
     drawing commands:
     {"t":"title","text":"How UPI works"}

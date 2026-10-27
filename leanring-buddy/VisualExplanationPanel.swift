@@ -154,6 +154,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         createdPanel.hidesOnDeactivate = false
         createdPanel.becomesKeyOnlyIfNeeded = true
         createdPanel.isReleasedWhenClosed = false
+        // Resize freely; the canvas refits to any shape, but keep it usable.
+        createdPanel.minSize = NSSize(width: 360, height: 260)
         createdPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         createdPanel.backgroundColor = NSColor(red: 0.071, green: 0.071, blue: 0.086, alpha: 1)
 
@@ -208,8 +210,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <svg id="board" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid meet">
           <g id="zone-layer"></g>
           <g id="main-layer"></g>
+          <g id="motion-layer"></g>
         </svg>
         <div id="drawing-indicator">drawing…</div>
+        <div id="navigation-hint">scroll or drag to move · pinch to zoom · double-click to fit</div>
         <script>\(boardRendererScript)</script>
         </body>
         </html>
@@ -218,7 +222,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
     private static let boardStylesheet = """
     html, body { margin: 0; height: 100%; background: #121216; overflow: hidden; }
-    #board { position: absolute; inset: 26px 6px 6px 6px; width: calc(100% - 12px); height: calc(100% - 32px); }
+    #board { position: absolute; inset: 26px 0 0 0; width: 100%; height: calc(100% - 26px); cursor: grab; touch-action: none; }
+    #board.panning { cursor: grabbing; }
+    #navigation-hint { position: absolute; left: 14px; bottom: 8px; color: #6f6a7d; font: 13px Virgil, sans-serif;
+      opacity: 0; transition: opacity 0.6s; pointer-events: none; }
+    #navigation-hint.visible { opacity: 1; }
     #drawing-indicator { position: absolute; right: 14px; bottom: 8px; color: #8b8598; font: 15px Virgil, sans-serif;
       animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; }
     #drawing-indicator.finished { animation: none; opacity: 0; }
@@ -246,6 +254,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     const board = document.getElementById('board');
     const zoneLayer = document.getElementById('zone-layer');
     const mainLayer = document.getElementById('main-layer');
+    // Things that move forever (flows) live here so they never affect auto-zoom.
+    const motionLayer = document.getElementById('motion-layer');
     const roughCanvas = rough.svg(board);
     const HAND_FONT = 'Virgil, "SF Pro Rounded", system-ui, sans-serif';
     const COLORS = { purple: '#a855f7', blue: '#60a5fa', green: '#4ade80', orange: '#fb923c', pink: '#f472b6',
@@ -569,7 +579,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const [firstX, firstY] = arrow.pointAt(0);
         travellerGroup.setAttribute('transform', `translate(${firstX},${firstY})`);
         travellerGroup.style.opacity = 0;
-        mainLayer.appendChild(travellerGroup);
+        motionLayer.appendChild(travellerGroup);
         const travelMilliseconds = (command.seconds || 1.8) * 1000;
         const pauseMilliseconds = 450;
         const loopStartTime = performance.now();
@@ -588,6 +598,134 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         if (targetElement) { targetElement.groupElement.classList.add(commandType === 'pulse' ? 'hb-pulse' : 'hb-shake'); }
       }
     }
+
+    // MARK: infinite canvas camera
+    // The SVG viewBox is a camera over an unbounded drawing. While following,
+    // it eases toward a frame that fits everything drawn so far (never closer
+    // than the 800x500 starting area). Panning or zooming by hand stops
+    // following until a double-click fits everything again.
+    const STARTING_AREA = { x: 0, y: 0, width: 800, height: 500 };
+    const FRAME_PADDING = 36;
+    const camera = { ...STARTING_AREA };
+    let cameraTarget = { ...STARTING_AREA };
+    let isFollowingDrawing = true;
+
+    function viewportAspectRatio() {
+      const boardRect = board.getBoundingClientRect();
+      return boardRect.height / Math.max(boardRect.width, 1);
+    }
+
+    function drawnContentBounds() {
+      let minX = STARTING_AREA.x, minY = STARTING_AREA.y;
+      let maxX = STARTING_AREA.x + STARTING_AREA.width, maxY = STARTING_AREA.y + STARTING_AREA.height;
+      for (const layer of [zoneLayer, mainLayer]) {
+        if (!layer.childElementCount) { continue; }
+        const layerBounds = layer.getBBox();
+        minX = Math.min(minX, layerBounds.x); minY = Math.min(minY, layerBounds.y);
+        maxX = Math.max(maxX, layerBounds.x + layerBounds.width); maxY = Math.max(maxY, layerBounds.y + layerBounds.height);
+      }
+      return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    }
+
+    // The smallest frame with the viewport's shape that contains everything.
+    function frameFittingDrawing() {
+      const contentBounds = drawnContentBounds();
+      const aspectRatio = viewportAspectRatio();
+      let frameWidth = contentBounds.width + FRAME_PADDING * 2;
+      let frameHeight = frameWidth * aspectRatio;
+      if (frameHeight < contentBounds.height + FRAME_PADDING * 2) {
+        frameHeight = contentBounds.height + FRAME_PADDING * 2;
+        frameWidth = frameHeight / aspectRatio;
+      }
+      return { x: contentBounds.x + contentBounds.width / 2 - frameWidth / 2,
+        y: contentBounds.y + contentBounds.height / 2 - frameHeight / 2, width: frameWidth, height: frameHeight };
+    }
+
+    function applyCamera() {
+      board.setAttribute('viewBox', `${camera.x} ${camera.y} ${camera.width} ${camera.height}`);
+    }
+
+    function easeCameraTowardTarget() {
+      if (isFollowingDrawing) {
+        cameraTarget = frameFittingDrawing();
+        for (const key of ['x', 'y', 'width', 'height']) { camera[key] += (cameraTarget[key] - camera[key]) * 0.12; }
+        applyCamera();
+      }
+      requestAnimationFrame(easeCameraTowardTarget);
+    }
+
+    function stopFollowingDrawing() {
+      if (!isFollowingDrawing) { return; }
+      isFollowingDrawing = false;
+      document.getElementById('navigation-hint').classList.remove('visible');
+    }
+
+    // Screen point (relative to the board) → drawing coordinates.
+    function drawingPointAt(clientX, clientY) {
+      const boardRect = board.getBoundingClientRect();
+      return [camera.x + (clientX - boardRect.left) / boardRect.width * camera.width,
+        camera.y + (clientY - boardRect.top) / boardRect.height * camera.height];
+    }
+
+    function zoomCamera(zoomFactor, clientX, clientY) {
+      const [anchorX, anchorY] = drawingPointAt(clientX, clientY);
+      const newWidth = Math.min(Math.max(camera.width * zoomFactor, 120), 12000);
+      const appliedFactor = newWidth / camera.width;
+      camera.x = anchorX - (anchorX - camera.x) * appliedFactor;
+      camera.y = anchorY - (anchorY - camera.y) * appliedFactor;
+      camera.width = newWidth;
+      camera.height = newWidth * viewportAspectRatio();
+      applyCamera();
+    }
+
+    function panCameraByScreenDistance(screenDeltaX, screenDeltaY) {
+      const boardRect = board.getBoundingClientRect();
+      camera.x += screenDeltaX * camera.width / boardRect.width;
+      camera.y += screenDeltaY * camera.height / boardRect.height;
+      applyCamera();
+    }
+
+    board.addEventListener('wheel', (wheelEvent) => {
+      wheelEvent.preventDefault();
+      stopFollowingDrawing();
+      // Trackpad pinch arrives as a wheel event with ctrlKey set.
+      if (wheelEvent.ctrlKey) { zoomCamera(Math.exp(wheelEvent.deltaY * 0.01), wheelEvent.clientX, wheelEvent.clientY); }
+      else { panCameraByScreenDistance(wheelEvent.deltaX, wheelEvent.deltaY); }
+    }, { passive: false });
+
+    // WebKit also reports pinches as gesture events.
+    let gestureStartWidth = null;
+    board.addEventListener('gesturestart', (gestureEvent) => { gestureEvent.preventDefault(); stopFollowingDrawing(); gestureStartWidth = camera.width; });
+    board.addEventListener('gesturechange', (gestureEvent) => {
+      gestureEvent.preventDefault();
+      if (gestureStartWidth) { zoomCamera(gestureStartWidth / gestureEvent.scale / camera.width, gestureEvent.clientX, gestureEvent.clientY); }
+    });
+    board.addEventListener('gestureend', () => { gestureStartWidth = null; });
+
+    let lastPanPointer = null;
+    board.addEventListener('mousedown', (mouseEvent) => {
+      lastPanPointer = [mouseEvent.clientX, mouseEvent.clientY];
+      board.classList.add('panning');
+    });
+    window.addEventListener('mousemove', (mouseEvent) => {
+      if (!lastPanPointer) { return; }
+      stopFollowingDrawing();
+      panCameraByScreenDistance(lastPanPointer[0] - mouseEvent.clientX, lastPanPointer[1] - mouseEvent.clientY);
+      lastPanPointer = [mouseEvent.clientX, mouseEvent.clientY];
+    });
+    window.addEventListener('mouseup', () => { lastPanPointer = null; board.classList.remove('panning'); });
+    board.addEventListener('dblclick', () => { isFollowingDrawing = true; });
+
+    // When the panel is resized, keep the frame filling it.
+    new ResizeObserver(() => {
+      if (!isFollowingDrawing) { camera.height = camera.width * viewportAspectRatio(); applyCamera(); }
+    }).observe(board);
+
+    Object.assign(camera, frameFittingDrawing());
+    applyCamera();
+    requestAnimationFrame(easeCameraTowardTarget);
+    document.getElementById('navigation-hint').classList.add('visible');
+    setTimeout(() => document.getElementById('navigation-hint').classList.remove('visible'), 5000);
 
     // Hide "drawing…" once the stream has ended and every queued shape is drawn.
     function hideDrawingIndicatorIfComplete() {
