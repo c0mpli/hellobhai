@@ -110,9 +110,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
             createPanel()
         }
         guard let panel else { return }
-        if !panel.isVisible {
-            panel.setFrameOrigin(Self.panelOriginNearCursor(panelSize: panel.frame.size))
-        }
+        // Re-place it beside the cursor for every new visual, since that's
+        // where the user is looking right now.
+        panel.setFrameOrigin(Self.panelOriginNearCursor(panelSize: panel.frame.size))
         panel.orderFrontRegardless()
     }
 
@@ -146,13 +146,19 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         webView = createdWebView
     }
 
-    /// Below-right of the cursor, kept fully on the cursor's screen.
+    /// To the right of the cursor and vertically centered on it, flipping to
+    /// the cursor's left only when there isn't room; kept on the cursor's screen.
     private static func panelOriginNearCursor(panelSize: NSSize) -> NSPoint {
         let mouseLocation = NSEvent.mouseLocation
         let cursorScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main
         let visibleFrame = cursorScreen?.visibleFrame ?? NSRect(origin: .zero, size: panelSize)
+        let gapFromCursor: CGFloat = 40
 
-        var panelOrigin = NSPoint(x: mouseLocation.x + 40, y: mouseLocation.y - panelSize.height - 30)
+        let fitsRightOfCursor = mouseLocation.x + gapFromCursor + panelSize.width <= visibleFrame.maxX - 12
+        var panelOrigin = NSPoint(
+            x: fitsRightOfCursor ? mouseLocation.x + gapFromCursor : mouseLocation.x - gapFromCursor - panelSize.width,
+            y: mouseLocation.y - panelSize.height / 2
+        )
         panelOrigin.x = min(max(panelOrigin.x, visibleFrame.minX + 12), visibleFrame.maxX - panelSize.width - 12)
         panelOrigin.y = min(max(panelOrigin.y, visibleFrame.minY + 12), visibleFrame.maxY - panelSize.height - 12)
         return panelOrigin
@@ -185,8 +191,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     #board { position: absolute; inset: 28px 8px 8px 8px; width: calc(100% - 16px); height: calc(100% - 36px); }
     #drawing-indicator { position: absolute; right: 14px; bottom: 10px; color: #a59fb3; font-size: 12px;
       animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; }
-    #drawing-indicator.finished { opacity: 0; }
-    text { font-family: -apple-system, "SF Pro Rounded", system-ui, sans-serif; }
+    #drawing-indicator.finished { animation: none; opacity: 0; }
+    /* A dark outline behind every label keeps it readable over strokes. */
+    text { font-family: -apple-system, "SF Pro Rounded", system-ui, sans-serif;
+      stroke: #101211; stroke-width: 5px; stroke-linejoin: round; paint-order: stroke; }
     .hb-appear { animation: hb-appear 0.45s ease-out both; }
     .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s infinite ease-in-out; }
     @keyframes hb-appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
@@ -206,6 +214,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     const arrowsById = {};
     const commandQueue = [];
     let isDrawingCommand = false;
+    let isStreamFinished = false;
+
+    // Hide "drawing…" once the stream has ended and every queued shape is drawn.
+    function hideDrawingIndicatorIfComplete() {
+      if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0) {
+        document.getElementById('drawing-indicator').classList.add('finished');
+      }
+    }
 
     function resolveColor(colorName) { return palette[colorName] || colorName || palette.accent; }
 
@@ -313,7 +329,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         board.appendChild(groupElement);
         drawStrokesIn(groupElement);
         if (command.label) {
-          addText((startX + endX) / 2, (startY + endY) / 2 - 13, command.label, 13, 'muted', 600);
+          // Sit the label beside the arrow (perpendicular offset) so the line
+          // and travelling emoji never run through it.
+          const labelOffset = 16;
+          const offsetX = Math.sin(arrowAngle) * labelOffset, offsetY = -Math.cos(arrowAngle) * labelOffset;
+          addText((startX + endX) / 2 + offsetX, (startY + endY) / 2 + offsetY, command.label, 13, 'muted', 600);
         }
         const arrowId = command.id || (command.from + '>' + command.to);
         arrowsById[arrowId] = { startX, startY, endX, endY };
@@ -340,7 +360,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     }
 
     function drawNextQueuedCommand() {
-      if (isDrawingCommand || commandQueue.length === 0) { return; }
+      if (isDrawingCommand) { return; }
+      if (commandQueue.length === 0) { hideDrawingIndicatorIfComplete(); return; }
       isDrawingCommand = true;
       const nextCommand = commandQueue.shift();
       try { drawCommand(nextCommand); } catch (drawError) { console.log(drawError); }
@@ -355,10 +376,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         drawNextQueuedCommand();
       },
       done() {
-        const waitForQueue = () => commandQueue.length || isDrawingCommand
-          ? setTimeout(waitForQueue, 200)
-          : document.getElementById('drawing-indicator').classList.add('finished');
-        waitForQueue();
+        isStreamFinished = true;
+        hideDrawingIndicatorIfComplete();
       }
     };
     """
