@@ -384,7 +384,7 @@ final class CompanionManager: ObservableObject {
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
     - all lowercase, casual, warm. no emojis.
-    - match the user's language. if they speak english, reply in english. if they speak hindi or hinglish, reply in hinglish written entirely in devanagari script, transliterating english words too (for example "सेटिंग्स खोलो और नीचे स्क्रॉल करो"), because the voice reads devanagari as hindi and latin text as english.
+    - match the user's language. if they speak english, reply in english. if they speak hindi or hinglish, reply in hinglish — the way young urban indians actually talk: hindi grammar with plenty of everyday english words mixed in (recording, file, button, send, check, actually, basically, screen, settings). never formal or shuddh hindi. write it entirely in devanagari, transliterating the english words too, because the voice reads devanagari as hindi and latin text as english. for example "रिकॉर्डिंग कॉपी हो गई, अब चैट में पेस्ट कर रहा हूँ" or "बेसिकली सेटिंग्स खोलो और नीचे स्क्रॉल करो".
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - if the user's question relates to what's on their screen, reference specific things you see.
@@ -863,7 +863,7 @@ final class CompanionManager: ObservableObject {
     - always animated: after the shapes and arrows, end with flow commands showing what moves (money, data, requests, messages) and a pulse on the key element. every visual needs at least one flow or pulse.
     - graphics over text: icons, boxes, arrows. labels of one to three words. at most one short text line besides the title.
     - simple: one idea, 3 to 6 main elements, 8 to 20 commands in total. leave space between elements so labels don't overlap.
-    - write labels in the user's language: hindi in devanagari, english technical terms can stay in english.
+    - write labels in the user's language. for hindi or hinglish use natural hinglish in devanagari (english words are fine, e.g. "पेमेंट रिक्वेस्ट"); short technical terms like UPI or API can stay in english letters.
     """
 
     private static let onboardingDemoSystemPrompt = """
