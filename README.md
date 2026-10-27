@@ -8,7 +8,8 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 - **Sees your screen.** Every question comes with a screenshot of all your displays.
 - **Points at things.** A purple cursor flies over to the button or menu it's talking about.
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your spoken "haan".
-- **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: zones, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows. Narration follows your language; the board is always in English.
+- **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: groups, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows, all laid out automatically so nothing overlaps, on an infinite canvas you can pan and zoom. Narration follows your language; the board is always in English.
+- **Writes live notes.** "Notes bana do" or "summarize this page" and it writes notes beside your cursor as it talks: headings, highlighted key terms, syntax-highlighted code, comparison tables, sketch charts, and to-dos. Say "save kar do" to put them in Apple Notes.
 - **Shows when it's talking.** A Dynamic-Island-style pill grows out of the notch while it speaks.
 
 ## How it works

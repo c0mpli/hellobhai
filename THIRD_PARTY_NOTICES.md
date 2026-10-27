@@ -1,10 +1,12 @@
 # Third-party notices
 
-Bundled in `leanring-buddy/VisualToolkit/` for the live sketch whiteboard:
+Bundled in `leanring-buddy/VisualToolkit/` for the live whiteboard and notes panel:
 
 | Asset | Source | License |
 |-------|--------|---------|
 | `rough.js` | [roughjs 4.6.6](https://github.com/rough-stuff/rough) | MIT |
+| `dagre.min.js` | [dagre 1.1.4](https://github.com/dagrejs/dagre) graph layout | MIT |
+| `prism.min.js` | [Prism 1.29.0](https://prismjs.com) core + language components | MIT |
 | `icons.json` | Converted from [Lucide 0.460.0](https://lucide.dev) icon shapes | ISC (portions MIT, from Feather) |
 | `Virgil.woff2` | Virgil handwriting font from [Excalidraw](https://github.com/excalidraw/virgil) | SIL Open Font License 1.1 |
 
