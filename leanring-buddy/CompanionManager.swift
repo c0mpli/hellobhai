@@ -333,9 +333,12 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
 
-            // Cancel any in-progress response and TTS from a previous utterance
+            // Cancel any in-progress response, narrated explanation, and TTS
+            // from a previous utterance, so nothing talks over the user.
             currentResponseTask?.cancel()
+            currentVisualTask?.cancel()
             localTTSClient.stopPlayback()
+            visualExplanationPanelManager.finishLiveDrawing()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -1069,6 +1072,8 @@ final class NarratedDrawingQueue {
             let nextStep = narratedSteps[nextStepIndex]
             if let narration = nextStep.narration {
                 await waitUntilVoiceIsFree()
+                // The user may have interrupted while we were waiting.
+                guard !Task.isCancelled else { break }
                 playingStepIndex = nextStepIndex
                 narratedSteps[nextStepIndex].drawingCommandLines.forEach(drawCommandLine)
                 spokenNarrations.append(narration)
