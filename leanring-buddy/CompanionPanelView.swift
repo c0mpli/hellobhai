@@ -30,6 +30,8 @@ struct CompanionPanelView: View {
 
                 modelPickerRow
                     .padding(.horizontal, 16)
+                avatarPickerRow
+                    .padding(.horizontal, 16)
             }
 
             if !companionManager.allPermissionsGranted {
@@ -506,10 +508,46 @@ struct CompanionPanelView: View {
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
-        let isSelected = companionManager.selectedModel == modelID
-        return Button(action: {
+        segmentedOptionButton(label: label, isSelected: companionManager.selectedModel == modelID) {
             companionManager.setSelectedModel(modelID)
-        }) {
+        }
+    }
+
+    // MARK: - Avatar Picker
+
+    private var avatarPickerRow: some View {
+        HStack {
+            Text("Avatar")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            HStack(spacing: 0) {
+                avatarOptionButton(label: "Woman", avatarID: "woman")
+                avatarOptionButton(label: "Man", avatarID: "man")
+                avatarOptionButton(label: "Off", avatarID: "off")
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func avatarOptionButton(label: String, avatarID: String) -> some View {
+        segmentedOptionButton(label: label, isSelected: companionManager.selectedAvatar == avatarID) {
+            companionManager.setSelectedAvatar(avatarID)
+        }
+    }
+
+    private func segmentedOptionButton(label: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(isSelected ? DS.Colors.textPrimary : DS.Colors.textTertiary)
