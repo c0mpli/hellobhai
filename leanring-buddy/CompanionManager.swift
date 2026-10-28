@@ -99,41 +99,6 @@ final class CompanionManager: ObservableObject {
     /// The Claude Code model alias ("sonnet" or "opus") used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "sonnet"
 
-    /// The video avatar shown bottom-right: "woman", "man" or "off". Persisted to UserDefaults.
-    @Published private(set) var selectedAvatar: String = UserDefaults.standard.string(forKey: "selectedAvatar") ?? "woman"
-    let avatarPanelManager = AvatarPanelManager()
-    private var avatarActivityCancellable: AnyCancellable?
-
-    func setSelectedAvatar(_ avatar: String) {
-        selectedAvatar = avatar
-        UserDefaults.standard.set(avatar, forKey: "selectedAvatar")
-        if avatar == "off" {
-            avatarPanelManager.hide()
-        } else {
-            avatarPanelManager.show(characterName: avatar)
-        }
-    }
-
-    /// Maps the voice pipeline onto the avatar's clips: talking only while
-    /// audio is actually playing, thinking while Claude works on a reply.
-    private func bindAvatarActivity() {
-        avatarActivityCancellable = $voiceState
-            .combineLatest($isSpeakingAloud)
-            .sink { [weak self] voiceState, isSpeakingAloud in
-                let avatarActivity: AvatarActivity
-                if isSpeakingAloud {
-                    avatarActivity = .talking
-                } else {
-                    switch voiceState {
-                    case .idle: avatarActivity = .idle
-                    case .listening: avatarActivity = .listening
-                    case .processing, .responding: avatarActivity = .thinking
-                    }
-                }
-                self?.avatarPanelManager.setActivity(avatarActivity)
-            }
-    }
-
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
@@ -154,10 +119,6 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        bindAvatarActivity()
-        if selectedAvatar != "off" {
-            avatarPanelManager.show(characterName: selectedAvatar)
-        }
         // Create the TTS client now so its model download starts at launch
         // instead of delaying the first spoken reply.
         _ = localTTSClient
