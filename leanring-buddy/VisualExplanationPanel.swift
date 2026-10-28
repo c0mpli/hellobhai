@@ -230,6 +230,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           <g id="zone-layer"></g>
           <g id="edge-layer"></g>
           <g id="main-layer"></g>
+          <g id="title-layer"></g>
           <g id="motion-layer"></g>
         </svg>
         <div id="drawing-indicator">drawing…</div>
@@ -279,6 +280,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     const mainLayer = document.getElementById('main-layer');
     // Things that move forever (flows) live here so they never affect auto-zoom.
     const motionLayer = document.getElementById('motion-layer');
+    // Title and captions sit here, positioned from the bounds of everything else.
+    const titleLayer = document.getElementById('title-layer');
     const roughCanvas = rough.svg(board);
     const HAND_FONT = 'Virgil, "SF Pro Rounded", system-ui, sans-serif';
     const COLORS = { purple: '#a855f7', blue: '#60a5fa', green: '#4ade80', orange: '#fb923c', pink: '#f472b6',
@@ -476,6 +479,26 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       }
     }
 
+    // Lets highlight / pulse / shake / tick / cross target geometry shapes too.
+    function registerGeometryShape(shapeId, shapePoints, groupElement) {
+      if (!shapeId) { return; }
+      const pointXs = shapePoints.map((point) => point[0]), pointYs = shapePoints.map((point) => point[1]);
+      const minX = Math.min(...pointXs), maxX = Math.max(...pointXs), minY = Math.min(...pointYs), maxY = Math.max(...pointYs);
+      // Position lives on the outer group's transform attribute; animations
+      // (pulse, shake) go on the inner group. A CSS animation transform would
+      // otherwise replace the position and snap the shape to the origin.
+      const outerElement = svgElement('g', { transform: `translate(${(minX + maxX) / 2},${(minY + maxY) / 2})` });
+      const innerElement = svgElement('g');
+      outerElement.appendChild(innerElement);
+      // The shape is drawn in board coordinates; shift it so marks drawn in
+      // local coordinates (centered on 0,0) line up with it.
+      groupElement.setAttribute('transform', `translate(${-(minX + maxX) / 2},${-(minY + maxY) / 2})`);
+      groupElement.replaceWith(outerElement);
+      innerElement.appendChild(groupElement);
+      nodesById[shapeId] = { command: { t: 'shape' }, width: maxX - minX, height: maxY - minY, innerElement, outerElement,
+        isPlaced: true, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2, isGeometry: true };
+    }
+
     // MARK: layout
 
     function ensureGroup(groupId) {
@@ -610,17 +633,22 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       }
     }
 
+    // Title centered above everything drawn (flowchart or geometry, including
+    // arrows that arc over the top), captions centered below it.
     function positionTitleAndCaptions() {
-      const graphLabel = layoutGraph.graph();
-      const graphWidth = graphLabel.width || 800, graphHeight = graphLabel.height || 400;
-      // Above everything drawn so far, including arrows that arc over the top.
-      let topmostY = 0;
-      for (const layer of [zoneLayer, edgeLayer]) {
-        if (layer.childElementCount) { topmostY = Math.min(topmostY, layer.getBBox().y); }
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const layer of [zoneLayer, edgeLayer, mainLayer]) {
+        if (!layer.childElementCount) { continue; }
+        const layerBounds = layer.getBBox();
+        if (!layerBounds.width && !layerBounds.height) { continue; }
+        minX = Math.min(minX, layerBounds.x); minY = Math.min(minY, layerBounds.y);
+        maxX = Math.max(maxX, layerBounds.x + layerBounds.width); maxY = Math.max(maxY, layerBounds.y + layerBounds.height);
       }
-      if (titleElement) { titleElement.setAttribute('transform', `translate(${graphWidth / 2},${topmostY - 34})`); }
+      if (minX === Infinity) { minX = 0; maxX = 800; minY = 60; maxY = 440; }
+      const centerX = (minX + maxX) / 2;
+      if (titleElement) { titleElement.setAttribute('transform', `translate(${centerX},${minY - 40})`); }
       captionElements.forEach((captionElement, captionIndex) => {
-        captionElement.setAttribute('transform', `translate(${graphWidth / 2},${graphHeight + 34 + captionIndex * 28})`);
+        captionElement.setAttribute('transform', `translate(${centerX},${maxY + 34 + captionIndex * 28})`);
       });
     }
 
@@ -639,6 +667,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       layoutGraph.graph().ranksep = desiredColumnGap / (2 * deepestGroupNesting + 1);
       dagre.layout(layoutGraph);
       for (const [nodeId, node] of Object.entries(nodesById)) {
+        if (node.isGeometry) { continue; }
         const layoutNode = layoutGraph.node(nodeId);
         if (!layoutNode) { continue; }
         node.centerX = layoutNode.x; node.centerY = layoutNode.y;
@@ -671,7 +700,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (commandType === 'title') {
         titleElement = svgElement('g');
         addText(titleElement, 0, 0, command.text, { size: 30, color: command.color || 'fg' });
-        mainLayer.appendChild(titleElement);
+        titleLayer.appendChild(titleElement);
         positionTitleAndCaptions();
 
       } else if (commandType === 'layout') {
@@ -697,7 +726,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'text') {
         const captionElement = svgElement('g');
         addText(captionElement, 0, 0, command.text, { size: command.size || 17, color: command.color || 'muted', maxCharacters: 60 });
-        mainLayer.appendChild(captionElement);
+        titleLayer.appendChild(captionElement);
         captionElements.push(captionElement);
         positionTitleAndCaptions();
 
@@ -774,6 +803,122 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const targetNode = nodesById[command.id];
         if (targetNode) { targetNode.innerElement.classList.add(commandType === 'pulse' ? 'hb-pulse' : 'hb-shake'); }
 
+      // MARK: geometry mode — exact shapes on fixed coordinates, for math,
+      // physics, and anything where true angles and proportions matter.
+
+      } else if (commandType === 'polygon') {
+        const polygonPoints = command.points || [];
+        if (polygonPoints.length < 2) { return; }
+        const polygonColor = colorOf(command.color, 'purple');
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.polygon(polygonPoints, {
+          stroke: polygonColor, strokeWidth: 2.6, roughness: 0.6, bowing: 0.4, seed: stableSeed(JSON.stringify(polygonPoints)),
+          fill: command.fill === false ? undefined : translucent(polygonColor, 0.18), fillStyle: 'hachure', hachureGap: 8 }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.8);
+        registerGeometryShape(command.id, polygonPoints, groupElement);
+
+      } else if (commandType === 'square_on') {
+        // The square standing on segment from→to, on the side away from
+        // "away" (or to the left of from→to). Computed exactly here, so a
+        // square on a slanted hypotenuse is still a perfect square.
+        const [fromX, fromY] = command.from, [toX, toY] = command.to;
+        let normalX = -(toY - fromY), normalY = toX - fromX;
+        if (command.away) {
+          const middleX = (fromX + toX) / 2, middleY = (fromY + toY) / 2;
+          if ((command.away[0] - middleX) * normalX + (command.away[1] - middleY) * normalY > 0) { normalX = -normalX; normalY = -normalY; }
+        }
+        const squarePoints = [[fromX, fromY], [toX, toY], [toX + normalX, toY + normalY], [fromX + normalX, fromY + normalY]];
+        const squareColor = colorOf(command.color, 'blue');
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.polygon(squarePoints, { stroke: squareColor, strokeWidth: 2.4, roughness: 0.6, bowing: 0.3,
+          seed: stableSeed(JSON.stringify(squarePoints)), fill: translucent(squareColor, 0.16), fillStyle: 'solid' }));
+        // Optional unit grid (grid: 3 → 3×3 cells) so areas can be counted.
+        const gridCount = command.grid || 0;
+        for (let gridIndex = 1; gridIndex < gridCount; gridIndex += 1) {
+          const fraction = gridIndex / gridCount;
+          const gridOptions = { stroke: translucent(squareColor, 0.55), strokeWidth: 1.1, roughness: 0.4, seed: stableSeed('grid' + gridIndex + JSON.stringify(squarePoints)) };
+          groupElement.appendChild(roughCanvas.line(fromX + (toX - fromX) * fraction, fromY + (toY - fromY) * fraction,
+            fromX + (toX - fromX) * fraction + normalX, fromY + (toY - fromY) * fraction + normalY, gridOptions));
+          groupElement.appendChild(roughCanvas.line(fromX + normalX * fraction, fromY + normalY * fraction,
+            toX + normalX * fraction, toY + normalY * fraction, gridOptions));
+        }
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.9);
+        if (command.label) {
+          addText(mainLayer, (fromX + toX) / 2 + normalX / 2, (fromY + toY) / 2 + normalY / 2, command.label,
+            { size: command.size || 22, color: command.color || 'blue' });
+        }
+        registerGeometryShape(command.id, squarePoints, groupElement);
+
+      } else if (commandType === 'line') {
+        const [fromX, fromY] = command.from, [toX, toY] = command.to;
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.line(fromX, fromY, toX, toY, { stroke: colorOf(command.color, 'fg'), strokeWidth: command.width || 2.4,
+          roughness: 0.5, seed: stableSeed(JSON.stringify([command.from, command.to])), strokeLineDash: command.style === 'dashed' ? [8, 7] : undefined }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.6);
+        if (command.label) {
+          // Beside the middle of the line, on the side given by labelSide (default: outward from the line's left).
+          const lineLength = Math.hypot(toX - fromX, toY - fromY) || 1;
+          const sideSign = command.labelSide === 'right' ? -1 : 1;
+          addText(mainLayer, (fromX + toX) / 2 - (toY - fromY) / lineLength * 22 * sideSign, (fromY + toY) / 2 + (toX - fromX) / lineLength * 22 * sideSign,
+            command.label, { size: command.size || 20, color: command.color || 'fg' });
+        }
+
+      } else if (commandType === 'point') {
+        const groupElement = svgElement('g');
+        groupElement.appendChild(svgElement('circle', { cx: command.x, cy: command.y, r: 4.5, fill: colorOf(command.color, 'fg') }));
+        groupElement.classList.add('hb-appear');
+        mainLayer.appendChild(groupElement);
+        if (command.label) { addText(mainLayer, command.x + (command.dx ?? 14), command.y + (command.dy ?? -14), command.label, { size: 18, color: command.color || 'fg' }); }
+
+      } else if (commandType === 'ring') {
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.circle(command.x, command.y, command.r * 2, { stroke: colorOf(command.color, 'purple'), strokeWidth: 2.4,
+          roughness: 0.5, seed: stableSeed('ring' + command.x + command.y + command.r), fill: command.fill ? translucent(colorOf(command.color, 'purple'), 0.15) : undefined, fillStyle: 'solid' }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.8);
+
+      } else if (commandType === 'angle') {
+        // Angle mark at a vertex between the rays to "from" and "to": a small
+        // square for right angles, otherwise an arc.
+        const [vertexX, vertexY] = command.at;
+        const firstAngle = Math.atan2(command.from[1] - vertexY, command.from[0] - vertexX);
+        const secondAngle = Math.atan2(command.to[1] - vertexY, command.to[0] - vertexX);
+        const markColor = colorOf(command.color, 'yellow');
+        const groupElement = svgElement('g');
+        const markSize = command.size || 22;
+        if (command.right) {
+          const cornerA = [vertexX + Math.cos(firstAngle) * markSize, vertexY + Math.sin(firstAngle) * markSize];
+          const cornerB = [vertexX + Math.cos(secondAngle) * markSize, vertexY + Math.sin(secondAngle) * markSize];
+          const cornerC = [cornerA[0] + Math.cos(secondAngle) * markSize, cornerA[1] + Math.sin(secondAngle) * markSize];
+          groupElement.appendChild(roughCanvas.linearPath([cornerA, cornerC, cornerB], { stroke: markColor, strokeWidth: 2.2, roughness: 0.3 }));
+        } else {
+          let sweep = secondAngle - firstAngle;
+          while (sweep <= -Math.PI) { sweep += Math.PI * 2; }
+          while (sweep > Math.PI) { sweep -= Math.PI * 2; }
+          const arcPoints = [];
+          for (let stepIndex = 0; stepIndex <= 16; stepIndex += 1) {
+            const stepAngle = firstAngle + sweep * stepIndex / 16;
+            arcPoints.push([vertexX + Math.cos(stepAngle) * markSize * 1.4, vertexY + Math.sin(stepAngle) * markSize * 1.4]);
+          }
+          groupElement.appendChild(roughCanvas.linearPath(arcPoints, { stroke: markColor, strokeWidth: 2.2, roughness: 0.3 }));
+          if (command.label) {
+            const middleAngle = firstAngle + sweep / 2;
+            addText(groupElement, vertexX + Math.cos(middleAngle) * markSize * 2.6, vertexY + Math.sin(middleAngle) * markSize * 2.6, command.label, { size: 17, color: command.color || 'yellow' });
+          }
+        }
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.5);
+
+      } else if (commandType === 'label') {
+        addText(mainLayer, command.x, command.y, command.text, { size: command.size || 20, color: command.color || 'fg', maxCharacters: command.wrap || 0 });
+
+      } else if (commandType === 'formula') {
+        // A big centered equation; x,y default to under the drawing.
+        addText(mainLayer, command.x ?? 400, command.y ?? 470, command.text, { size: command.size || 34, color: command.color || 'fg' });
+
       } else if (commandType === 'like') {
         // The everyday thing this shape is like, as a small caption under it,
         // so the analogy is drawn right next to the real concept.
@@ -807,7 +952,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
     function drawnContentBounds() {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const layer of [zoneLayer, edgeLayer, mainLayer]) {
+      for (const layer of [zoneLayer, edgeLayer, mainLayer, titleLayer]) {
         if (!layer.childElementCount) { continue; }
         const layerBounds = layer.getBBox();
         if (!layerBounds.width && !layerBounds.height) { continue; }
@@ -930,7 +1075,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (commandQueue.length === 0) { hideDrawingIndicatorIfComplete(); return; }
       isDrawingCommand = true;
       const nextCommand = commandQueue.shift();
-      try { drawCommand(nextCommand); } catch (drawError) { console.log(drawError); }
+      try { drawCommand(nextCommand); positionTitleAndCaptions(); } catch (drawError) { console.log(drawError); }
       setTimeout(() => { isDrawingCommand = false; drawNextQueuedCommand(); }, 300);
     }
 
