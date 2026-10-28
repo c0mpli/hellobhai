@@ -266,7 +266,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     text.on-fill { stroke: none; }
     .hb-appear { animation: hb-appear 0.45s ease-out both; }
     .hb-pop { transform-box: fill-box; transform-origin: center; animation: hb-pop 0.45s ease-out both; }
-    .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s infinite ease-in-out; }
+    .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s 3 ease-in-out; }
     .hb-shake { animation: hb-shake 0.6s ease-in-out 2; }
     .hb-glow { filter: drop-shadow(0 0 6px #facc15) drop-shadow(0 0 2px #facc15); }
     .hb-grow { transform-box: fill-box; transform-origin: bottom; animation: hb-grow 0.8s ease-out both; }
@@ -369,7 +369,42 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (animate) { textElement.classList.add('hb-appear'); }
       if (fill) { textElement.classList.add('on-fill'); }
       parentElement.appendChild(textElement);
+      // Free-standing labels on the board never land on top of each other.
+      if (parentElement === mainLayer) { moveLabelToFreeSpot(textElement); }
       return textElement;
+    }
+
+    // Bounding boxes of labels already placed on the board, so new labels can
+    // find a free spot instead of overlapping them.
+    const placedLabelBoxes = [];
+    function boxesOverlap(firstBox, secondBox, margin) {
+      return firstBox.x < secondBox.x + secondBox.width + margin && secondBox.x < firstBox.x + firstBox.width + margin
+        && firstBox.y < secondBox.y + secondBox.height + margin && secondBox.y < firstBox.y + firstBox.height + margin;
+    }
+    // Tries nearby positions (spiralling out) until the label overlaps no
+    // other label, then moves it there by shifting its x/y attributes (a
+    // transform would be overridden by the appear animation).
+    function moveLabelToFreeSpot(textElement) {
+      const originalBox = textElement.getBBox();
+      if (!originalBox.width) { return; }
+      const candidateOffsets = [[0, 0]];
+      for (let ringIndex = 1; ringIndex <= 7; ringIndex += 1) {
+        const offsetDistance = ringIndex * 13;
+        candidateOffsets.push([0, offsetDistance], [0, -offsetDistance], [offsetDistance, 0], [-offsetDistance, 0],
+          [offsetDistance, offsetDistance], [-offsetDistance, offsetDistance], [offsetDistance, -offsetDistance], [-offsetDistance, -offsetDistance]);
+      }
+      for (const [offsetX, offsetY] of candidateOffsets) {
+        const candidateBox = { x: originalBox.x + offsetX, y: originalBox.y + offsetY, width: originalBox.width, height: originalBox.height };
+        if (placedLabelBoxes.some((placedBox) => boxesOverlap(candidateBox, placedBox, 12))) { continue; }
+        if (offsetX || offsetY) {
+          textElement.setAttribute('x', parseFloat(textElement.getAttribute('x')) + offsetX);
+          textElement.setAttribute('y', parseFloat(textElement.getAttribute('y')) + offsetY);
+          textElement.querySelectorAll('tspan').forEach((lineElement) => lineElement.setAttribute('x', parseFloat(lineElement.getAttribute('x')) + offsetX));
+        }
+        placedLabelBoxes.push(candidateBox);
+        return;
+      }
+      placedLabelBoxes.push(originalBox);
     }
 
     function roundedRectanglePath(x, y, width, height, cornerRadius) {
@@ -731,7 +766,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
     // Title centered above everything drawn (flowchart or geometry, including
     // arrows that arc over the top), captions centered below it.
-    function positionTitleAndCaptions() {
+    // Bounds of everything drawn except the title and captions.
+    function drawingBounds() {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const layer of [zoneLayer, edgeLayer, mainLayer]) {
         if (!layer.childElementCount) { continue; }
@@ -740,7 +776,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         minX = Math.min(minX, layerBounds.x); minY = Math.min(minY, layerBounds.y);
         maxX = Math.max(maxX, layerBounds.x + layerBounds.width); maxY = Math.max(maxY, layerBounds.y + layerBounds.height);
       }
-      if (minX === Infinity) { minX = 0; maxX = 800; minY = 60; maxY = 440; }
+      if (minX === Infinity) { return { minX: 0, maxX: 800, minY: 60, maxY: 440 }; }
+      return { minX, maxX, minY, maxY };
+    }
+
+    function positionTitleAndCaptions() {
+      const { minX, maxX, minY, maxY } = drawingBounds();
       const centerX = (minX + maxX) / 2;
       if (titleElement) { titleElement.setAttribute('transform', `translate(${centerX},${minY - 40})`); }
       captionElements.forEach((captionElement, captionIndex) => {
@@ -1291,19 +1332,29 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         } catch (formulaError) { console.log(formulaError); return; }
         foreignElement.appendChild(formulaElement);
         foreignElement.classList.add('hb-appear');
-        mainLayer.appendChild(foreignElement);
+        // Measure it in the motion layer first, so its own placeholder size
+        // doesn't count toward the bounds used to place it.
+        motionLayer.appendChild(foreignElement);
         const formulaWidth = formulaElement.offsetWidth + 4, formulaHeight = formulaElement.offsetHeight + 4;
         foreignElement.setAttribute('width', formulaWidth);
         foreignElement.setAttribute('height', formulaHeight);
-        foreignElement.setAttribute('x', (command.x ?? 400) - formulaWidth / 2);
-        foreignElement.setAttribute('y', (command.y ?? 460) - formulaHeight / 2);
+        // Without coordinates, it goes centered under everything drawn so far.
+        const formulaBounds = drawingBounds();
+        const formulaCenterX = command.x ?? (formulaBounds.minX + formulaBounds.maxX) / 2;
+        const formulaCenterY = command.y ?? formulaBounds.maxY + formulaHeight / 2 + 24;
+        foreignElement.setAttribute('x', formulaCenterX - formulaWidth / 2);
+        foreignElement.setAttribute('y', formulaCenterY - formulaHeight / 2);
+        mainLayer.appendChild(foreignElement);
 
       } else if (commandType === 'label') {
         addText(mainLayer, command.x, command.y, command.text, { size: command.size || 20, color: command.color || 'fg', maxCharacters: command.wrap || 0 });
 
       } else if (commandType === 'formula') {
         // A big centered equation; x,y default to under the drawing.
-        addText(mainLayer, command.x ?? 400, command.y ?? 470, command.text, { size: command.size || 34, color: command.color || 'fg' });
+        // Without coordinates, it goes centered under everything drawn so far.
+        const formulaBounds = drawingBounds();
+        addText(mainLayer, command.x ?? (formulaBounds.minX + formulaBounds.maxX) / 2, command.y ?? formulaBounds.maxY + 46, command.text,
+          { size: command.size || 34, color: command.color || 'fg' });
 
       } else if (commandType === 'like') {
         // The everyday thing this shape is like, as a small caption under it,
@@ -1370,8 +1421,15 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     function easeCameraTowardTarget() {
       if (isFollowingDrawing) {
         const cameraTarget = frameFittingDrawing();
-        for (const key of ['x', 'y', 'width', 'height']) { camera[key] += (cameraTarget[key] - camera[key]) * 0.1; }
-        applyCamera();
+        let largestChange = 0;
+        for (const key of ['x', 'y', 'width', 'height']) {
+          const change = (cameraTarget[key] - camera[key]) * 0.1;
+          camera[key] += change;
+          largestChange = Math.max(largestChange, Math.abs(change));
+        }
+        // Once settled, stop touching the viewBox: endless sub-pixel updates
+        // re-render the whole board (and its glow filters) every frame.
+        if (largestChange > 0.05) { applyCamera(); }
       }
       requestAnimationFrame(easeCameraTowardTarget);
     }
