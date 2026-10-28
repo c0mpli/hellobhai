@@ -36,12 +36,16 @@ fi
 work_directory="$(mktemp -d)"
 trap 'rm -rf "$work_directory"' EXIT
 
-echo "Animating the photo (a few minutes per 10 seconds of video on an M-series Mac)..."
+# LivePortrait takes ~3s per frame on an M3; 15fps halves the render time
+# and still looks smooth at bubble size.
+ffmpeg -nostdin -hide_banner -loglevel error -y -i "$driving_video" -r 15 "$work_directory/driving.mp4"
+
+echo "Animating the photo (roughly 6 minutes per 10 seconds of video on an M3)..."
 (cd "$liveportrait_directory" && PYTORCH_ENABLE_MPS_FALLBACK=1 "$liveportrait_python" inference.py \
-  -s "$face_photo" -d "$driving_video" -o "$work_directory" > "$work_directory/liveportrait.log" 2>&1) \
+  -s "$face_photo" -d "$work_directory/driving.mp4" -o "$work_directory/animated" > "$work_directory/liveportrait.log" 2>&1) \
   || { tail -20 "$work_directory/liveportrait.log"; exit 1; }
 
-animated_video=$(ls "$work_directory"/*.mp4 | grep -v _concat | head -1)
+animated_video=$(ls "$work_directory"/animated/*.mp4 | grep -v _concat | head -1)
 
 # The pause detection in make-avatar-clips.sh needs the driving video's
 # audio, so copy it onto the animated video.

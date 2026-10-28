@@ -79,7 +79,7 @@ The avatar is a set of short video clips you make once (HeyGen or any talking-av
 ./scripts/make-avatar-from-photo.sh face.jpg me.mov woman   # or man
 ```
 
-LivePortrait moves the face in the photo the way yours moves in the recording, offline on your Mac. The first run installs it (~3GB). Rendering takes roughly 12 minutes per 10 seconds of video on an M3. Its face detector is licensed for non-commercial use only.
+LivePortrait moves the face in the photo the way yours moves in the recording, offline on your Mac. The first run installs it (~3GB). Rendering takes roughly 6 minutes per 10 seconds of video on an M3. Its face detector is licensed for non-commercial use only.
 
 **From a HeyGen video:** make a ~1 minute video that starts with ~8 seconds of silence, then 3–4 short spoken lines with a 2–3 second pause after each. Download it and run:
 
