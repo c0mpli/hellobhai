@@ -773,6 +773,20 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'pulse' || commandType === 'shake') {
         const targetNode = nodesById[command.id];
         if (targetNode) { targetNode.innerElement.classList.add(commandType === 'pulse' ? 'hb-pulse' : 'hb-shake'); }
+
+      } else if (commandType === 'like') {
+        // The everyday thing this shape is like, as a small caption under it,
+        // so the analogy is drawn right next to the real concept.
+        const targetNode = nodesById[command.id];
+        if (!targetNode) { return; }
+        const captionMaxCharacters = Math.max(16, Math.floor(targetNode.width / 8));
+        addText(targetNode.innerElement, 0, targetNode.height / 2 + 20, '≈ ' + command.text,
+          { size: 15, color: 'yellow', maxCharacters: captionMaxCharacters });
+        // Reserve room for the caption (above and below, so the shape itself
+        // stays centered) and let the layout push neighbours away from it.
+        const captionHeight = 22 * wrapIntoLines('≈ ' + command.text, captionMaxCharacters).length + 10;
+        layoutGraph.setNode(command.id, { width: targetNode.width, height: targetNode.height + captionHeight * 2 });
+        relayout();
       }
     }
 
@@ -978,6 +992,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     .remember { margin: 14px 0; padding: 12px 14px; border-radius: 12px; background: rgba(250,204,21,0.12);
       border: 1.5px solid rgba(250,204,21,0.55); color: #fef3c7; }
     .remember-label { display: block; font: 15px Virgil, sans-serif; color: #facc15; margin-bottom: 2px; }
+    .analogy { margin: 12px 0 16px; padding: 12px 14px; border-radius: 12px; background: rgba(96,165,250,0.1);
+      border: 1.5px dashed rgba(96,165,250,0.6); color: #dbeafe; }
+    .analogy-label { display: block; font: 16px Virgil, sans-serif; color: #60a5fa; margin-bottom: 2px; }
     .todo { display: flex; gap: 10px; align-items: flex-start; margin: 7px 0; }
     .todo input { margin-top: 4px; accent-color: #a855f7; }
     .quote { margin: 10px 0; padding: 4px 0 4px 14px; border-left: 3px solid #60a5fa; color: #bfdbfe; font-style: italic; }
@@ -1100,6 +1117,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         labelElement.className = 'remember-label';
         labelElement.textContent = 'Remember';
         lineElement.appendChild(labelElement);
+        appendTextWithHighlights(lineElement, command.text);
+      } else if (command.t === 'analogy') {
+        lineElement = document.createElement('div');
+        lineElement.className = 'analogy';
+        const analogyLabel = document.createElement('span');
+        analogyLabel.className = 'analogy-label';
+        analogyLabel.textContent = 'Think of it like';
+        lineElement.appendChild(analogyLabel);
         appendTextWithHighlights(lineElement, command.text);
       } else if (command.t === 'todo') {
         lineElement = document.createElement('label');

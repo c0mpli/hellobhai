@@ -390,6 +390,7 @@ final class CompanionManager: ObservableObject {
     - match the user's language. if they speak english, reply in english. if they speak hindi or hinglish, reply in hinglish — the way young urban indians actually talk: hindi grammar with plenty of everyday english words mixed in (recording, file, button, send, check, actually, basically, screen, settings). never formal or shuddh hindi. write it entirely in devanagari, transliterating the english words too, because the voice reads devanagari as hindi and latin text as english. for example "रिकॉर्डिंग कॉपी हो गई, अब चैट में पेस्ट कर रहा हूँ" or "बेसिकली सेटिंग्स खोलो और नीचे स्क्रॉल करो".
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
+    - when explaining how or why something works, use one everyday analogy from the user's own life (indian daily life if they speak hindi or hinglish), map the idea onto it, and only then name the real term. keep it so simple a 12-year-old would get it.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
@@ -919,6 +920,13 @@ final class CompanionManager: ObservableObject {
 
     everything drawn on the board is in english: title, labels, notes.
 
+    how to teach (this matters most):
+    - explain through one everyday thing the user has definitely lived through, then map each part of the idea onto it, piece by piece. pick it from their world: if they speak hindi or hinglish, indian daily life — chai tapri, mumbai dabbawalas, irctc ticket queue, kirana store udhaar khata, cricket, auto-rickshaw, swiggy delivery, whatsapp group, wedding catering. if they speak english, universal daily life — ordering at a restaurant, mailing a letter, keys and locks, a library, traffic lights.
+    - one analogy, carried all the way through. don't switch metaphors halfway.
+    - give the real term only after the analogy has landed, so they still learn the word ("ये पोस्ट ऑफिस का सॉर्टिंग रूम है... इसे NPCI कहते हैं").
+    - simplest possible words and short sentences. if a 12-year-old couldn't follow it, simplify again.
+    - in the drawing, show the analogy too: add a "like" caption under the key shapes so the everyday thing sits right next to the real one.
+
     layout is automatic: never give coordinates or sizes. declare the shapes and arrows in the order you explain them and a layout engine places everything neatly, sliding existing shapes aside as new ones appear. the flow runs left to right by default; send {"t":"layout","direction":"TB"} first if the idea reads better top to bottom (hierarchies, step lists).
 
     drawing commands:
@@ -938,6 +946,7 @@ final class CompanionManager: ObservableObject {
     {"t":"shake","id":"..."}   wiggle: errors, failures, surprises
     {"t":"pulse","id":"..."}   glow and breathe: what's active right now
     {"t":"text","text":"..."}   a caption under the whole diagram; use at most once
+    {"t":"like","id":"npci","text":"post office sorting room"}   the everyday thing this shape is like, written as a small handwritten caption under it. use on the 2 to 4 key shapes.
 
     colors: purple, blue, green, orange, pink, cyan, yellow, red, muted, fg. use several; give each actor or system its own color.
 
@@ -966,6 +975,13 @@ final class CompanionManager: ObservableObject {
 
     the notes themselves are always in english: short, scannable fragments, never paragraphs.
 
+    how to teach (this matters most):
+    - explain through one everyday thing the user has definitely lived through, then map each part of the idea onto it, piece by piece. pick it from their world: if they speak hindi or hinglish, indian daily life — chai tapri, mumbai dabbawalas, irctc ticket queue, kirana store udhaar khata, cricket, auto-rickshaw, swiggy delivery, whatsapp group, wedding catering. if they speak english, universal daily life — ordering at a restaurant, mailing a letter, keys and locks, a library, traffic lights.
+    - one analogy, carried all the way through. don't switch metaphors halfway.
+    - give the real term only after the analogy has landed, so they still learn the word ("ये पोस्ट ऑफिस का सॉर्टिंग रूम है... इसे NPCI कहते हैं").
+    - simplest possible words and short sentences. if a 12-year-old couldn't follow it, simplify again.
+    - when the notes explain a concept (not just summarize a page), open with an analogy line right after the title.
+
     note lines:
     {"t":"title","text":"..."}
     {"t":"heading","text":"..."}
@@ -973,6 +989,7 @@ final class CompanionManager: ObservableObject {
     {"t":"remember","text":"..."}   the single most important takeaway (use once or twice)
     {"t":"todo","text":"..."}   an action item for the user
     {"t":"quote","text":"..."}   a short exact quote from the source, when it matters
+    {"t":"analogy","text":"UPI is like a post office for money: you drop a letter (payment), the sorting room (NPCI) routes it to the right house (bank)."}   the everyday comparison, shown as a "Think of it like" card
     {"t":"code","lang":"python","text":"..."}   a short code snippet; put newlines in the json string as \\n. languages: javascript, typescript, jsx, tsx, python, swift, java, kotlin, go, rust, c, cpp, csharp, ruby, php, sql, bash, json, yaml, css, markup, markdown
     {"t":"table","columns":["Plan","Price","Limit"],"rows":[["Free","₹0","5/day"],["Pro","₹499","unlimited"]]}   for comparisons and structured data
     {"t":"chart","kind":"bar","title":"Revenue","labels":["Q1","Q2","Q3"],"values":[12,19,31],"prefix":"₹","suffix":"L"}   kind is bar or line, for numbers worth seeing
@@ -1173,6 +1190,7 @@ final class NarratedStepQueue {
             case "title": return "# \(plainLineText)"
             case "heading": return "## \(plainLineText)"
             case "bullet": return (lineObject["level"] as? Int == 2 ? "    - " : "- ") + plainLineText
+            case "analogy": return "Think of it like: \(plainLineText)"
             case "remember": return "Remember: \(plainLineText)"
             case "todo": return "[ ] \(plainLineText)"
             case "quote": return "> \(plainLineText)"
