@@ -73,6 +73,14 @@ The avatar is a set of short video clips you make once (HeyGen or any talking-av
 | `thinking.mp4` | 4–6s | Glances up or to the side, mouth closed |
 | `talking1.mp4` … `talking4.mp4` | 5–8s each | Speaking naturally with small head movements (the audio is ignored) |
 
+**Fastest way (one free HeyGen video):** make a ~1 minute video that starts with ~8 seconds of silence, then 3–4 short spoken lines with a 2–3 second pause after each. Download it and run:
+
+```bash
+./scripts/make-avatar-clips.sh ~/Downloads/heygen.mp4 woman   # or man
+```
+
+It finds the pauses and the speech, cuts all the clips, crops them square and installs them.
+
 Tips: square framing (720×720 or larger) with the face centered and head and shoulders in view, a soft plain background, the same lighting and outfit in every clip, and every clip starting and ending in the same neutral pose looking at the camera so the crossfades stay invisible. Missing clips fall back to `idle`. Use a face you have the rights to, such as an AI-generated one.
 
 ## Project structure
@@ -91,6 +99,7 @@ leanring-buddy/                          # Swift source (legacy folder name)
 scripts/
   create-signing-cert.sh                    # One-time local signing certificate
   build-and-run.sh                          # Build, sign, relaunch
+  make-avatar-clips.sh                      # Cut one avatar video into the bubble's clips
 CLAUDE.md                                 # Full architecture doc (AGENTS.md links here)
 ```
 
