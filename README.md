@@ -12,6 +12,7 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 - **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: groups, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows, all laid out automatically so nothing overlaps, on an infinite canvas you can pan and zoom. Narration follows your language; the board is always in English.
 - **Draws real math.** Exact geometry, plotted functions, shaded integrals, tangents, vectors, number lines and properly typeset equations, built up step by step as it explains.
 - **Writes live notes.** "Notes bana do" or "summarize this page" and it writes notes beside your cursor as it talks: headings, highlighted key terms, syntax-highlighted code, comparison tables, sketch charts, and to-dos. Say "save kar do" to put them in Apple Notes.
+- **Has a face.** A round video bubble in the bottom-right corner (drag it anywhere) shows a real-looking person who listens, thinks and talks along with the voice. Pick Woman, Man or Off in the menu bar panel.
 - **Shows when it's talking.** A Dynamic-Island-style pill grows out of the notch while it speaks.
 
 ## How it works
@@ -61,6 +62,19 @@ No servers, no analytics, no auto-updater. Network use is `claude -p` itself plu
 
 Pressing the hotkey again interrupts whatever it's doing. Model choice (Sonnet or Opus) is in the menu bar panel.
 
+## Avatar clips
+
+The avatar is a set of short video clips you make once (HeyGen or any talking-avatar tool works), not live rendering. Put them in `~/Library/Application Support/hellobhai/Avatars/woman/` (or `man/`):
+
+| File | Length | What the person does |
+|------|--------|----------------------|
+| `idle.mp4` (required) | 8–10s | Relaxed and friendly, looking at the camera, blinking, mouth closed |
+| `listening.mp4` | 5–8s | Attentive, small nods, slight smile, mouth closed |
+| `thinking.mp4` | 4–6s | Glances up or to the side, mouth closed |
+| `talking1.mp4` … `talking4.mp4` | 5–8s each | Speaking naturally with small head movements (the audio is ignored) |
+
+Tips: square framing (720×720 or larger) with the face centered and head and shoulders in view, a soft plain background, the same lighting and outfit in every clip, and every clip starting and ending in the same neutral pose looking at the camera so the crossfades stay invisible. Missing clips fall back to `idle`. Use a face you have the rights to, such as an AI-generated one.
+
 ## Project structure
 
 ```
@@ -70,6 +84,7 @@ leanring-buddy/                          # Swift source (legacy folder name)
   WhisperTranscriptionProvider.swift        # On-device STT
   LocalTTSClient.swift                      # On-device TTS (Supertonic-3)
   ComputerControl.swift                     # [CLICK]/[TYPE]/[KEY] parsing + CGEvents
+  AvatarPanel.swift                         # Bottom-right video avatar bubble
   VisualExplanationPanel.swift              # Live sketch whiteboard
   OverlayWindow.swift                       # Purple cursor + notch speaking pill
   BuddyDictationManager.swift               # Push-to-talk pipeline
