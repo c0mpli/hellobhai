@@ -391,6 +391,7 @@ final class CompanionManager: ObservableObject {
     - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
     - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
     - be direct and precise by default. if something is already simple or standard (a formula, a definition, a fact, a shortcut), just explain it plainly — no analogy. only when a topic is genuinely complex or abstract (how the internet routes things, blockchain, oauth, compilers), or when the user asks you to simplify, explain it through one everyday analogy from their own life (indian daily life if they speak hindi or hinglish), mapping the idea onto it and then naming the real term.
+    - the user's words come from speech recognition, which can mishear technical terms. if a phrase sounds like a known concept (for example "4-year series" is almost certainly "fourier series"), assume the concept that fits instead of asking.
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
@@ -697,6 +698,9 @@ final class CompanionManager: ObservableObject {
                     images: screenImages,
                     systemPrompt: liveContentKind == .drawing ? Self.visualExplanationSystemPrompt : Self.liveNotesSystemPrompt,
                     userPrompt: visualRequestPrompt,
+                    // Panels stream structured lines; low effort keeps the first
+                    // line arriving fast without long up-front thinking.
+                    effort: "low",
                     onTextChunk: { accumulatedVisualScript in
                         streamedLineForwarder.forwardNewCompleteLines(in: accumulatedVisualScript)
                     }
@@ -947,24 +951,41 @@ final class CompanionManager: ObservableObject {
     {"t":"text","text":"..."}   a caption under the whole diagram; use at most once
     {"t":"like","id":"npci","text":"post office sorting room"}   only when explaining through an analogy: the everyday thing this shape is like, as a small caption under it. use on the 2 to 4 key shapes.
 
-    geometry mode — for math, geometry, physics, graphs, and anything with real shapes, angles, or measurements. don't use boxes and arrows for these; draw the actual figure exactly. coordinates are in an 800 by 500 area, origin top-left, y grows downward; keep the figure between y=70 and y=440 so the title and a formula fit. be exact: right angles must be truly 90 degrees and lengths must be in true proportion (a 3-4-5 triangle could use 60 px per unit: legs of 180 and 240 px).
-    {"t":"polygon","id":"tri","points":[[260,380],[500,380],[260,200]],"color":"purple"}   exact shape through these points; "fill":false for outline only
-    {"t":"square_on","id":"sq_c","from":[500,380],"to":[260,200],"away":[260,380],"grid":5,"label":"c² = 25","color":"pink"}   a perfect square standing on the segment from→to, on the side away from the "away" point (usually the shape's opposite corner). grid draws n×n unit cells so areas can be counted.
-    {"t":"line","from":[260,380],"to":[500,380],"label":"b = 4","color":"blue","style":"dashed"}   label sits beside the middle of the line; "labelSide":"right" flips it
-    {"t":"angle","at":[260,380],"from":[500,380],"to":[260,200],"right":true}   angle mark at a vertex; right:true draws the little square, otherwise an arc with an optional "label" like "θ"
-    {"t":"point","x":260,"y":380,"label":"C"}   a dot with a label nearby (dx, dy to nudge it)
-    {"t":"ring","x":400,"y":250,"r":120,"color":"blue"}   an exact circle
-    {"t":"label","x":380,"y":300,"text":"a² + b² = c²","size":22}   text centered at a point
-    {"t":"formula","text":"9 + 16 = 25"}   a big equation centered under the figure
-    highlight, pulse, shake, tick, and cross also work on geometry shapes by id. write powers with unicode superscripts (², ³) and use × and ÷.
-    keep labels from piling up: when squares or other shapes sit on a figure's sides, put the side lengths inside the figure and corner letters outside it, and prefer pulse over highlight on figures that already have shapes around them.
+    math mode — for math, geometry, physics, graphs, statistics, and anything with real shapes, curves, angles, or measurements. never use boxes and arrows for these; draw the real thing exactly. coordinates are in an 800 by 500 area, origin top-left, y grows downward; keep the drawing between y=70 and y=440 so the title and a formula fit. be exact: right angles truly 90 degrees, lengths in true proportion. never compute curve points yourself — use plot, parametric, area, and tangent with expressions and the board computes them precisely.
+
+    shapes and geometry (board coordinates):
+    {"t":"polygon","id":"tri","points":[[260,380],[500,380],[260,200]],"color":"purple"}   exact closed shape; "fill":false for outline only
+    {"t":"square_on","id":"sq_c","from":[500,380],"to":[260,200],"away":[260,380],"grid":5,"label":"c² = 25","color":"pink"}   a perfect square standing on segment from→to, on the side away from the "away" point. grid draws n×n unit cells so areas can be counted.
+    {"t":"line","from":[260,380],"to":[500,380],"label":"b = 4","color":"blue","style":"dashed"}   label beside the middle; "labelSide":"right" flips it
+    {"t":"path","points":[[100,300],[200,200],[300,260]],"color":"cyan"}   an open smooth curve through points
+    {"t":"angle","at":[260,380],"from":[500,380],"to":[260,200],"right":true}   angle mark at a vertex; right:true draws the little square, otherwise an arc with optional "label" like "θ"
+    {"t":"point","x":260,"y":380,"label":"C"}   a dot with a label (dx, dy nudge it)
+    {"t":"ring","x":400,"y":250,"r":120,"color":"blue","fill":true}   an exact circle
+    {"t":"pie","id":"p","x":400,"y":260,"r":110,"values":[3,1],"labels":["3/4","1/4"],"colors":["purple","blue"]}   sectors for fractions and probability
+
+    graphs (math coordinates inside an axes frame):
+    {"t":"axes","box":[80,100,640,300],"x":[-1,7],"y":[-2,2],"xLabel":"x","yLabel":"y","grid":true,"gridStep":1,"xTicks":[[3.14,"π"],[6.28,"2π"]],"yTicks":[[1,"1"]]}   box is [left, top, width, height] on the board; x and y are the math ranges. later graph commands use the most recent axes.
+    {"t":"plot","id":"f","expr":"sin(x) + sin(3x)/3","color":"blue","label":"f(x)","from":0,"to":6.28}   any expression in x: + - * / ^, parentheses, implicit multiplication (2x, 3sin(x)), pi, e, sin cos tan asin acos atan sinh cosh tanh sqrt abs exp ln log floor ceil sign. "style":"dashed" works.
+    {"t":"parametric","id":"c","x":"3cos(t)","y":"2sin(t)","from":0,"to":6.28,"color":"pink"}   curves traced by t: circles, ellipses, spirals, orbits
+    {"t":"area","expr":"x^2","from":0,"to":2,"under":"0","color":"yellow","label":"area = 8/3"}   shaded region between expr and "under" (default the x-axis): integrals, probabilities
+    {"t":"tangent","expr":"x^2","at":1,"color":"orange"}   tangent line at x = at, with its slope shown (derivatives); "label" overrides the slope text
+    {"t":"mark","x":2,"y":4,"label":"(2, 4)","guides":true}   a labelled point in math coordinates, with dashed guides to the axes
+    {"t":"vector","id":"v","from":[0,0],"to":[3,2],"label":"v","color":"pink"}   an arrow in math coordinates: vectors, forces, velocity
+    {"t":"numberline","from":-5,"to":5,"y":300,"marks":[[2,"x = 2","pink"]],"ranges":[[-1,3,"yellow"]]}   number line with marked values and highlighted intervals (inequalities)
+
+    writing math:
+    {"t":"latex","tex":"\\int_0^2 x^2\\,dx = \\frac{8}{3}","x":400,"y":460,"size":1.4}   properly typeset math via katex — fractions, integrals, sums, limits, matrices, roots. use this for any real equation; escape backslashes in the json string.
+    {"t":"label","x":380,"y":300,"text":"hypotenuse","size":20}   plain text centered at a point
+    {"t":"formula","text":"9 + 16 = 25"}   a big plain-text equation under the drawing (for simple arithmetic)
+
+    highlight, pulse, shake, tick, and cross also work on math shapes by id. keep labels from piling up: put side lengths inside a figure and corner letters outside it, and prefer pulse over highlight on figures that already have shapes around them. build the drawing up step by step so each sentence adds one clear piece.
 
     colors: purple, blue, green, orange, pink, cyan, yellow, red, muted, fg. use several; give each actor or system its own color.
 
     icons (use these exact names; never emoji, never invent a name): \(VisualExplanationPanelManager.availableIconNames.joined(separator: ", "))
 
     make it great:
-    - pick the right picture: geometry mode for math and physics, shapes and arrows for systems, processes, and flows.
+    - pick the right picture: math mode for math, physics, and graphs; shapes and arrows for systems, processes, and flows.
     - in depth: show the real mechanics — the actors, the layers they live in (groups), what actually travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note). 6 to 12 shapes, 20 to 45 commands in total.
     - fun: playful narration, a surprising fact in a note, and highlight, tick, cross, or shake where they land a point.
     - always animated: by the end there must be a pulse, highlight, or tick on the key element, and flows on the main arrows when there are arrows.
@@ -1003,6 +1024,7 @@ final class CompanionManager: ObservableObject {
     {"t":"analogy","text":"UPI is like a post office for money: you drop a letter (payment), the sorting room (NPCI) routes it to the right house (bank)."}   the everyday comparison, shown as a "Think of it like" card
     {"t":"code","lang":"python","text":"..."}   a short code snippet; put newlines in the json string as \\n. languages: javascript, typescript, jsx, tsx, python, swift, java, kotlin, go, rust, c, cpp, csharp, ruby, php, sql, bash, json, yaml, css, markup, markdown
     {"t":"table","columns":["Plan","Price","Limit"],"rows":[["Free","₹0","5/day"],["Pro","₹499","unlimited"]]}   for comparisons and structured data
+    {"t":"math","tex":"x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}"}   a properly typeset equation (katex); escape backslashes in the json string
     {"t":"chart","kind":"bar","title":"Revenue","labels":["Q1","Q2","Q3"],"values":[12,19,31],"prefix":"₹","suffix":"L"}   kind is bar or line, for numbers worth seeing
 
     rules:

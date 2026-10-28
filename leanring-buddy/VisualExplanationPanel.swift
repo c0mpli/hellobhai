@@ -50,6 +50,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     private static let dagreJSSource: String = bundledResourceData(named: "dagre.min", withExtension: "js")
         .flatMap { String(data: $0, encoding: .utf8) } ?? ""
 
+    /// Math typesetting (fractions, integrals, matrices) for the board and notes.
+    /// The CSS has all KaTeX fonts inlined as data URIs, so no network is needed.
+    private static let katexJSSource: String = bundledResourceData(named: "katex.min", withExtension: "js")
+        .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+    private static let katexCSSSource: String = bundledResourceData(named: "katex-inline", withExtension: "css")
+        .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+
     /// Syntax highlighter for code blocks in notes.
     private static let prismJSSource: String = bundledResourceData(named: "prism.min", withExtension: "js")
         .flatMap { String(data: $0, encoding: .utf8) } ?? ""
@@ -220,9 +227,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <style>
         @font-face { font-family: Virgil; src: url(data:font/woff2;base64,\(virgilFontBase64)) format("woff2"); }
         \(boardStylesheet)
+        \(katexCSSSource)
         </style>
         <script>\(roughJSSource)</script>
         <script>\(dagreJSSource)</script>
+        <script>\(katexJSSource)</script>
         <script>const ICON_SHAPES = \(iconShapesJSON);</script>
         </head>
         <body>
@@ -259,6 +268,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     .hb-pop { transform-box: fill-box; transform-origin: center; animation: hb-pop 0.45s ease-out both; }
     .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s infinite ease-in-out; }
     .hb-shake { animation: hb-shake 0.6s ease-in-out 2; }
+    .hb-glow { filter: drop-shadow(0 0 6px #facc15) drop-shadow(0 0 2px #facc15); }
     .hb-grow { transform-box: fill-box; transform-origin: bottom; animation: hb-grow 0.8s ease-out both; }
     @keyframes hb-appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     @keyframes hb-pop { from { opacity: 0; transform: scale(0.3); } 70% { transform: scale(1.12); } to { opacity: 1; transform: scale(1); } }
@@ -477,6 +487,92 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         drawStrokesIn(innerElement);
         drawIconAndLabel(innerElement, width, height, command);
       }
+    }
+
+    // Compiles a math expression in x into a function, without eval. Supports
+    // + - * / ^, unary minus, parentheses, implicit multiplication (3x,
+    // 2sin(x), (x+1)(x-1)), the constants pi and e, and common functions.
+    const EXPRESSION_FUNCTIONS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos, atan: Math.atan,
+      sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh, sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, log: Math.log10, ln: Math.log,
+      floor: Math.floor, ceil: Math.ceil, sign: Math.sign };
+    // x is the variable for plots, t for parametric curves (θ is read as t).
+    const EXPRESSION_NAMES = Object.keys(EXPRESSION_FUNCTIONS).concat(['pi', 'e', 'x', 't']).sort((first, second) => second.length - first.length);
+    function compileExpression(expressionText) {
+      const normalizedText = String(expressionText).toLowerCase().replace(/\\s+/g, '').replace(/π/g, 'pi').replace(/×|·/g, '*')
+        .replace(/÷/g, '/').replace(/−/g, '-').replace(/²/g, '^2').replace(/³/g, '^3').replace(/θ/g, 't');
+      const tokens = [];
+      let readIndex = 0;
+      while (readIndex < normalizedText.length) {
+        const remainingText = normalizedText.slice(readIndex);
+        const numberMatch = remainingText.match(/^(\\d+\\.?\\d*|\\.\\d+)/);
+        if (numberMatch) { tokens.push({ kind: 'number', value: parseFloat(numberMatch[0]) }); readIndex += numberMatch[0].length; continue; }
+        const knownName = EXPRESSION_NAMES.find((name) => remainingText.startsWith(name));
+        if (knownName) { tokens.push({ kind: 'name', value: knownName }); readIndex += knownName.length; continue; }
+        if ('+-*/^()'.includes(remainingText[0])) { tokens.push({ kind: 'symbol', value: remainingText[0] }); readIndex += 1; continue; }
+        throw new Error('unknown symbol in expression: ' + remainingText[0]);
+      }
+      let tokenIndex = 0;
+      const peek = () => tokens[tokenIndex];
+      const startsFactor = (token) => token && (token.kind === 'number' || token.kind === 'name' || token.value === '(');
+      function parseSum() {
+        let leftFunction = parseProduct();
+        while (peek() && (peek().value === '+' || peek().value === '-')) {
+          const operator = tokens[tokenIndex++].value, previousFunction = leftFunction, rightFunction = parseProduct();
+          leftFunction = operator === '+' ? (x) => previousFunction(x) + rightFunction(x) : (x) => previousFunction(x) - rightFunction(x);
+        }
+        return leftFunction;
+      }
+      function parseProduct() {
+        let leftFunction = parseUnary();
+        while (peek() && (peek().value === '*' || peek().value === '/' || startsFactor(peek()))) {
+          const operator = (peek().value === '*' || peek().value === '/') ? tokens[tokenIndex++].value : '*';
+          const previousFunction = leftFunction, rightFunction = parseUnary();
+          leftFunction = operator === '*' ? (x) => previousFunction(x) * rightFunction(x) : (x) => previousFunction(x) / rightFunction(x);
+        }
+        return leftFunction;
+      }
+      function parseUnary() {
+        if (peek() && peek().value === '-') { tokenIndex += 1; const innerFunction = parseUnary(); return (x) => -innerFunction(x); }
+        if (peek() && peek().value === '+') { tokenIndex += 1; return parseUnary(); }
+        const baseFunction = parsePrimary();
+        if (peek() && peek().value === '^') { tokenIndex += 1; const exponentFunction = parseUnary(); return (x) => Math.pow(baseFunction(x), exponentFunction(x)); }
+        return baseFunction;
+      }
+      function parsePrimary() {
+        const token = tokens[tokenIndex++];
+        if (!token) { throw new Error('expression ended early'); }
+        if (token.kind === 'number') { return () => token.value; }
+        if (token.value === '(') { const innerFunction = parseSum(); tokenIndex += 1; return innerFunction; }
+        if (token.value === 'x' || token.value === 't') { return (x) => x; }
+        if (token.value === 'pi') { return () => Math.PI; }
+        if (token.value === 'e') { return () => Math.E; }
+        const mathFunction = EXPRESSION_FUNCTIONS[token.value];
+        if (mathFunction) {
+          // With parentheses the argument is exactly what's inside them, so
+          // sin(x)^2 squares the sine rather than meaning sin(x^2).
+          let argumentFunction;
+          if (peek() && peek().value === '(') { tokenIndex += 1; argumentFunction = parseSum(); tokenIndex += 1; }
+          else { argumentFunction = parseUnary(); }
+          return (x) => mathFunction(argumentFunction(x));
+        }
+        throw new Error('unexpected token ' + token.value);
+      }
+      const compiledFunction = parseSum();
+      if (tokenIndex < tokens.length) { throw new Error('unexpected trailing input'); }
+      return compiledFunction;
+    }
+
+    // The math-to-board coordinate frame that plots draw into.
+    let currentAxes = null;
+    function axesFrame(command) {
+      return { left: command.box ? command.box[0] : 80, top: command.box ? command.box[1] : 100,
+        width: command.box ? command.box[2] : 640, height: command.box ? command.box[3] : 300,
+        xMin: (command.x || [0, 4 * Math.PI])[0], xMax: (command.x || [0, 4 * Math.PI])[1],
+        yMin: (command.y || [-1.5, 1.5])[0], yMax: (command.y || [-1.5, 1.5])[1] };
+    }
+    function frameToBoard(frame, mathX, mathY) {
+      return [frame.left + (mathX - frame.xMin) / (frame.xMax - frame.xMin) * frame.width,
+        frame.top + (frame.yMax - mathY) / (frame.yMax - frame.yMin) * frame.height];
     }
 
     // Lets highlight / pulse / shake / tick / cross target geometry shapes too.
@@ -752,6 +848,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'highlight' || commandType === 'cross' || commandType === 'tick') {
         const targetNode = nodesById[command.id];
         if (!targetNode) { return; }
+        // On math shapes (curves, figures) a circle around them gets in the
+        // way, so highlighting makes the shape itself glow instead.
+        if (commandType === 'highlight' && targetNode.isGeometry) { targetNode.innerElement.classList.add('hb-glow'); return; }
         const markGroup = svgElement('g');
         const halfWidth = targetNode.width / 2, halfHeight = targetNode.height / 2;
         if (commandType === 'highlight') {
@@ -911,6 +1010,293 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         }
         mainLayer.appendChild(groupElement);
         drawStrokesIn(groupElement, 0.5);
+
+      } else if (commandType === 'axes') {
+        currentAxes = axesFrame(command);
+        const frame = currentAxes;
+        const axisOptions = { stroke: colorOf(command.color, 'muted'), strokeWidth: 1.8, roughness: 0.4, seed: stableSeed('axes' + JSON.stringify(command)) };
+        // Axes cross at the origin when it's in view, otherwise along the bottom/left edge.
+        const xAxisMathY = frame.yMin <= 0 && frame.yMax >= 0 ? 0 : frame.yMin;
+        const yAxisMathX = frame.xMin <= 0 && frame.xMax >= 0 ? 0 : frame.xMin;
+        const [, xAxisBoardY] = frameToBoard(frame, 0, xAxisMathY);
+        const [yAxisBoardX] = frameToBoard(frame, yAxisMathX, 0);
+        const groupElement = svgElement('g');
+        if (command.grid) {
+          // Light grid lines every gridStep units (default 1).
+          const gridStep = command.gridStep || 1;
+          const gridOptions = { stroke: 'rgba(165,159,179,0.18)', strokeWidth: 1, roughness: 0.2, seed: 11 };
+          for (let gridX = Math.ceil(frame.xMin / gridStep) * gridStep; gridX <= frame.xMax + 1e-9; gridX += gridStep) {
+            const [gridBoardX] = frameToBoard(frame, gridX, 0);
+            groupElement.appendChild(roughCanvas.line(gridBoardX, frame.top, gridBoardX, frame.top + frame.height, gridOptions));
+          }
+          for (let gridY = Math.ceil(frame.yMin / gridStep) * gridStep; gridY <= frame.yMax + 1e-9; gridY += gridStep) {
+            const [, gridBoardY] = frameToBoard(frame, 0, gridY);
+            groupElement.appendChild(roughCanvas.line(frame.left, gridBoardY, frame.left + frame.width, gridBoardY, gridOptions));
+          }
+        }
+        groupElement.appendChild(roughCanvas.line(frame.left, xAxisBoardY, frame.left + frame.width + 12, xAxisBoardY, axisOptions));
+        groupElement.appendChild(roughCanvas.line(yAxisBoardX, frame.top + frame.height, yAxisBoardX, frame.top - 12, axisOptions));
+        groupElement.appendChild(roughCanvas.linearPath([[frame.left + frame.width + 4, xAxisBoardY - 6], [frame.left + frame.width + 12, xAxisBoardY], [frame.left + frame.width + 4, xAxisBoardY + 6]], axisOptions));
+        groupElement.appendChild(roughCanvas.linearPath([[yAxisBoardX - 6, frame.top - 4], [yAxisBoardX, frame.top - 12], [yAxisBoardX + 6, frame.top - 4]], axisOptions));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.6);
+        if (command.xLabel) { addText(mainLayer, frame.left + frame.width + 26, xAxisBoardY, command.xLabel, { size: 17, color: 'muted' }); }
+        if (command.yLabel) { addText(mainLayer, yAxisBoardX, frame.top - 26, command.yLabel, { size: 17, color: 'muted' }); }
+        (command.xTicks || []).forEach((tick) => {
+          const [tickX] = frameToBoard(frame, tick[0], xAxisMathY);
+          addText(mainLayer, tickX, xAxisBoardY + 18, tick[1], { size: 14, color: 'muted' });
+        });
+        (command.yTicks || []).forEach((tick) => {
+          const [, tickY] = frameToBoard(frame, yAxisMathX, tick[0]);
+          addText(mainLayer, yAxisBoardX - 14, tickY, tick[1], { size: 14, color: 'muted', anchor: 'end' });
+        });
+
+      } else if (commandType === 'plot') {
+        // A smooth curve of a math expression, sampled finely inside the axes.
+        const frame = currentAxes || axesFrame({});
+        let curveFunction;
+        try { curveFunction = compileExpression(command.expr); } catch (expressionError) { console.log(expressionError); return; }
+        const plotXMin = command.from ?? frame.xMin, plotXMax = command.to ?? frame.xMax;
+        const curveSegments = [];
+        let currentSegment = [];
+        for (let sampleIndex = 0; sampleIndex <= 400; sampleIndex += 1) {
+          const mathX = plotXMin + (plotXMax - plotXMin) * sampleIndex / 400;
+          const mathY = curveFunction(mathX);
+          // Break the curve at gaps and asymptotes instead of drawing spikes.
+          if (!Number.isFinite(mathY) || mathY > frame.yMax + (frame.yMax - frame.yMin) || mathY < frame.yMin - (frame.yMax - frame.yMin)) {
+            if (currentSegment.length > 1) { curveSegments.push(currentSegment); }
+            currentSegment = [];
+            continue;
+          }
+          currentSegment.push(frameToBoard(frame, mathX, mathY));
+        }
+        if (currentSegment.length > 1) { curveSegments.push(currentSegment); }
+        if (!curveSegments.length) { return; }
+        const curveColor = colorOf(command.color, 'purple');
+        const groupElement = svgElement('g');
+        curveSegments.forEach((segmentPoints, segmentIndex) => {
+          groupElement.appendChild(roughCanvas.linearPath(segmentPoints, { stroke: curveColor, strokeWidth: command.width || 2.8,
+            roughness: 0.25, bowing: 0, seed: stableSeed(command.expr + segmentIndex), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
+        });
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 1.1);
+        const allCurvePoints = curveSegments.flat();
+        if (command.label) {
+          // Curve labels go in a stacked legend at the axes' top-right corner,
+          // so several plots never pile their labels on top of each other.
+          frame.legendCount = (frame.legendCount || 0) + 1;
+          const legendX = frame.left + frame.width + 30, legendY = frame.top + (frame.legendCount - 1) * 26;
+          const legendGroup = svgElement('g');
+          legendGroup.appendChild(roughCanvas.line(legendX, legendY, legendX + 22, legendY, { stroke: curveColor, strokeWidth: 3, roughness: 0.3,
+            strokeLineDash: command.style === 'dashed' ? [6, 5] : undefined, seed: stableSeed('legend' + command.expr) }));
+          addText(legendGroup, legendX + 30, legendY, command.label, { size: 16, color: command.color || 'purple', anchor: 'start' });
+          mainLayer.appendChild(legendGroup);
+        }
+        registerGeometryShape(command.id, allCurvePoints, groupElement);
+
+      } else if (commandType === 'path') {
+        // An open curve through points in board coordinates (polygon closes, path doesn't).
+        const pathPoints = command.points || [];
+        if (pathPoints.length < 2) { return; }
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.curve(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2.6,
+          roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.9);
+        registerGeometryShape(command.id, pathPoints, groupElement);
+
+      } else if (commandType === 'parametric') {
+        // A curve traced by (x(t), y(t)): circles, ellipses, spirals, orbits.
+        const frame = currentAxes || axesFrame({});
+        let xFunction, yFunction;
+        try { xFunction = compileExpression(command.x); yFunction = compileExpression(command.y); } catch (expressionError) { console.log(expressionError); return; }
+        const tStart = command.from ?? 0, tEnd = command.to ?? 2 * Math.PI;
+        const curvePoints = [];
+        for (let sampleIndex = 0; sampleIndex <= 500; sampleIndex += 1) {
+          const tValue = tStart + (tEnd - tStart) * sampleIndex / 500;
+          const mathX = xFunction(tValue), mathY = yFunction(tValue);
+          if (Number.isFinite(mathX) && Number.isFinite(mathY)) { curvePoints.push(frameToBoard(frame, mathX, mathY)); }
+        }
+        if (curvePoints.length < 2) { return; }
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.linearPath(curvePoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2.8,
+          roughness: 0.25, bowing: 0, seed: stableSeed(command.x + command.y) }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 1.2);
+        if (command.label) {
+          const [labelAnchorX, labelAnchorY] = curvePoints[Math.floor(curvePoints.length * 0.15)];
+          addText(mainLayer, labelAnchorX + 12, labelAnchorY - 16, command.label, { size: 17, color: command.color || 'purple', anchor: 'start' });
+        }
+        registerGeometryShape(command.id, curvePoints, groupElement);
+
+      } else if (commandType === 'area') {
+        // Shaded region between a curve and the x-axis (or a second curve)
+        // from "from" to "to": integrals, probabilities, regions.
+        const frame = currentAxes || axesFrame({});
+        let upperFunction, lowerFunction;
+        try {
+          upperFunction = compileExpression(command.expr);
+          lowerFunction = command.under ? compileExpression(command.under) : () => 0;
+        } catch (expressionError) { console.log(expressionError); return; }
+        const areaFrom = command.from ?? frame.xMin, areaTo = command.to ?? frame.xMax;
+        const upperPoints = [], lowerPoints = [];
+        for (let sampleIndex = 0; sampleIndex <= 200; sampleIndex += 1) {
+          const mathX = areaFrom + (areaTo - areaFrom) * sampleIndex / 200;
+          const upperY = upperFunction(mathX), lowerY = lowerFunction(mathX);
+          if (!Number.isFinite(upperY) || !Number.isFinite(lowerY)) { continue; }
+          upperPoints.push(frameToBoard(frame, mathX, Math.min(Math.max(upperY, frame.yMin), frame.yMax)));
+          lowerPoints.push(frameToBoard(frame, mathX, Math.min(Math.max(lowerY, frame.yMin), frame.yMax)));
+        }
+        if (upperPoints.length < 2) { return; }
+        const areaColor = colorOf(command.color, 'yellow');
+        const regionPoints = upperPoints.concat(lowerPoints.reverse());
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.polygon(regionPoints, { stroke: 'none', fill: translucent(areaColor, 0.35), fillStyle: 'hachure',
+          hachureGap: 6, fillWeight: 1.4, roughness: 0.6, seed: stableSeed('area' + command.expr + areaFrom + areaTo) }));
+        groupElement.classList.add('hb-appear');
+        mainLayer.insertBefore(groupElement, mainLayer.firstChild);
+        if (command.label) {
+          const [labelX, labelY] = frameToBoard(frame, (areaFrom + areaTo) / 2, (upperFunction((areaFrom + areaTo) / 2) + lowerFunction((areaFrom + areaTo) / 2)) / 2);
+          addText(mainLayer, labelX, labelY, command.label, { size: 18, color: command.color || 'yellow' });
+        }
+        registerGeometryShape(command.id, regionPoints, groupElement);
+
+      } else if (commandType === 'tangent') {
+        // Tangent line to a curve at x = at, slope computed numerically.
+        const frame = currentAxes || axesFrame({});
+        let curveFunction;
+        try { curveFunction = compileExpression(command.expr); } catch (expressionError) { console.log(expressionError); return; }
+        const touchX = command.at, touchY = curveFunction(touchX);
+        const stepSize = 1e-5 * Math.max(1, Math.abs(touchX));
+        const slope = (curveFunction(touchX + stepSize) - curveFunction(touchX - stepSize)) / (2 * stepSize);
+        if (!Number.isFinite(touchY) || !Number.isFinite(slope)) { return; }
+        const halfLength = (command.length || (frame.xMax - frame.xMin) * 0.4) / 2;
+        const [lineStartX, lineStartY] = frameToBoard(frame, touchX - halfLength, touchY - slope * halfLength);
+        const [lineEndX, lineEndY] = frameToBoard(frame, touchX + halfLength, touchY + slope * halfLength);
+        const [touchBoardX, touchBoardY] = frameToBoard(frame, touchX, touchY);
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.line(lineStartX, lineStartY, lineEndX, lineEndY, { stroke: colorOf(command.color, 'orange'),
+          strokeWidth: 2.4, roughness: 0.3, seed: stableSeed('tangent' + command.expr + touchX) }));
+        groupElement.appendChild(svgElement('circle', { cx: touchBoardX, cy: touchBoardY, r: 5.5, fill: colorOf(command.color, 'orange') }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.7);
+        const slopeText = command.label ?? ('slope = ' + (Math.round(slope * 100) / 100));
+        if (slopeText) { addText(mainLayer, lineEndX + 10, lineEndY - 14, slopeText, { size: 16, color: command.color || 'orange', anchor: 'start' }); }
+
+      } else if (commandType === 'mark') {
+        // A labelled point in math coordinates, with optional dashed guides to the axes.
+        const frame = currentAxes || axesFrame({});
+        const [markX, markY] = frameToBoard(frame, command.x, command.y);
+        const markColor = colorOf(command.color, 'fg');
+        const groupElement = svgElement('g');
+        if (command.guides) {
+          const [, axisBoardY] = frameToBoard(frame, 0, frame.yMin <= 0 && frame.yMax >= 0 ? 0 : frame.yMin);
+          const [axisBoardX] = frameToBoard(frame, frame.xMin <= 0 && frame.xMax >= 0 ? 0 : frame.xMin, 0);
+          const guideOptions = { stroke: translucent(markColor, 0.6), strokeWidth: 1.4, roughness: 0.3, strokeLineDash: [6, 6] };
+          groupElement.appendChild(roughCanvas.line(markX, markY, markX, axisBoardY, guideOptions));
+          groupElement.appendChild(roughCanvas.line(markX, markY, axisBoardX, markY, guideOptions));
+        }
+        groupElement.appendChild(svgElement('circle', { cx: markX, cy: markY, r: 5.5, fill: markColor }));
+        groupElement.classList.add('hb-appear');
+        mainLayer.appendChild(groupElement);
+        if (command.label) { addText(mainLayer, markX + (command.dx ?? 12), markY + (command.dy ?? -16), command.label, { size: 17, color: command.color || 'fg', anchor: 'start' }); }
+
+      } else if (commandType === 'vector') {
+        // An arrow in math coordinates: vectors, forces, velocities.
+        const frame = currentAxes || axesFrame({});
+        const [startX, startY] = frameToBoard(frame, command.from[0], command.from[1]);
+        const [endX, endY] = frameToBoard(frame, command.to[0], command.to[1]);
+        const vectorColor = colorOf(command.color, 'pink');
+        const headAngle = Math.atan2(endY - startY, endX - startX);
+        const vectorOptions = { stroke: vectorColor, strokeWidth: 3, roughness: 0.3, seed: stableSeed('vector' + JSON.stringify(command)) };
+        const groupElement = svgElement('g');
+        groupElement.appendChild(roughCanvas.line(startX, startY, endX, endY, vectorOptions));
+        groupElement.appendChild(roughCanvas.polygon([[endX, endY], [endX - 15 * Math.cos(headAngle - 0.4), endY - 15 * Math.sin(headAngle - 0.4)],
+          [endX - 15 * Math.cos(headAngle + 0.4), endY - 15 * Math.sin(headAngle + 0.4)]], { ...vectorOptions, fill: vectorColor, fillStyle: 'solid' }));
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.6);
+        if (command.label) {
+          const vectorLength = Math.hypot(endX - startX, endY - startY) || 1;
+          addText(mainLayer, (startX + endX) / 2 - (endY - startY) / vectorLength * 18, (startY + endY) / 2 + (endX - startX) / vectorLength * 18,
+            command.label, { size: 19, color: command.color || 'pink' });
+        }
+        registerGeometryShape(command.id, [[startX, startY], [endX, endY]], groupElement);
+
+      } else if (commandType === 'numberline') {
+        // A number line with ticks, marked numbers, and highlighted intervals
+        // (for inequalities, ranges, and number sense).
+        const lineLeft = command.left ?? 80, lineWidth = command.width ?? 640, lineY = command.y ?? 300;
+        const lineFrom = command.from ?? -5, lineTo = command.to ?? 5, tickStep = command.step ?? 1;
+        const toBoardX = (value) => lineLeft + (value - lineFrom) / (lineTo - lineFrom) * lineWidth;
+        const groupElement = svgElement('g');
+        const lineOptions = { stroke: colorOf('muted'), strokeWidth: 2, roughness: 0.3, seed: stableSeed('numberline' + lineFrom + lineTo) };
+        groupElement.appendChild(roughCanvas.line(lineLeft - 14, lineY, lineLeft + lineWidth + 14, lineY, lineOptions));
+        for (let tickValue = Math.ceil(lineFrom / tickStep) * tickStep; tickValue <= lineTo + 1e-9; tickValue += tickStep) {
+          const tickX = toBoardX(tickValue);
+          groupElement.appendChild(roughCanvas.line(tickX, lineY - 7, tickX, lineY + 7, lineOptions));
+          addText(groupElement, tickX, lineY + 24, Math.round(tickValue * 1000) / 1000, { size: 15, color: 'muted' });
+        }
+        (command.ranges || []).forEach((range, rangeIndex) => {
+          const rangeColor = colorOf(range[2] || 'yellow');
+          groupElement.appendChild(roughCanvas.line(toBoardX(range[0]), lineY - 2, toBoardX(range[1]), lineY - 2,
+            { stroke: rangeColor, strokeWidth: 6, roughness: 0.4, seed: stableSeed('range' + rangeIndex) }));
+        });
+        (command.marks || []).forEach((markEntry) => {
+          const markColor = colorOf(markEntry[2] || 'pink');
+          groupElement.appendChild(svgElement('circle', { cx: toBoardX(markEntry[0]), cy: lineY, r: 7, fill: markColor }));
+          if (markEntry[1]) { addText(groupElement, toBoardX(markEntry[0]), lineY - 24, markEntry[1], { size: 17, color: markEntry[2] || 'pink' }); }
+        });
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.7);
+
+      } else if (commandType === 'pie') {
+        // Sectors for fractions, probabilities, and shares.
+        const values = (command.values || []).map(Number);
+        const valueTotal = values.reduce((sum, value) => sum + value, 0) || 1;
+        const pieX = command.x ?? 400, pieY = command.y ?? 260, pieRadius = command.r ?? 110;
+        const pieColors = ['purple', 'blue', 'green', 'orange', 'pink', 'cyan', 'yellow', 'red'];
+        const groupElement = svgElement('g');
+        let startAngle = -Math.PI / 2;
+        values.forEach((value, sectorIndex) => {
+          const sweepAngle = value / valueTotal * Math.PI * 2;
+          const sectorColor = colorOf((command.colors && command.colors[sectorIndex]) || pieColors[sectorIndex % pieColors.length]);
+          const sectorPoints = [[pieX, pieY]];
+          for (let stepIndex = 0; stepIndex <= 40; stepIndex += 1) {
+            const stepAngle = startAngle + sweepAngle * stepIndex / 40;
+            sectorPoints.push([pieX + Math.cos(stepAngle) * pieRadius, pieY + Math.sin(stepAngle) * pieRadius]);
+          }
+          groupElement.appendChild(roughCanvas.polygon(sectorPoints, { stroke: sectorColor, strokeWidth: 2.2, roughness: 0.6,
+            fill: translucent(sectorColor, 0.3), fillStyle: 'hachure', hachureGap: 7, seed: stableSeed('pie' + sectorIndex + value) }));
+          if (command.labels && command.labels[sectorIndex]) {
+            const middleAngle = startAngle + sweepAngle / 2;
+            addText(groupElement, pieX + Math.cos(middleAngle) * pieRadius * 1.25, pieY + Math.sin(middleAngle) * pieRadius * 1.25,
+              command.labels[sectorIndex], { size: 17, color: (command.colors && command.colors[sectorIndex]) || pieColors[sectorIndex % pieColors.length] });
+          }
+          startAngle += sweepAngle;
+        });
+        mainLayer.appendChild(groupElement);
+        drawStrokesIn(groupElement, 0.9);
+        registerGeometryShape(command.id, [[pieX - pieRadius, pieY - pieRadius], [pieX + pieRadius, pieY + pieRadius]], groupElement);
+
+      } else if (commandType === 'latex') {
+        // Properly typeset math (fractions, integrals, sums, matrices, roots)
+        // via KaTeX, embedded in the board and centered at x, y.
+        if (!window.katex) { return; }
+        const formulaSize = (command.size || 1.3) * 22;
+        const foreignElement = svgElement('foreignObject', { x: 0, y: 0, width: 1600, height: 400 });
+        const formulaElement = document.createElement('div');
+        formulaElement.style.cssText = `display:inline-block;white-space:nowrap;font-size:${formulaSize}px;color:${colorOf(command.color, 'fg')}`;
+        try {
+          katex.render(String(command.tex || ''), formulaElement, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
+        } catch (formulaError) { console.log(formulaError); return; }
+        foreignElement.appendChild(formulaElement);
+        foreignElement.classList.add('hb-appear');
+        mainLayer.appendChild(foreignElement);
+        const formulaWidth = formulaElement.offsetWidth + 4, formulaHeight = formulaElement.offsetHeight + 4;
+        foreignElement.setAttribute('width', formulaWidth);
+        foreignElement.setAttribute('height', formulaHeight);
+        foreignElement.setAttribute('x', (command.x ?? 400) - formulaWidth / 2);
+        foreignElement.setAttribute('y', (command.y ?? 460) - formulaHeight / 2);
 
       } else if (commandType === 'label') {
         addText(mainLayer, command.x, command.y, command.text, { size: command.size || 20, color: command.color || 'fg', maxCharacters: command.wrap || 0 });
@@ -1105,8 +1491,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <style>
         @font-face { font-family: Virgil; src: url(data:font/woff2;base64,\(virgilFontBase64)) format("woff2"); }
         \(notesStylesheet)
+        \(katexCSSSource)
         </style>
         <script>\(roughJSSource)</script>
+        <script>\(katexJSSource)</script>
         <script>window.Prism = window.Prism || {}; Prism.manual = true;</script>
         <script>\(prismJSSource)</script>
         </head>
@@ -1158,6 +1546,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     th { text-align: left; font: 16px Virgil, sans-serif; color: #c084fc; background: #1a1922; padding: 9px 12px; border-bottom: 1px solid #2c2a38; }
     td { padding: 8px 12px; border-bottom: 1px solid #22212c; }
     tr:last-child td { border-bottom: none; }
+    .math-block { margin: 10px 0; font-size: 1.15em; overflow-x: auto; }
     .chart { margin: 12px 0 6px; }
     .chart-title { font: 16px Virgil, sans-serif; color: #c9c4d4; margin-bottom: 2px; }
     .chart svg { width: 100%; height: 190px; overflow: visible; }
@@ -1319,6 +1708,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         lineElement.appendChild(tableElement);
       } else if (command.t === 'chart') {
         lineElement = drawSketchChart(command);
+      } else if (command.t === 'math' && window.katex) {
+        lineElement = document.createElement('div');
+        lineElement.className = 'math-block';
+        katex.render(String(command.tex || ''), lineElement, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
       }
       if (!lineElement) { return; }
       lineElement.classList.add('writing-in');

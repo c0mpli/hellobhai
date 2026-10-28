@@ -150,11 +150,27 @@ private final class WhisperTranscriptionSession: BuddyStreamingTranscriptionSess
                     skipSpecialTokens: true,
                     withoutTimestamps: true
                 )
-                let transcriptionResults = try await whisperKit.transcribe(
+                var transcriptionResults = try await whisperKit.transcribe(
                     audioArray: samplesToTranscribe,
                     decodeOptions: decodingOptions
                 )
                 guard !Task.isCancelled else { return }
+
+                // Spoken Hindi and Urdu sound almost identical, so detection
+                // sometimes picks Urdu and writes Urdu script. Redo it as Hindi.
+                if transcriptionResults.first?.language == "ur" {
+                    let hindiDecodingOptions = DecodingOptions(
+                        language: "hi",
+                        detectLanguage: false,
+                        skipSpecialTokens: true,
+                        withoutTimestamps: true
+                    )
+                    transcriptionResults = try await whisperKit.transcribe(
+                        audioArray: samplesToTranscribe,
+                        decodeOptions: hindiDecodingOptions
+                    )
+                    guard !Task.isCancelled else { return }
+                }
 
                 let transcriptText = transcriptionResults
                     .map(\.text)

@@ -35,6 +35,7 @@ final class ClaudeCLI {
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
         allowsMacTools: Bool = false,
+        effort: String? = nil,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
@@ -93,6 +94,7 @@ final class ClaudeCLI {
             "--setting-sources", "project",
             "--no-session-persistence"
         ] + (allowsMacTools ? Self.macToolArguments : ["--tools", ""])
+          + (effort.map { ["--effort", $0] } ?? [])
         // Run from an empty temp dir so no project CLAUDE.md gets picked up.
         process.currentDirectoryURL = FileManager.default.temporaryDirectory
 
