@@ -73,7 +73,15 @@ The avatar is a set of short video clips you make once (HeyGen or any talking-av
 | `thinking.mp4` | 4–6s | Glances up or to the side, mouth closed |
 | `talking1.mp4` … `talking4.mp4` | 5–8s each | Speaking naturally with small head movements (the audio is ignored) |
 
-**Fastest way (one free HeyGen video):** make a ~1 minute video that starts with ~8 seconds of silence, then 3–4 short spoken lines with a 2–3 second pause after each. Download it and run:
+**Free and local (no watermark):** take any face photo, such as an AI-generated one from thispersondoesnotexist.com, and record yourself for ~20 seconds in Photo Booth: ~8 seconds looking at the camera quietly, then 3–4 short lines with a 3 second pause after each. Then run:
+
+```bash
+./scripts/make-avatar-from-photo.sh face.jpg me.mov woman   # or man
+```
+
+LivePortrait moves the face in the photo the way yours moves in the recording, offline on your Mac. The first run installs it (~3GB). Rendering takes roughly 12 minutes per 10 seconds of video on an M3. Its face detector is licensed for non-commercial use only.
+
+**From a HeyGen video:** make a ~1 minute video that starts with ~8 seconds of silence, then 3–4 short spoken lines with a 2–3 second pause after each. Download it and run:
 
 ```bash
 ./scripts/make-avatar-clips.sh ~/Downloads/heygen.mp4 woman   # or man
@@ -100,6 +108,7 @@ scripts/
   create-signing-cert.sh                    # One-time local signing certificate
   build-and-run.sh                          # Build, sign, relaunch
   make-avatar-clips.sh                      # Cut one avatar video into the bubble's clips
+  make-avatar-from-photo.sh                 # Animate a face photo with your recording (LivePortrait), then cut clips
 CLAUDE.md                                 # Full architecture doc (AGENTS.md links here)
 ```
 
