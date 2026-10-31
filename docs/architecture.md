@@ -90,6 +90,25 @@ When Claude decides a picture would help, the app asks Claude a second, focused 
 | Whiteboard and notes | WKWebView + rough.js, dagre, KaTeX, Prism | `VisualExplanationPanel.swift` |
 | 3D models | WKWebView + three.js | `Model3DOverlay.swift`, `VisualToolkit/model3d.html` |
 
+## The Windows app
+
+The Windows app (`tauri/`, Tauri 2: Rust + WebView2) follows the same flow and the same tag protocol, sends Claude the same prompts and draws with the same whiteboard, notes and 3D pages. Those pages and prompts are not copied by hand: `scripts/export-mac-web-assets-for-tauri.sh` builds them from the Mac sources into `tauri/generated/`, so the Mac code stays the single source of truth. It has no orb, typed chat or Codex yet; the blue pointer follows the mouse instead, and the default hotkey is ctrl + win. It has not been run on a real Windows PC yet.
+
+| Piece | Mac | Windows (file in `tauri/src-tauri/src/`) |
+|-------|-----|---------|
+| Conductor | `CompanionManager.swift` | `companion_brain.rs` |
+| Push-to-talk shortcut | `CGEvent` tap | low-level keyboard hook (`push_to_talk.rs`, `platform/windows/keyboard_hook.rs`) |
+| Ears | WhisperKit | whisper.cpp `whisper-server` with large-v3 turbo, run locally (`whisper_transcriber.rs`) |
+| Eyes | ScreenCaptureKit | GDI capture of every monitor (`screen_capture.rs`) |
+| Brain | `claude -p` | `claude -p`, same flags (`claude_cli.rs`) |
+| Mouth | Supertonic-3 via FluidAudio | Supertonic-3 via ONNX Runtime, Windows voice as fallback (`speech_player.rs`, `supertonic.rs`) |
+| Hands | `CGEvent`; `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `SendInput`; PowerShell limited to `Start-Process` (never a shell), `Get-ChildItem`, `Get-StartApps` and sorting/filtering (`computer_control.rs`, `platform/windows/claude_tools.rs`) |
+| Pointer, circles, speaking pill | `OverlayWindow.swift` | one transparent window per monitor (`overlay_windows.rs`, `ui/overlay.js`) |
+| Whiteboard, notes, 3D | WKWebView | WebView2 windows showing the exported pages (`board_panel.rs`, `model3d_window.rs`) |
+| Settings | menu bar panel | tray icon panel (`tray_and_settings.rs`, `ui/settings.html`) |
+
+What leaves the machine is the same as on the Mac. Its first-launch downloads (about 1.1 GB) come from GitHub releases (whisper-server, ONNX Runtime) and Hugging Face (the models).
+
 ## What leaves your Mac
 
 Only what goes to Claude: your words, the screenshots and recent chat, sent through your own Claude Code login. Listening, speaking, screenshots, drawing and 3D all run locally. There are no hellobhai servers, no analytics and no auto-updater. On first launch it downloads about 1GB of speech models from Hugging Face, once.

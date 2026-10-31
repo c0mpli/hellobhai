@@ -4,36 +4,55 @@ Shared naming and clarity rules are in ../CLAUDE.md. Layout, regenerating `gener
 
 ## Architecture
 
-- **App type**: tray-only Tauri 2 app (Rust + WebView2), plain HTML/JS pages with no framework or bundler. Every window is created in Rust; `RunEvent::ExitRequested` is prevented so closing windows never quits.
-- **OS boundary**: only `src-tauri/src/platform/` calls OS APIs. `platform/windows/` and `platform/unsupported/` expose the same free functions (no traits); Linux later = add `platform/linux/` with the same file names.
-- **Brain** (`companion_brain.rs`, port of the Mac's `CompanionManager`): hotkey press cancels everything (aborts the response and visual tasks, which kills a running `claude` via `kill_on_drop`; stops speech; finishes and stops the board; closes the 3D window; emits `clear-annotations`), lets the overlays take mouse drags for user drawing and starts recording. Release stops recording, transcribes with Whisper, then `send_transcript` (or "What is this?" when the user only drew). `send_transcript` takes plain text so a typed chat panel can reuse it. Agent loop of up to 8 rounds: screenshot every monitor -> `claude -p` with the voice prompt and the platform tool allowlist -> `response_tags::parse_reply` (Mac order: actions, CLOSE_DRAWING, SHOW, NOTES, MODEL3D, CIRCLE, POINT) -> point, speak (after the previous speech ends), circle, act; stops on no actions or a repeated action list. Every round is appended to the last-20 history with an action summary. No lock is held across an await.
-- **Claude** (`claude_cli.rs`): the Mac's flags in the Mac's order, but `--system-prompt-file` (prompt files are written to `app_local_data_dir/prompts` on every launch) instead of `--system-prompt`, because of the Windows command-line limit. Runs from the temp dir, stdin written and stderr drained on their own tasks, `CREATE_NO_WINDOW` and a kill-on-close job object (`platform/*/child_process.rs`). Voice turns add `platform::voice_turn_tool_arguments` (PowerShell allowlist) and `platform::voice_turn_environment`; side calls use `--tools ""`, and board/notes/3D calls `--effort low`.
+- **App type**: tray-only Tauri 2 app (Rust + WebView2), plain HTML/JS pages with no framework or bundler. Every window is created in Rust; `RunEvent::ExitRequested` is prevented so closing windows never quits. Single instance; registers launch at login on first launch like the Mac.
+- **OS boundary**: only `src-tauri/src/platform/` calls OS APIs. `platform/windows/` and `platform/unsupported/` expose the same free functions (no traits); Linux later = add `platform/linux/` with the same file names and one `cfg` line in `platform/mod.rs`.
+- **Brain** (`companion_brain.rs`, port of the Mac's `CompanionManager`): hotkey press cancels everything (aborts the response and visual tasks, which kills a running `claude` via `kill_on_drop`; stops speech; finishes and stops the board; closes the 3D window; hides the settings panel; emits `clear-annotations`), lets the overlays take mouse drags for user drawing and starts recording. Release stops recording, transcribes with Whisper, then `send_transcript` (or "What is this?" when the user only drew). `send_transcript` takes plain text so a typed chat panel can reuse it. Agent loop of up to 8 rounds: screenshot every monitor -> `claude -p` with the voice prompt and the platform tool allowlist -> `response_tags::parse_reply` (Mac order: actions, CLOSE_DRAWING, SHOW, NOTES, MODEL3D, CIRCLE, POINT) -> point, speak (after the previous speech ends), circle, act (the buddy flies to each click target 1.2 s before clicking); stops on no actions or a repeated action list. Every round is appended to the last-20 history with an action summary. No lock is held across an await.
+- **Claude** (`claude_cli.rs`): the Mac's flags in the Mac's order, but `--system-prompt-file` (prompt files are written to `app_local_data_dir/prompts` on every launch) instead of `--system-prompt`, because of the Windows command-line limit. Runs from the temp dir, stdin written and stderr drained on their own tasks, `CREATE_NO_WINDOW` and a kill-on-close job object (`platform/*/child_process.rs`). Voice turns add `platform::voice_turn_tool_arguments` and `platform::voice_turn_environment`; side calls use `--tools ""`, and board/notes/3D calls `--effort low`.
+- **Claude's tools** (`platform/windows/claude_tools.rs`): voice turns get `--tools PowerShell,Read` with an allowlist of `Start-Process`, `Get-ChildItem`, `Get-StartApps`, `Sort-Object`, `Select-Object`, `Where-Object` and `Read`, `Start-Process` of any shell denied, `--add-dir <home>` and `CLAUDE_CODE_USE_POWERSHELL_TOOL=1`. `claude.exe` is found in `%USERPROFILE%\.local\bin`, WinGet Links, then `where.exe`.
 - **Side calls**: `[SHOW]`/`[NOTES]`/`[MODEL3D]` start a second claude call whose JSON lines go `StreamedLineForwarder` -> `NarratedStepQueue` -> board or 3D window; the queue plays `{"t":"say"}` steps in lockstep with `SpeechPlayer::speak_text_and_wait_until_finished` while the script is still streaming (`tokio::join!`). Narrations (and notes as plain text) are appended to the last history entry. Esc or the 3D close button aborts the narration.
+- **Voice input**: `push_to_talk.rs` turns a listen-only `WH_KEYBOARD_LL` hook (`platform/windows/keyboard_hook.rs`) into press/release/Escape. Default shortcut ctrl + win (ctrl + alt would fire on AltGr); a win shortcut sends VK 0xE8 so releasing Win doesn't open Start. `audio_capture.rs` records the default mic with cpal (mono, 16 kHz). `whisper_transcriber.rs` runs whisper.cpp's `whisper-server` (b5454, `ggml-large-v3-turbo-q5_0`) on a free localhost port; Urdu is re-run as Hindi. No speech-to-text fallback while it downloads: bhai says "my ears are still downloading".
+- **Voice output**: `speech_player.rs` + `supertonic.rs` run Supertonic-3 (voice F2 by default, ten voices) over ONNX Runtime, loaded from the downloaded `onnxruntime.dll` by absolute path (System32 has an older copy). Sentences with Devanagari are spoken as Hindi. One sentence is synthesized while the previous one plays; the WinRT system voice (`platform/windows/system_voice.rs`) speaks until the model loads or if it fails.
+- **Screen and hands**: GDI `BitBlt` capture of every monitor (cursor screen first, JPEG, long side 1280; Mac screen labels), `screen_mapping.rs` maps screenshot pixels to global physical pixels, `SendInput` for clicks, Unicode typing and key combos (`key_combo.rs`: cmd becomes ctrl, option becomes alt).
+- **Windows and pages**: one transparent, topmost, click-through overlay per monitor (`ui/overlay.js`, a port of `OverlayWindow.swift`: buddy, bezier flight, bubble, waveform, spinner, speaking pill, gold circles, user drawing while the hotkey is held, hides when the real pointer is hidden). One reused board window that switches between `generated/board.html` and `generated/notes.html`; a monitor-sized transparent 3D window (`generated/model3d.html`) that is click-through outside the hit regions the page posts. The tray icon toggles the settings panel (`ui/settings.*`). Every window comes from `page_bridge::locked_down_window_builder` (`content_protected` keeps them out of screenshots, navigation limited to app pages, popups denied).
 - **Prompts**: `generated/prompts/*.txt` are exported from the Mac app with Windows wording (`prompt-substitutions.json`) and compiled in with `include_str!`. Never edit them by hand.
-- **Settings**: `app_config_dir/settings.json` (claude model alias, Supertonic voice, push-to-talk shortcut, onboarding done); missing or corrupt means defaults.
+- **Settings**: `app_config_dir/settings.json` (claude model alias, Supertonic voice, push-to-talk shortcut, onboarding done); missing or corrupt means defaults. Models go to `%LOCALAPPDATA%\ai.hellobhai.desktop\Models`.
 
-## Rust -> page events (emitted to every window)
+## Rust -> page events
 
-`buddy-voice-state {state}`, `audio-level {level}`, `point-at {x, y, bubbleText}` (global physical pixels; bubble text is the click label or the onboarding comment, else null), `screen-circles {circles: [{x, y, width, height, appearDelaySeconds}]}`, `fade-annotations`, `clear-annotations`, `onboarding-text {text, visible}`. The window module adds `pointer-state`, `pen-position`, `drawing-enabled`, `speaking-changed`, `status-changed`.
+Overlay-only (`page_bridge::emit_to_overlays`): `audio-level {level}`, `point-at {x, y, bubbleText}` (global physical pixels; bubble text is the click label or the onboarding comment, else null), `screen-circles {circles: [{x, y, width, height, appearDelaySeconds}]}`, `fade-annotations`, `clear-annotations` (also cancels a pointing flight), `onboarding-text {text, visible}` (the overlay types the text out), `pointer-state`, `pen-position`, `drawing-enabled`. Every window (the settings page listens too): `buddy-voice-state {state}`, `speaking-changed {isSpeaking}`, `voice-load-state-changed`.
 
-## Key files (`src-tauri/src/`)
+## Key files
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `lib.rs` | ~130 | Builder, plugins, command registration, startup wiring. |
-| `companion_brain.rs` | ~820 | Central state machine: hotkey, agent loop, side calls, circles, onboarding. |
-| `claude_cli.rs` | ~210 | Spawns `claude -p`, streams text deltas, maps errors like the Mac. |
-| `stream_json.rs` | ~170 | stream-json output parsing, stdin message with base64 JPEGs, history folding. |
-| `response_tags.rs` | ~380 | Tag parsers with the Swift grammar, plus tests. |
-| `narrated_step_queue.rs` | ~360 | `StreamedLineForwarder` + `NarratedStepQueue` (lockstep narration). |
-| `prompts.rs` | ~180 | Embedded system prompts, prompt files, per-request prompt texts. |
-| `conversation_history.rs` | ~65 | Last 20 exchanges. |
-| `settings.rs`, `app_paths.rs`, `app_state.rs` | small | Settings file, data folders, shared state for commands. |
-| `audio_capture.rs`, `whisper_transcriber.rs`, `push_to_talk.rs`, `downloads.rs` | | Voice input: cpal mic, whisper-server sidecar, hotkey tracker, first-launch downloads. |
-| `speech_player.rs`, `supertonic.rs`, `sentence_splitter.rs` | | Voice output: Supertonic-3 F2 over ONNX Runtime, sentence pipelining, system-voice fallback. |
-| `screen_capture.rs`, `screen_mapping.rs`, `key_combo.rs`, `computer_control.rs` | | Screenshots, screenshot <-> global mapping, `[CLICK]/[TYPE]/[KEY]` input. |
-| `overlay_windows.rs`, `board_panel.rs`, `model3d_window.rs`, `tray_and_settings.rs`, `ui_commands.rs`, `page_bridge.rs` | | Overlays, board/notes window, 3D window, tray + settings panel, page bridge. |
-| `platform/` | | OS code (`windows/`, `unsupported/` stubs). |
+| `src-tauri/src/lib.rs` | ~130 | Builder, plugins, command registration, startup wiring. |
+| `src-tauri/src/companion_brain.rs` | ~840 | Central state machine: hotkey, agent loop, side calls, circles, onboarding, mic status. |
+| `src-tauri/src/claude_cli.rs` | ~210 | Spawns `claude -p`, streams text deltas, maps errors like the Mac. |
+| `src-tauri/src/stream_json.rs` | ~170 | stream-json output parsing, stdin message with base64 JPEGs, history folding. |
+| `src-tauri/src/response_tags.rs` | ~380 | Tag parsers with the Swift grammar, plus tests. |
+| `src-tauri/src/narrated_step_queue.rs` | ~360 | `StreamedLineForwarder` + `NarratedStepQueue` (lockstep narration). |
+| `src-tauri/src/prompts.rs` | ~180 | Embedded system prompts, prompt files, per-request prompt texts. |
+| `src-tauri/src/conversation_history.rs` | ~65 | Last 20 exchanges. |
+| `src-tauri/src/settings.rs`, `app_paths.rs`, `app_state.rs` | ~145 | Settings file, data folders, shared state for commands. |
+| `src-tauri/src/push_to_talk.rs` | ~290 | Shortcut options and the press/release tracker over the keyboard hook. |
+| `src-tauri/src/audio_capture.rs` | ~220 | cpal mic recording, 16 kHz mono resampling, waveform levels. |
+| `src-tauri/src/whisper_transcriber.rs` | ~300 | whisper-server download, start and `/inference` requests. |
+| `src-tauri/src/downloads.rs` | ~150 | Size-checked downloads (`.partial` then rename) and safe zip extraction. |
+| `src-tauri/src/speech_player.rs` | ~450 | Voice downloads, sentence pipelining, stop/cancel, system-voice fallback. |
+| `src-tauri/src/supertonic.rs` | ~475 | Supertonic-3 ONNX inference (port of Supertone's reference) and text cleanup. |
+| `src-tauri/src/sentence_splitter.rs` | ~60 | Splits after `. ! ? । ॥` and line breaks. |
+| `src-tauri/src/screen_capture.rs` | ~125 | Screenshots of every monitor and full-resolution region crops. |
+| `src-tauri/src/screen_mapping.rs` | ~190 | Monitors from Tauri, screenshot <-> global pixel mapping. |
+| `src-tauri/src/key_combo.rs`, `computer_control.rs` | ~190 | `[KEY]` combo parsing; click/type/key on a blocking thread. |
+| `src-tauri/src/overlay_windows.rs` | ~170 | Per-monitor overlays, 60 Hz pointer state, user strokes. |
+| `src-tauri/src/board_panel.rs` | ~290 | Board/notes window, lines queued until the page loads, placement beside the cursor. |
+| `src-tauri/src/model3d_window.rs` | ~315 | 3D window, taskbar insets, hit-region click-through, Esc/close. |
+| `src-tauri/src/tray_and_settings.rs`, `ui_commands.rs` | ~350 | Tray icon, settings panel window, settings/status commands, autostart. |
+| `src-tauri/src/page_bridge.rs` | ~190 | Locked-down window builder, overlay-only emit, page messages (pen, hit regions). |
+| `src-tauri/src/platform/` | | OS code (`windows/`, `unsupported/` stubs). |
+| `ui/overlay.js` | ~710 | Overlay page (port of `OverlayWindow.swift`). |
+| `ui/settings.html`, `settings.js`, `settings.css` | ~565 | Tray settings panel. |
+| `generated/` | | Exported Mac pages and prompts; regenerate, never edit. |
 
 CI: `.github/workflows/tauri.yml` runs `cargo test` and builds the NSIS installer on windows-latest. Never run `tauri build` on the Mac.
 
