@@ -1,6 +1,6 @@
 # Third-party notices
 
-Bundled in `leanring-buddy/VisualToolkit/` for the live whiteboard and notes panel:
+Bundled in `macos/leanring-buddy/VisualToolkit/` for the live whiteboard and notes panel:
 
 | Asset | Source | License |
 |-------|--------|---------|

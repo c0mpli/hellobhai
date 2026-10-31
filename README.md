@@ -35,93 +35,18 @@ https://github.com/user-attachments/assets/305cff8a-7777-4671-906f-11a68852630f
 
 ## How it works
 
-### The big picture
+Hold the hotkey and talk. Whisper turns your voice into text on your machine, a screenshot of every display is taken, and both go to Claude through your own Claude Code login (`claude -p`). Claude replies with words to say plus small instructions like `[POINT:…]`, `[CIRCLE:…]`, `[SHOW:…]` or `[MODEL3D:…]`; the app speaks the words with an on-device voice and follows the instructions on your screen.
 
-hellobhai is a small Mac app that sits in your menu bar. It has three jobs: **listen** to you, ask **Claude** what to do, then **show and say** the answer on your screen. Everything except Claude's thinking happens on your Mac.
+The full walkthrough, diagrams, the pieces and where they live, and exactly what leaves your machine are in [docs/architecture.md](docs/architecture.md).
 
-```mermaid
-flowchart LR
-    You(["You: hold ctrl+option and talk"]) --> Ears
+## Platforms
 
-    subgraph Mac["Your Mac (on-device)"]
-        Ears["Ears<br/>mic + Whisper<br/>speech to text"]
-        Eyes["Eyes<br/>screenshot of<br/>every display"]
-        Voice["Mouth<br/>Supertonic-3<br/>text to speech"]
-        Hands["Hands<br/>clicks, typing,<br/>Mac commands"]
-        Screen["Screen overlay<br/>blue cursor, gold circles,<br/>whiteboard, 3D models"]
-    end
+| Platform | Status | Folder |
+|----------|--------|--------|
+| macOS (Apple Silicon, 14.2+) | Ready | [`macos/`](macos) |
+| Windows 10/11 | In progress | `windows/` |
 
-    Brain["Brain<br/>Claude, via your own<br/>Claude Code login"]
-
-    Ears -- "what you said" --> Brain
-    Eyes -- "what you're looking at" --> Brain
-    Brain -- "reply + instructions" --> Voice
-    Brain --> Hands
-    Brain --> Screen
-```
-
-### What happens when you ask something
-
-Say you're looking at a YouTube video of a gadget and you ask *"what is this device?"*
-
-1. **You press ctrl+option.** A tiny keyboard listener notices the shortcut, even while another app is in front. The blue cursor turns into a waveform to show it's listening.
-2. **You talk, then let go.** Your voice is recorded, and **Whisper** turns it into text right on your Mac. It works out by itself whether you spoke English, Hindi or Hinglish. If you circled something with the mouse while talking, that area is noted too.
-3. **It takes a screenshot** of every display, so Claude can see exactly what you see.
-4. **It asks Claude.** The text, the screenshots and your last few questions go to Claude through the `claude` command-line tool that comes with Claude Code. That uses your own login, so there are no API keys and no hellobhai server in between.
-5. **Claude answers in two layers:** the words to say out loud, plus small instructions in square brackets for the app, like `[POINT:…]`, `[CIRCLE:…]`, `[SHOW:…]` or `[MODEL3D:…]`.
-6. **The app speaks the words** with **Supertonic-3**, an on-device voice, one sentence at a time so it starts talking quickly. A small pill grows out of the notch while it speaks.
-7. **The app follows the instructions:**
-   - `POINT`: the blue cursor flies over to a button or menu.
-   - `CIRCLE`: gold, hand-drawn circles appear around the exact text it's talking about.
-   - `CLICK` / `TYPE` / `KEY`: it clicks and types for you, then takes a fresh screenshot to check. It repeats this up to 8 times until the task is done. It only does this when you ask, and it asks before sending, posting or deleting anything.
-   - `SHOW` / `NOTES`: a whiteboard or a notes page opens beside your cursor (see below).
-   - `MODEL3D`: a 3D model is built right on top of the thing on your screen (see below).
-
-```mermaid
-sequenceDiagram
-    actor You
-    participant App as hellobhai (on your Mac)
-    participant Claude as Claude (claude -p)
-
-    You->>App: hold ctrl+option, speak
-    App->>App: Whisper: speech to text
-    App->>App: screenshot every display
-    App->>Claude: your words + screenshots + recent chat
-    Claude-->>App: spoken reply + [instructions]
-    App->>You: speaks the reply (Supertonic-3)
-    App->>You: points, circles, clicks, opens the whiteboard or 3D model
-```
-
-### How the whiteboard and 3D models work
-
-When Claude decides a picture would help, the app asks Claude a second, focused question: *"draw this, step by step"*. Claude streams back a script, one line at a time. Each line is either a sentence to say or a drawing command, like "draw a blue box called Battery" or "add a cylinder for the antenna".
-
-- **Narration and drawing stay in step.** Each sentence is spoken while the shapes that belong to it are drawn. The blue cursor moves along every stroke as if it were holding the pen, with a soft pencil sound.
-- **The whiteboard** is a small, locked-down web page inside the app. It draws hand-drawn shapes with **rough.js**, lays out diagrams automatically with **dagre** so nothing overlaps, and renders math with **KaTeX**.
-- **3D models** use **three.js**. Claude describes the object in real millimeters as simple parts (boxes, cylinders, repeated pins, ready-made ports and connectors) with labels, reads the object's position and angle off the screenshot, and the app builds it part by part right over the thing on your screen. You can drag to rotate it.
-- **Claude never writes code that runs.** It only sends simple instructions as data. The pages can't load anything from the internet.
-
-### The pieces, and where they live in the code
-
-| Piece | What it uses | File |
-|-------|--------------|------|
-| Menu bar app and settings panel | SwiftUI + AppKit | `leanring_buddyApp.swift`, `MenuBarPanelManager.swift`, `CompanionPanelView.swift` |
-| The conductor that ties it all together | | `CompanionManager.swift` |
-| Push-to-talk shortcut | `CGEvent` tap | `GlobalPushToTalkShortcutMonitor.swift` |
-| Ears (speech to text) | WhisperKit (Whisper large-v3 turbo) on-device, Apple Speech as fallback | `BuddyDictationManager.swift`, `WhisperTranscriptionProvider.swift` |
-| Eyes (screenshots) | ScreenCaptureKit | `CompanionScreenCaptureUtility.swift` |
-| Brain | `claude -p` (Claude Code CLI) | `ClaudeCLI.swift` |
-| Mouth (text to speech) | Supertonic-3 (voice F2) on-device, optional Kokoro-82M, macOS voice as last fallback | `LocalTTSClient.swift` |
-| Hands (clicks, typing, Mac commands) | `CGEvent`, plus an allowlist: `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `ComputerControl.swift` |
-| Blue cursor, gold circles, notch pill | Transparent full-screen overlay | `OverlayWindow.swift` |
-| Whiteboard and notes | WKWebView + rough.js, dagre, KaTeX, Prism | `VisualExplanationPanel.swift` |
-| 3D models | WKWebView + three.js | `Model3DOverlay.swift`, `VisualToolkit/model3d.html` |
-
-### What leaves your Mac
-
-Only what goes to Claude: your words, the screenshots and recent chat, sent through your own Claude Code login. Listening, speaking, screenshots, drawing and 3D all run locally. There are no hellobhai servers, no analytics and no auto-updater. On first launch it downloads about 1GB of speech models from Hugging Face, once.
-
-## Setup
+## Setup (macOS)
 
 ### Prerequisites
 
@@ -132,11 +57,12 @@ Only what goes to Claude: your words, the screenshots and recent chat, sent thro
 ### Build & run
 
 ```bash
+cd macos
 ./scripts/create-signing-cert.sh   # one time: local signing certificate
 ./scripts/build-and-run.sh         # build, sign, launch (run again after every change)
 ```
 
-`build-and-run.sh` signs every build with the same local certificate, so macOS remembers the permissions you grant instead of asking again after each rebuild. Logs go to `build/hellobhai.log`.
+`build-and-run.sh` signs every build with the same local certificate, so macOS remembers the permissions you grant instead of asking again after each rebuild. Logs go to `macos/build/hellobhai.log`.
 
 ### First launch
 
@@ -159,19 +85,15 @@ Pressing the hotkey again interrupts whatever it's doing. Model choice (Sonnet o
 ## Project structure
 
 ```
-leanring-buddy/                          # Swift source (legacy folder name)
-  CompanionManager.swift                    # Central state machine + agent loop + prompts
-  ClaudeCLI.swift                           # `claude -p` subprocess client (stream-json in/out)
-  WhisperTranscriptionProvider.swift        # On-device STT
-  LocalTTSClient.swift                      # On-device TTS (Kokoro + Supertonic-3)
-  ComputerControl.swift                     # [CLICK]/[TYPE]/[KEY] parsing + CGEvents
-  VisualExplanationPanel.swift              # Live sketch whiteboard
-  OverlayWindow.swift                       # Purple cursor + notch speaking pill
-  BuddyDictationManager.swift               # Push-to-talk pipeline
-scripts/
-  create-signing-cert.sh                    # One-time local signing certificate
-  build-and-run.sh                          # Build, sign, relaunch
-CLAUDE.md                                 # Full architecture doc (AGENTS.md links here)
+macos/                     Mac app (Swift; legacy Xcode name leanring-buddy)
+  leanring-buddy/            Swift sources + VisualToolkit/ (whiteboard, notes, 3D pages)
+  leanring-buddy.xcodeproj
+  scripts/                   create-signing-cert.sh, build-and-run.sh
+  CLAUDE.md                  Mac architecture for coding agents
+windows/                   Windows app (Tauri), in progress
+scripts/                   cross-platform scripts
+docs/                      architecture.md, mobile-plan.md
+CLAUDE.md                  repo map + shared conventions (AGENTS.md links here)
 ```
 
 ## License
