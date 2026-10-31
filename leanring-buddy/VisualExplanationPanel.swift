@@ -909,9 +909,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     let isDrawingCommand = false;
     let isStreamFinished = false;
 
-    function colorOf(colorName, fallbackName) { return COLORS[colorName] || COLORS[fallbackName] || COLORS.fg; }
-    function fillOf(colorName, fallbackName) { return (PALETTE[colorName] || PALETTE[fallbackName] || PALETTE.gray).fill; }
-    function outlineOf(colorName, fallbackName) { return (PALETTE[colorName] || PALETTE[fallbackName] || PALETTE.gray).outline; }
+    // Own keys only, so a model-sent name like "constructor" never resolves to a prototype member.
+    function isPaletteColor(colorName) { return typeof colorName === 'string' && Object.hasOwn(PALETTE, colorName); }
+    function ownEntry(table, key) { return typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : undefined; }
+    function colorOf(colorName, fallbackName) { return ownEntry(COLORS, colorName) || ownEntry(COLORS, fallbackName) || COLORS.fg; }
+    function fillOf(colorName, fallbackName) { return (ownEntry(PALETTE, colorName) || ownEntry(PALETTE, fallbackName) || PALETTE.gray).fill; }
+    function outlineOf(colorName, fallbackName) { return (ownEntry(PALETTE, colorName) || ownEntry(PALETTE, fallbackName) || PALETTE.gray).outline; }
     function translucent(hexColor, alpha) {
       const red = parseInt(hexColor.slice(1, 3), 16), green = parseInt(hexColor.slice(3, 5), 16), blue = parseInt(hexColor.slice(5, 7), 16);
       return `rgba(${red},${green},${blue},${alpha})`;
@@ -992,9 +995,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     // Tries nearby positions (spiralling out) until the label overlaps no
     // other label, then moves it there by shifting its x/y attributes (a
     // transform would be overridden by the appear animation).
-    function moveLabelToFreeSpot(textElement) {
+    // extraObstacles (shape outlines, group borders, arrow lines) are avoided
+    // too; with rememberBox false the label's box isn't kept in
+    // placedLabelBoxes (arrow labels are re-placed on every relayout).
+    function moveLabelToFreeSpot(textElement, extraObstacles, rememberBox = true) {
       const originalBox = textElement.getBBox();
-      if (!originalBox.width) { return; }
+      if (!originalBox.width) { return originalBox; }
+      const obstacles = extraObstacles ? placedLabelBoxes.concat(extraObstacles) : placedLabelBoxes;
       const candidateOffsets = [[0, 0]];
       for (let ringIndex = 1; ringIndex <= 7; ringIndex += 1) {
         const offsetDistance = ringIndex * 13;
@@ -1003,16 +1010,17 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       }
       for (const [offsetX, offsetY] of candidateOffsets) {
         const candidateBox = { x: originalBox.x + offsetX, y: originalBox.y + offsetY, width: originalBox.width, height: originalBox.height };
-        if (placedLabelBoxes.some((placedBox) => boxesOverlap(candidateBox, placedBox, 12))) { continue; }
+        if (obstacles.some((placedBox) => boxesOverlap(candidateBox, placedBox, 12))) { continue; }
         if (offsetX || offsetY) {
           textElement.setAttribute('x', parseFloat(textElement.getAttribute('x')) + offsetX);
           textElement.setAttribute('y', parseFloat(textElement.getAttribute('y')) + offsetY);
           textElement.querySelectorAll('tspan').forEach((lineElement) => lineElement.setAttribute('x', parseFloat(lineElement.getAttribute('x')) + offsetX));
         }
-        placedLabelBoxes.push(candidateBox);
-        return;
+        if (rememberBox) { placedLabelBoxes.push(candidateBox); }
+        return candidateBox;
       }
-      placedLabelBoxes.push(originalBox);
+      if (rememberBox) { placedLabelBoxes.push(originalBox); }
+      return originalBox;
     }
 
     function roundedRectanglePath(x, y, width, height, cornerRadius) {
@@ -1031,14 +1039,18 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
 
     // Draws a Lucide icon (24x24 stroke shapes) sketchily at the given center.
     function drawIcon(parentElement, iconName, centerX, centerY, size, colorName) {
-      const iconShapes = ICON_SHAPES[iconName];
+      const iconShapes = ownEntry(ICON_SHAPES, iconName);
       if (!iconShapes) { return null; }
       const scale = size / 24;
       const groupElement = svgElement('g', { transform: `translate(${centerX - size / 2},${centerY - size / 2}) scale(${scale})` });
       const strokeOptions = { ...CLEAN_STROKE, roughness: 0.3, stroke: colorOf(colorName, 'fg'), strokeWidth: 2 / scale, seed: stableSeed(iconName) };
       for (const shape of iconShapes) {
         let roughNode = null;
-        if (shape[0] === 'p') { roughNode = roughCanvas.path(shape[1], strokeOptions); }
+        // Lucide draws dots (a phone's home button, an info "i") as a
+        // zero-length "M x y h.01" path, which rough.js renders as nothing.
+        const dotMatch = shape[0] === 'p' && /^M\\s*([\\d.]+)[\\s,]+([\\d.]+)\\s*[hv]\\.01$/.exec(shape[1]);
+        if (dotMatch) { roughNode = svgElement('circle', { cx: dotMatch[1], cy: dotMatch[2], r: 1.3, fill: strokeOptions.stroke }); }
+        else if (shape[0] === 'p') { roughNode = roughCanvas.path(shape[1], strokeOptions); }
         else if (shape[0] === 'c') { roughNode = roughCanvas.circle(shape[1], shape[2], shape[3] * 2, strokeOptions); }
         else if (shape[0] === 'r') { roughNode = roughCanvas.rectangle(shape[1], shape[2], shape[3], shape[4], strokeOptions); }
         else if (shape[0] === 'l') { roughNode = roughCanvas.line(shape[1], shape[2], shape[3], shape[4], strokeOptions); }
@@ -1053,14 +1065,17 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
 
     // A flat pastel fill with one clean outline, like Clicky's boxes.
     function shapeOptions(colorName, seedText) {
-      return { ...CLEAN_STROKE, stroke: outlineOf(colorName, 'blue'), strokeWidth: 2.1, seed: stableSeed(seedText),
+      // About 2.7 units, close to Clicky's heavy marker outlines.
+      return { ...CLEAN_STROKE, stroke: outlineOf(colorName, 'blue'), strokeWidth: 2.7, seed: stableSeed(seedText),
         fill: fillOf(colorName, 'blue'), fillStyle: 'solid' };
     }
 
     // A straight arrow with a small open chevron head, drawn as two strokes
     // (shaft, then head) so the pen traces the shaft first.
     function drawStraightArrow(parentElement, fromX, fromY, toX, toY, options) {
-      const { color = ARROW_INK, width = 1.5, headLength = 11, seedText = '' } = options || {};
+      // The open chevron head grows with the stroke (about 5x its width), so thick force arrows get big heads.
+      const { color = ARROW_INK, width = 1.5, seedText = '' } = options || {};
+      const headLength = (options && options.headLength) || Math.max(11, width * 5);
       const arrowGroup = svgElement('g');
       const strokeOptions = { ...CLEAN_STROKE, roughness: 0.3, stroke: color, strokeWidth: width, seed: stableSeed('arrow' + seedText + fromX + fromY + toX + toY) };
       arrowGroup.appendChild(roughCanvas.line(fromX, fromY, toX, toY, strokeOptions));
@@ -1121,10 +1136,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     }
 
     function drawIconAndLabel(parentElement, width, height, command) {
-      const hasIcon = command.icon && ICON_SHAPES[command.icon];
+      const hasIcon = Boolean(ownEntry(ICON_SHAPES, command.icon));
       const maxCharacters = Math.max(8, Math.floor(width / 9.6));
       // Icons inside a pastel shape use the shape's strong ink.
-      const iconColorName = PALETTE[command.color] ? command.color : 'fg';
+      const iconColorName = isPaletteColor(command.color) ? command.color : 'fg';
       if (hasIcon && command.label) {
         const iconSize = Math.min(32, height * 0.4);
         drawIcon(parentElement, command.icon, 0, -height / 2 + 10 + iconSize / 2, iconSize, iconColorName);
@@ -1344,16 +1359,49 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       };
     }
 
+    // dagre ends arrows on a node's bounding box. A circle's arrow is pulled
+    // in to just off its rim, and a highlighted node's arrows stop 7 units
+    // outside its highlight ring, so neither end is ambiguous.
+    function clippedEndpoint(nodeId, endpoint, neighbourPoint) {
+      const node = nodesById[nodeId];
+      if (!node || node.isGeometry) { return endpoint; }
+      const directionLength = Math.hypot(neighbourPoint.x - node.centerX, neighbourPoint.y - node.centerY);
+      if (!directionLength) { return endpoint; }
+      const directionX = (neighbourPoint.x - node.centerX) / directionLength, directionY = (neighbourPoint.y - node.centerY) / directionLength;
+      let clearance = 0;
+      if (node.command.t === 'circle') { clearance = node.width / 2 + 4; }
+      if (node.highlightRing) {
+        const { radiusX, radiusY } = node.highlightRing;
+        clearance = Math.max(clearance, 1 / Math.hypot(directionX / radiusX, directionY / radiusY) + 7);
+      }
+      // Never past the neighbouring point (a very short arrow keeps dagre's end).
+      if (!clearance || clearance >= directionLength - 4) { return endpoint; }
+      return { x: node.centerX + directionX * clearance, y: node.centerY + directionY * clearance };
+    }
+
     function redrawEdge(edgeId) {
       const edge = edgesById[edgeId];
       const layoutEdge = layoutGraph.edge(edge.command.from, edge.command.to, edgeId);
       if (!layoutEdge || !layoutEdge.points) { return; }
-      const points = layoutEdge.points;
+      // dagre returns a point per rank it crosses, often five in a straight
+      // run followed by a sharp turn; a smooth curve through those overshoots
+      // into a little hump. Dropping the points in the middle of straight runs
+      // leaves clean lines with one gentle bend.
+      const points = layoutEdge.points.filter((point, pointIndex, allPoints) => {
+        if (pointIndex === 0 || pointIndex === allPoints.length - 1) { return true; }
+        const previousPoint = allPoints[pointIndex - 1], nextPoint = allPoints[pointIndex + 1];
+        const turnAngle = Math.abs(Math.atan2(nextPoint.y - point.y, nextPoint.x - point.x) - Math.atan2(point.y - previousPoint.y, point.x - previousPoint.x));
+        return Math.min(turnAngle, Math.PI * 2 - turnAngle) > 0.05;
+      }).map((point) => ({ x: point.x, y: point.y }));
+      if (points.length >= 2) {
+        points[0] = clippedEndpoint(edge.command.from, points[0], points[1]);
+        points[points.length - 1] = clippedEndpoint(edge.command.to, points[points.length - 1], points[points.length - 2]);
+      }
       if (edge.element) { edge.element.remove(); }
       if (edge.labelElement) { edge.labelElement.remove(); }
       const isConnector = edge.edgeStyle === 'connector';
       // Thin dark-gray arrows like Clicky's; a color name tints them.
-      const arrowColor = PALETTE[edge.command.color] ? colorOf(edge.command.color) : ARROW_INK;
+      const arrowColor = isPaletteColor(edge.command.color) ? colorOf(edge.command.color) : ARROW_INK;
       const strokeOptions = { ...CLEAN_STROKE, roughness: 0.35, stroke: isConnector ? outlineOf('yellow') : arrowColor,
         strokeWidth: isConnector ? 1.4 : 1.5, seed: stableSeed(edgeId),
         strokeLineDash: (isConnector || edge.command.style === 'dashed') ? [7, 6] : undefined };
@@ -1382,9 +1430,37 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         const offsetSide = perpendicularY > 0 ? -1 : 1;
         edge.labelElement = addText(edgeLayer, middleX + perpendicularX * 16 * offsetSide, middleY + perpendicularY * 16 * offsetSide,
           edge.command.label, { size: 18, color: 'muted', maxCharacters: 18 });
+        // Never on a shape, across a group's dashed border, or on an arrow line.
+        edge.labelBox = moveLabelToFreeSpot(edge.labelElement, diagramLabelObstacles(edgeId), false);
         if (!edge.isNew) { edge.labelElement.setAttribute('data-pen', 'done'); }
       }
       edge.isNew = false;
+    }
+
+    // Shapes, group borders (thin strips along each side, plus the group's
+    // own label), points along every drawn arrow, and other arrow labels.
+    function diagramLabelObstacles(skippedEdgeId) {
+      const obstacles = [];
+      for (const node of Object.values(nodesById)) {
+        if (node.isGeometry || !node.isPlaced) { continue; }
+        obstacles.push({ x: node.centerX - node.width / 2, y: node.centerY - node.height / 2, width: node.width, height: node.height });
+      }
+      for (const group of Object.values(groupsById)) {
+        const zone = group.zoneRect;
+        if (!zone) { continue; }
+        obstacles.push({ x: zone.x, y: zone.y - 2, width: zone.width, height: 4 }, { x: zone.x, y: zone.y + zone.height - 2, width: zone.width, height: 4 },
+          { x: zone.x - 2, y: zone.y, width: 4, height: zone.height }, { x: zone.x + zone.width - 2, y: zone.y, width: 4, height: zone.height },
+          { x: zone.x + 8, y: zone.y + 6, width: 150, height: 24 });
+      }
+      for (const [edgeId, edge] of Object.entries(edgesById)) {
+        if (!edge.geometry) { continue; }
+        for (let sampleIndex = 0; sampleIndex <= 24; sampleIndex += 1) {
+          const [sampleX, sampleY] = edge.geometry.pointAt(sampleIndex / 24);
+          obstacles.push({ x: sampleX - 1, y: sampleY - 1, width: 2, height: 2 });
+        }
+        if (edgeId !== skippedEdgeId && edge.labelBox) { obstacles.push(edge.labelBox); }
+      }
+      return obstacles;
     }
 
     function redrawGroup(groupId) {
@@ -1394,6 +1470,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       if (group.element) { group.element.remove(); }
       const zoneX = layoutGroup.x - layoutGroup.width / 2 - 14, zoneY = layoutGroup.y - layoutGroup.height / 2 - 34;
       const zoneWidth = layoutGroup.width + 28, zoneHeight = layoutGroup.height + 48;
+      group.zoneRect = { x: zoneX, y: zoneY, width: zoneWidth, height: zoneHeight };
       const groupElement = svgElement('g');
       if (!group.isNew) { groupElement.setAttribute('data-pen', 'done'); }
       groupElement.appendChild(roughCanvas.path(roundedRectanglePath(zoneX, zoneY, zoneWidth, zoneHeight, 10),
@@ -1411,9 +1488,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       for (const badge of edgeStepBadges) {
         const edge = edgesById[badge.edgeId];
         if (!edge || !edge.geometry) { continue; }
-        // Near the arrow's start, on the opposite side from its label.
-        const [pointX, pointY] = edge.geometry.pointAt(0.18);
-        const [perpendicularX, perpendicularY] = edge.geometry.perpendicularAt(0.18);
+        // At the arrow's middle, on the opposite side from its label, so it clearly belongs to that arrow.
+        const [pointX, pointY] = edge.geometry.pointAt(0.5);
+        const [perpendicularX, perpendicularY] = edge.geometry.perpendicularAt(0.5);
         const badgeSide = perpendicularY > 0 ? 1 : -1;
         badge.element.setAttribute('transform', `translate(${pointX + perpendicularX * 20 * badgeSide},${pointY + perpendicularY * 20 * badgeSide})`);
         badge.element.style.opacity = 1;
@@ -1548,6 +1625,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         // Arrows and groups are drawn at the final layout, so the shapes must be there too.
         finishNodeGlides();
         Object.keys(groupsById).forEach(redrawGroup);
+        Object.values(edgesById).forEach((edge) => { edge.labelBox = null; });
         Object.keys(edgesById).forEach(redrawEdge);
         positionStepBadges();
         positionTitleAndCaptions();
@@ -1556,19 +1634,40 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     }
 
     // MARK: rows and captions (left-aligned flow, like Clicky's numbered boards)
-    // Rows stack top to bottom from the board origin: an optional step badge,
-    // then items left to right. The last arrow in a row stretches so the item
-    // after it starts in the shared result column, so results line up.
-    const ROW_RESULT_COLUMN_X = 440;
-    const ROW_ITEMS_START_WITH_BADGE_X = 41;
+    // Rows stack top to bottom from the board origin: items left to right,
+    // with an optional step badge out in the left margin, so every row's
+    // first box shares one left edge whether or not it has a badge.
+    // Every arrow has the same length; the last one ends at a result column
+    // shared by the whole board, padding the gap before it instead.
+    const ROW_PROVISIONAL_RESULT_COLUMN_X = 300;
+    const ROW_BADGE_CENTER_X = -30;
+    const ROW_ARROW_LENGTH = 110;
+    const ROW_ITEM_GAP = 22;
+    const ROW_BOX_TEXT_SIZE = 30, ROW_BOX_MINIMUM_WIDTH = 130, ROW_BOX_HORIZONTAL_PADDING = 28, ROW_BOX_DEFAULT_HEIGHT = 62;
     const ROW_MINIMUM_SLOT_HEIGHT = 70;
     const ROW_VERTICAL_GAP = 40;
     let flowCursorY = 0;
     let previousFlowCaption = null;
+    // The board-wide result column: set by the first row with a result arrow
+    // and only grows. When a later row needs more room, every earlier result
+    // (its last arrow, result items, and the result caption) slides right.
+    let rowResultColumnX = null;
+    const rowResultColumnElements = [];
+    function registerResultColumnElement(element, baseColumnX) {
+      rowResultColumnElements.push({ element, baseColumnX });
+      if (rowResultColumnX !== null) { element.setAttribute('transform', `translate(${rowResultColumnX - baseColumnX},0)`); }
+    }
+    function moveResultColumnTo(newColumnX) {
+      rowResultColumnX = newColumnX;
+      for (const { element, baseColumnX } of rowResultColumnElements) {
+        element.setAttribute('transform', `translate(${rowResultColumnX - baseColumnX},0)`);
+      }
+    }
 
     function rowItemSize(item) {
       if (item.box !== undefined) {
-        return [item.w || Math.max(measureTextWidth(item.box, 24) + 44, 86), item.h || 42];
+        const boxTextSize = item.size || ROW_BOX_TEXT_SIZE;
+        return [item.w || Math.max(measureTextWidth(item.box, boxTextSize) + ROW_BOX_HORIZONTAL_PADDING * 2, ROW_BOX_MINIMUM_WIDTH), item.h || ROW_BOX_DEFAULT_HEIGHT];
       }
       if (item.text !== undefined) { return [measureTextWidth(item.text, item.size || 24), 30]; }
       if (item.check) { return [26, 24]; }
@@ -1583,9 +1682,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       if (item.box !== undefined) {
         const boxColorName = item.color || 'blue';
         parentElement.appendChild(roughCanvas.rectangle(leftX, centerY - height / 2, width, height, shapeOptions(boxColorName, 'rowbox' + item.box + leftX + centerY)));
-        addText(parentElement, leftX + width / 2, centerY + 1, item.box, { size: item.size || 24 });
+        addText(parentElement, leftX + width / 2, centerY + 1, item.box, { size: item.size || ROW_BOX_TEXT_SIZE });
       } else if (item.text !== undefined) {
-        addText(parentElement, leftX, centerY, item.text, { size: item.size || 24, color: item.color || 'fg', anchor: 'start' });
+        const textElement = addText(parentElement, leftX, centerY, item.text, { size: item.size || 24, color: item.color || 'fg', anchor: 'start' });
+        // A big stat numeral ("6" titles) is drawn in the heavy heading ink so it dominates its label.
+        if ((item.size || 24) >= 32) { textElement.classList.add('heading'); }
       } else if (item.check) {
         drawCheckMark(parentElement, leftX + width / 2, centerY, 24);
       } else if (item.stack) {
@@ -1636,35 +1737,61 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     function drawRow(command) {
       const rowItems = Array.isArray(command.items) ? command.items : [];
       const itemSizes = rowItems.map(rowItemSize);
-      const rowHeight = Math.max(42, ...itemSizes.map((itemSize) => itemSize[1]));
+      // Like Clicky's token rows: every box in a row has the same height, and
+      // a run of adjacent boxes (The | sky | is) shares one width, so the row
+      // reads as a clean strip instead of ragged boxes. Explicit w/h win.
+      const isRowBox = (item) => item && typeof item === 'object' && item.box !== undefined;
+      const sharedBoxHeight = Math.max(0, ...rowItems.map((item, itemIndex) => isRowBox(item) ? itemSizes[itemIndex][1] : 0));
+      rowItems.forEach((item, itemIndex) => { if (isRowBox(item) && !item.h) { itemSizes[itemIndex] = [itemSizes[itemIndex][0], sharedBoxHeight]; } });
+      for (let runStartIndex = 0; runStartIndex < rowItems.length; runStartIndex += 1) {
+        if (!isRowBox(rowItems[runStartIndex])) { continue; }
+        let runEndIndex = runStartIndex;
+        while (runEndIndex + 1 < rowItems.length && isRowBox(rowItems[runEndIndex + 1])) { runEndIndex += 1; }
+        const runIndexes = [];
+        for (let runIndex = runStartIndex; runIndex <= runEndIndex; runIndex += 1) { if (!rowItems[runIndex].w) { runIndexes.push(runIndex); } }
+        const sharedRunWidth = Math.max(0, ...runIndexes.map((runIndex) => itemSizes[runIndex][0]));
+        runIndexes.forEach((runIndex) => { itemSizes[runIndex] = [sharedRunWidth, itemSizes[runIndex][1]]; });
+        runStartIndex = runEndIndex;
+      }
+      const rowHeight = Math.max(ROW_BOX_DEFAULT_HEIGHT, ...itemSizes.map((itemSize) => itemSize[1]));
       const slotHeight = Math.max(rowHeight, ROW_MINIMUM_SLOT_HEIGHT);
       const rowCenterY = flowCursorY + slotHeight / 2;
       const rowGroup = svgElement('g');
       mainLayer.appendChild(rowGroup);
+      if (command.n !== undefined) { drawStepBadge(rowGroup, ROW_BADGE_CENTER_X, rowCenterY, command.n); }
       let cursorX = 0;
-      if (command.n !== undefined) {
-        drawStepBadge(rowGroup, 11, rowCenterY, command.n);
-        cursorX = ROW_ITEMS_START_WITH_BADGE_X;
-      }
       const lastArrowIndex = rowItems.map((item) => Boolean(item && item.arrow)).lastIndexOf(true);
+      let itemsParent = rowGroup;
       let previousItemWasBox = false;
       rowItems.forEach((item, itemIndex) => {
         if (!item || typeof item !== 'object') { return; }
         if (item.arrow) {
-          const arrowStartX = cursorX + (itemIndex === 0 ? 0 : 26);
-          const arrowEndX = itemIndex === lastArrowIndex ? Math.max(arrowStartX + 70, ROW_RESULT_COLUMN_X - 22) : arrowStartX + 70;
-          drawStraightArrow(rowGroup, arrowStartX, rowCenterY, arrowEndX, rowCenterY, { seedText: 'row' + itemIndex });
-          if (typeof item.arrow === 'string') {
-            addText(rowGroup, (arrowStartX + arrowEndX) / 2, rowCenterY - 18, item.arrow, { size: 18, color: 'muted' });
+          let arrowStartX = cursorX + (itemIndex === 0 ? 0 : ROW_ITEM_GAP);
+          if (itemIndex === lastArrowIndex) {
+            // The last arrow and everything after it go in their own group
+            // that slides with the board's result column.
+            const neededColumnX = arrowStartX + ROW_ARROW_LENGTH + ROW_ITEM_GAP;
+            if (rowResultColumnX === null || neededColumnX > rowResultColumnX) { moveResultColumnTo(neededColumnX); }
+            arrowStartX = rowResultColumnX - ROW_ITEM_GAP - ROW_ARROW_LENGTH;
+            itemsParent = svgElement('g');
+            rowGroup.appendChild(itemsParent);
+            registerResultColumnElement(itemsParent, rowResultColumnX);
           }
-          cursorX = arrowEndX + 22;
+          const arrowEndX = arrowStartX + ROW_ARROW_LENGTH;
+          drawStraightArrow(itemsParent, arrowStartX, rowCenterY, arrowEndX, rowCenterY, { seedText: 'row' + itemIndex });
+          if (typeof item.arrow === 'string') {
+            addText(itemsParent, (arrowStartX + arrowEndX) / 2, rowCenterY - 18, item.arrow, { size: 18, color: 'muted' });
+          }
+          // The next item adds the gap itself, so a result starts exactly on
+          // the result column, under its "column":"result" caption.
+          cursorX = arrowEndX;
           previousItemWasBox = false;
           return;
         }
         const [itemWidth, itemHeight] = itemSizes[itemIndex];
         const isBox = item.box !== undefined;
-        if (cursorX > 0 && itemIndex > 0) { cursorX += (isBox && previousItemWasBox) ? 10 : 22; }
-        drawRowItem(rowGroup, item, cursorX, rowCenterY, itemWidth, itemHeight);
+        if (itemIndex > 0) { cursorX += (isBox && previousItemWasBox) ? 10 : ROW_ITEM_GAP; }
+        drawRowItem(itemsParent, item, cursorX, rowCenterY, itemWidth, itemHeight);
         cursorX += itemWidth;
         previousItemWasBox = isBox;
       });
@@ -1678,21 +1805,77 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     // the caption just before it.
     function drawFlowCaption(command) {
       const isResultColumn = command.column === 'result';
-      if (isResultColumn && previousFlowCaption) {
-        addText(mainLayer, ROW_RESULT_COLUMN_X, previousFlowCaption.centerY, command.text, { size: command.size || 22, color: command.color || 'muted', anchor: 'start' });
-        return;
+      const captionCenterY = isResultColumn && previousFlowCaption ? previousFlowCaption.centerY : flowCursorY + 12;
+      const captionX = isResultColumn ? (rowResultColumnX ?? ROW_PROVISIONAL_RESULT_COLUMN_X) : 0;
+      const captionElement = addText(mainLayer, captionX, captionCenterY, command.text, { size: command.size || 22, color: command.color || 'muted', anchor: 'start' });
+      if (isResultColumn) {
+        // Wrapped in a group so it slides with the result column.
+        const captionGroup = svgElement('g');
+        mainLayer.appendChild(captionGroup);
+        captionGroup.appendChild(captionElement);
+        registerResultColumnElement(captionGroup, captionX);
+        if (previousFlowCaption) { return; }
       }
-      const captionCenterY = flowCursorY + 12;
-      addText(mainLayer, isResultColumn ? ROW_RESULT_COLUMN_X : 0, captionCenterY, command.text, { size: command.size || 22, color: command.color || 'muted', anchor: 'start' });
       previousFlowCaption = { centerY: captionCenterY };
       flowCursorY += 46;
       positionTitleAndCaptions();
     }
 
+    // A timeline in the flow, like Clicky's: one blue-gray line, nodes evenly
+    // spaced by index (not by date, so close dates never collide), the date
+    // centered above each dark dot and the caption centered below. The
+    // spacing fits the widest label so neighbouring labels never touch.
+    const TIMELINE_DATE_SIZE = 24, TIMELINE_CAPTION_SIZE = 22;
+    const TIMELINE_DATE_OFFSET_Y = 40, TIMELINE_CAPTION_OFFSET_Y = 48, TIMELINE_DOT_RADIUS = 7;
+    function drawTimeline(command) {
+      const timelineItems = (Array.isArray(command.items) ? command.items : []).filter((item) => item && typeof item === 'object').slice(0, 8);
+      if (!timelineItems.length) { return; }
+      const captionMaxCharacters = 18;
+      const labelWidthOf = (item) => Math.max(measureTextWidth(item.at || '', TIMELINE_DATE_SIZE),
+        ...wrapIntoLines(item.text || '', captionMaxCharacters).map((lineText) => measureTextWidth(lineText, TIMELINE_CAPTION_SIZE)));
+      const labelWidths = timelineItems.map(labelWidthOf);
+      const nodeSpacing = Math.min(Math.max(Math.max(...labelWidths) + 60, 200), 280);
+      const captionLineCount = Math.max(1, ...timelineItems.map((item) => wrapIntoLines(item.text || '', captionMaxCharacters).length));
+      // The first node sits half its label width in, so no label starts left of the board origin.
+      const firstNodeX = labelWidths[0] / 2;
+      const lineY = flowCursorY + TIMELINE_DATE_OFFSET_Y + 14;
+      const lastNodeX = firstNodeX + nodeSpacing * (timelineItems.length - 1);
+      const timelineGroup = svgElement('g');
+      mainLayer.appendChild(timelineGroup);
+      // The line starts exactly at the first dot and overshoots the last one only slightly, like Clicky's.
+      timelineGroup.appendChild(roughCanvas.line(firstNodeX, lineY, lastNodeX + 10, lineY,
+        { ...CLEAN_STROKE, roughness: 0.25, stroke: '#6b7080', strokeWidth: 2.5, seed: stableSeed('timeline' + lineY) }));
+      timelineItems.forEach((item, itemIndex) => {
+        const nodeX = firstNodeX + nodeSpacing * itemIndex;
+        const nodeColor = isPaletteColor(item.color) ? colorOf(item.color) : '#3a3a3a';
+        timelineGroup.appendChild(svgElement('circle', { cx: nodeX, cy: lineY, r: TIMELINE_DOT_RADIUS, fill: nodeColor }));
+        if (item.at) { addText(timelineGroup, nodeX, lineY - TIMELINE_DATE_OFFSET_Y, item.at, { size: TIMELINE_DATE_SIZE }); }
+        if (item.text) {
+          addText(timelineGroup, nodeX, lineY + TIMELINE_CAPTION_OFFSET_Y + (wrapIntoLines(item.text, captionMaxCharacters).length - 1) * TIMELINE_CAPTION_SIZE * 0.575,
+            item.text, { size: TIMELINE_CAPTION_SIZE, maxCharacters: captionMaxCharacters, color: isPaletteColor(item.color) ? item.color : 'fg' });
+        }
+      });
+      flowCursorY = lineY + TIMELINE_CAPTION_OFFSET_Y + captionLineCount * TIMELINE_CAPTION_SIZE * 1.15 + ROW_VERTICAL_GAP;
+      previousFlowCaption = null;
+      positionTitleAndCaptions();
+    }
+
     // MARK: commands
+
+    // What kind of board this is, for framing: flow-only boards (rows,
+    // captions, timelines) stay left-aligned with the heading; math and
+    // technical drawings may zoom in further than diagrams to fill the panel.
+    const FLOW_COMMAND_TYPES = new Set(['row', 'caption', 'timeline']);
+    const NEUTRAL_COMMAND_TYPES = new Set(['title', 'text', 'say', 'layout', 'highlight', 'tick', 'cross', 'shake', 'pulse', 'like']);
+    const MATH_COMMAND_TYPES = new Set(['force', 'polygon', 'square_on', 'line', 'point', 'ring', 'angle', 'axes', 'plot', 'path', 'parametric',
+      'area', 'tangent', 'mark', 'vector', 'numberline', 'pie', 'latex', 'label', 'formula']);
+    let hasFlowContent = false, hasNonFlowContent = false, hasMathContent = false;
 
     function drawCommand(command) {
       const commandType = command.t;
+      if (FLOW_COMMAND_TYPES.has(commandType)) { hasFlowContent = true; }
+      else if (!NEUTRAL_COMMAND_TYPES.has(commandType)) { hasNonFlowContent = true; }
+      if (MATH_COMMAND_TYPES.has(commandType)) { hasMathContent = true; }
 
       if (commandType === 'title') {
         // Big bold handwritten heading top-left, an optional gray subtitle
@@ -1715,25 +1898,37 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       } else if (commandType === 'caption') {
         drawFlowCaption(command);
 
+      } else if (commandType === 'timeline') {
+        drawTimeline(command);
+
       } else if (commandType === 'force') {
         // A thick colored force arrow in board coordinates (lift, weight,
         // thrust), with its label beside the middle or past the end.
         const [fromX, fromY] = command.from, [toX, toY] = command.to;
         const forceColor = colorOf(command.color, 'blue');
         const groupElement = svgElement('g');
-        drawStraightArrow(groupElement, fromX, fromY, toX, toY, { color: forceColor, width: command.width || 3.2, headLength: 17, seedText: 'force' });
+        const forceLength = Math.hypot(toX - fromX, toY - fromY) || 1;
+        const directionX = (toX - fromX) / forceLength, directionY = (toY - fromY) / forceLength;
+        // "pair" draws two parallel arrows that far apart (true = 24), centered
+        // on from→to, like Clicky's twin air streams under a fan or nozzle.
+        const pairGap = command.pair === true ? 24 : (Number(command.pair) || 0);
+        const pairOffsets = pairGap ? [-pairGap / 2, pairGap / 2] : [0];
+        for (const pairOffset of pairOffsets) {
+          const offsetX = -directionY * pairOffset, offsetY = directionX * pairOffset;
+          drawStraightArrow(groupElement, fromX + offsetX, fromY + offsetY, toX + offsetX, toY + offsetY,
+            { color: forceColor, width: command.width || (pairGap ? 3.2 : 3.8), seedText: 'force' + pairOffset });
+        }
         mainLayer.appendChild(groupElement);
         if (command.label) {
-          const forceLength = Math.hypot(toX - fromX, toY - fromY) || 1;
-          const directionX = (toX - fromX) / forceLength, directionY = (toY - fromY) / forceLength;
           const labelColorName = command.labelColor || (command.color === 'gray' ? 'muted' : 'fg');
           if (command.labelAt === 'end') {
             addText(mainLayer, toX + directionX * 40, toY + directionY * 40, command.label, { size: command.size || 24, color: labelColorName });
           } else {
-            // Beside the arrow: to its right for vertical arrows, above for horizontal ones.
+            // Beside the arrow: to its right for vertical arrows (down at the
+            // tip end, like Clicky's "Air downward"), above for horizontal ones.
             const isMostlyVertical = Math.abs(directionY) > Math.abs(directionX);
-            const labelX = isMostlyVertical ? (fromX + toX) / 2 + 16 : (fromX + toX) / 2;
-            const labelY = isMostlyVertical ? (fromY + toY) / 2 : (fromY + toY) / 2 - 22;
+            const labelX = isMostlyVertical ? fromX + (toX - fromX) * 0.75 + 18 + pairGap / 2 : (fromX + toX) / 2;
+            const labelY = isMostlyVertical ? fromY + (toY - fromY) * 0.75 : (fromY + toY) / 2 - 22 - pairGap / 2;
             addText(mainLayer, labelX, labelY, command.label, { size: command.size || 24, color: labelColorName, anchor: isMostlyVertical ? 'start' : 'middle' });
           }
         }
@@ -1790,6 +1985,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         if (commandType === 'highlight') {
           markGroup.appendChild(roughCanvas.ellipse(0, 0, targetNode.width + 40, targetNode.height + 34,
             { ...CLEAN_STROKE, roughness: 1.1, bowing: 1.5, stroke: outlineOf(command.color, 'yellow'), strokeWidth: 2.6 }));
+          // Arrows already drawn to this node now stop outside the ring.
+          targetNode.highlightRing = { radiusX: (targetNode.width + 40) / 2, radiusY: (targetNode.height + 34) / 2 };
+          for (const [edgeId, edge] of Object.entries(edgesById)) {
+            if (edge.element && (edge.command.from === command.id || edge.command.to === command.id)) { redrawEdge(edgeId); }
+          }
+          positionStepBadges();
         } else if (commandType === 'cross') {
           const crossOptions = { ...CLEAN_STROKE, stroke: colorOf(command.color, 'red'), strokeWidth: 3.2 };
           markGroup.appendChild(roughCanvas.line(-halfWidth, -halfHeight, halfWidth, halfHeight, crossOptions));
@@ -1805,7 +2006,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         const flowEdgeId = command.along || (command.from + '>' + command.to);
         if (!edgesById[flowEdgeId]) { return; }
         const travellerGroup = svgElement('g');
-        if (command.icon && ICON_SHAPES[command.icon]) {
+        if (ownEntry(ICON_SHAPES, command.icon)) {
           drawIcon(travellerGroup, command.icon, 0, 0, 24, command.color || 'yellow');
         } else {
           const dotElement = svgElement('circle', { cx: 0, cy: 0, r: 6, fill: colorOf(command.color, 'yellow') });
@@ -2023,16 +2224,22 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         mainLayer.appendChild(groupElement);
         const allCurvePoints = curveSegments.flat();
         if (command.label) {
-          // Curve labels go in a stacked legend at the axes' top-right corner,
-          // so several plots never pile their labels on top of each other.
+          // Curve labels go in a stacked legend pinned inside the axes'
+          // top-right corner, so several plots never pile their labels up
+          // and the legend stays attached to its graph.
           frame.legendCount = (frame.legendCount || 0) + 1;
-          const legendX = frame.left + frame.width + 30, legendY = frame.top + (frame.legendCount - 1) * 26;
+          const legendWidth = 30 + measureTextWidth(command.label, 20);
+          const legendX = frame.left + frame.width - legendWidth - 14, legendY = frame.top + 18 + (frame.legendCount - 1) * 26;
           const legendGroup = svgElement('g');
           legendGroup.appendChild(roughCanvas.line(legendX, legendY, legendX + 22, legendY, { stroke: curveColor, strokeWidth: 3, roughness: 0.3,
             strokeLineDash: command.style === 'dashed' ? [6, 5] : undefined, seed: stableSeed('legend' + command.expr) }));
           addText(legendGroup, legendX + 30, legendY, command.label, { size: 20, color: command.color || 'purple', anchor: 'start' });
           mainLayer.appendChild(legendGroup);
         }
+        // Later labels (an area's value, a point name) keep off the curve.
+        allCurvePoints.forEach((curvePoint, pointIndex) => {
+          if (pointIndex % 8 === 0) { placedLabelBoxes.push({ x: curvePoint[0], y: curvePoint[1], width: 1, height: 1 }); }
+        });
         registerGeometryShape(command.id, allCurvePoints, groupElement);
 
       } else if (commandType === 'path') {
@@ -2042,8 +2249,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         if (pathPoints.length < 2) { return; }
         const groupElement = svgElement('g');
         const drawOpenPath = command.smooth === false ? roughCanvas.linearPath.bind(roughCanvas) : roughCanvas.curve.bind(roughCanvas);
-        groupElement.appendChild(drawOpenPath(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2,
-          roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
+        const pathElement = drawOpenPath(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2,
+          roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined });
+        // Round ends, so a thick stroke (a swivel nozzle, a pipe) ends cleanly instead of in a square stub.
+        pathElement.querySelectorAll('path').forEach((strokeElement) => strokeElement.setAttribute('stroke-linecap', 'round'));
+        groupElement.appendChild(pathElement);
         mainLayer.appendChild(groupElement);
         registerGeometryShape(command.id, pathPoints, groupElement);
 
@@ -2096,7 +2306,20 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
           hachureGap: 6, fillWeight: 1.4, roughness: 0.6, seed: stableSeed('area' + command.expr + areaFrom + areaTo) }));
         mainLayer.insertBefore(groupElement, mainLayer.firstChild);
         if (command.label) {
-          const [labelX, labelY] = frameToBoard(frame, (areaFrom + areaTo) / 2, (upperFunction((areaFrom + areaTo) / 2) + lowerFunction((areaFrom + areaTo) / 2)) / 2);
+          // At the shaded region's centroid (shoelace formula), the visual
+          // middle of the region even when it is a thin wedge on one side.
+          let doubledArea = 0, centroidSumX = 0, centroidSumY = 0;
+          regionPoints.forEach(([pointX, pointY], pointIndex) => {
+            const [nextX, nextY] = regionPoints[(pointIndex + 1) % regionPoints.length];
+            const crossProduct = pointX * nextY - nextX * pointY;
+            doubledArea += crossProduct;
+            centroidSumX += (pointX + nextX) * crossProduct;
+            centroidSumY += (pointY + nextY) * crossProduct;
+          });
+          const [middleX, middleY] = frameToBoard(frame, (areaFrom + areaTo) / 2, (upperFunction((areaFrom + areaTo) / 2) + lowerFunction((areaFrom + areaTo) / 2)) / 2);
+          const hasCentroid = Math.abs(doubledArea) > 1;
+          const labelX = hasCentroid ? centroidSumX / (3 * doubledArea) : middleX;
+          const labelY = hasCentroid ? centroidSumY / (3 * doubledArea) : middleY;
           addText(mainLayer, labelX, labelY, command.label, { size: 18, color: command.color || 'yellow' });
         }
         // Later labels (a tangent's slope, a point name) keep off the shaded
@@ -2302,6 +2525,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     // panel's width, up to MAXIMUM_ZOOM_IN, and centered horizontally if it
     // still doesn't fill it; a big one zooms out to fit.
     const MAXIMUM_ZOOM_IN = 1.4;
+    // Math and technical drawings are often small in board units (a 400-unit
+    // jet), so they may zoom in further to fill the panel like Clicky's.
+    const MAXIMUM_MATH_ZOOM_IN = 1.75;
     // The title and captions don't count toward centering (they sit at the
     // frame's left edge, see positionTitleAndCaptions), only toward its
     // height and minimum width, so there's no feedback between the two.
@@ -2314,7 +2540,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       const boardRect = board.getBoundingClientRect();
       const aspectRatio = viewportAspectRatio();
       const paddedContentWidth = Math.max(drawing.maxX - drawing.minX, hasTitleBounds ? titleBounds.width : 0) + FRAME_PADDING_LEFT + FRAME_PADDING_RIGHT;
-      let frameWidth = Math.max(paddedContentWidth, (boardRect.width || MINIMUM_FRAME.width) / MAXIMUM_ZOOM_IN);
+      const isMathOnlyBoard = hasMathContent && !hasFlowContent;
+      let frameWidth = Math.max(paddedContentWidth, (boardRect.width || MINIMUM_FRAME.width) / (isMathOnlyBoard ? MAXIMUM_MATH_ZOOM_IN : MAXIMUM_ZOOM_IN));
       let frameHeight = frameWidth * aspectRatio;
       if (frameHeight < contentBottom - contentTop + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM) {
         frameHeight = contentBottom - contentTop + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM;
@@ -2322,7 +2549,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       }
       // Centered on the drawing, but never so far left that the drawing's
       // left edge leaves the padding (a title wider than the drawing).
-      const centeredX = (drawing.minX + drawing.maxX) / 2 - frameWidth / 2;
+      // Flow boards (rows, captions, timelines) instead stay left-aligned with
+      // the heading, like Clicky's, so the heading and the rows share one edge.
+      const isFlowBoard = hasFlowContent && !hasNonFlowContent;
+      const centeredX = isFlowBoard ? Infinity : (drawing.minX + drawing.maxX) / 2 - frameWidth / 2;
       return { x: Math.min(centeredX, drawing.minX - FRAME_PADDING_LEFT), y: contentTop - FRAME_PADDING_TOP, width: frameWidth, height: frameHeight };
     }
 
@@ -2364,6 +2594,16 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
           const change = (cameraTarget[key] - camera[key]) * 0.1;
           camera[key] += change;
           largestChange = Math.max(largestChange, Math.abs(change));
+        }
+        // The heading sits at the target frame's left edge; while the camera
+        // is still easing it must never pan past it and cut the heading off.
+        if (titleElement && titleLayer.childElementCount) {
+          const titleBounds = titleLayer.getBBox();
+          const leftmostCameraX = titleBounds.x - FRAME_PADDING_LEFT;
+          if (titleBounds.width && camera.x > leftmostCameraX) {
+            largestChange = Math.max(largestChange, camera.x - leftmostCameraX);
+            camera.x = leftmostCameraX;
+          }
         }
         // Once settled, stop touching the viewBox: endless sub-pixel updates
         // re-render the whole board (and its glow filters) every frame.
