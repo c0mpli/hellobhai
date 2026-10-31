@@ -1,10 +1,11 @@
 //! User settings, stored as JSON at `app_config_dir/settings.json`.
 //! A missing or corrupt file means defaults (sonnet, voice F2, ctrl + win).
 
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::push_to_talk::PushToTalkShortcutOption;
 use crate::supertonic::SupertonicVoice;
@@ -32,14 +33,37 @@ impl Default for Settings {
 
 pub type SharedSettings = Arc<RwLock<Settings>>;
 
+fn settings_file_path(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|config_directory| config_directory.join("settings.json"))
+}
+
+/// Missing, unreadable or corrupt -> defaults.
+fn settings_from_json_text(settings_json_text: Option<String>) -> Settings {
+    settings_json_text
+        .and_then(|json_text| serde_json::from_str(&json_text).ok())
+        .unwrap_or_default()
+}
+
 /// Reads settings.json; missing or unreadable -> defaults.
 pub fn load_settings(app: &AppHandle) -> SharedSettings {
-    todo!("E: read app_config_dir/settings.json, fall back to Settings::default()")
+    let settings_json_text = settings_file_path(app).and_then(|settings_path| std::fs::read_to_string(settings_path).ok());
+    Arc::new(RwLock::new(settings_from_json_text(settings_json_text)))
 }
 
 /// Writes settings.json (creating the folder); errors are logged, not fatal.
 pub fn save_settings(app: &AppHandle, settings: &Settings) {
-    todo!("E: write app_config_dir/settings.json")
+    let Some(settings_path) = settings_file_path(app) else {
+        eprintln!("settings: no config folder, not saving");
+        return;
+    };
+    let write_result = settings_path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(&settings_path, serde_json::to_string_pretty(settings).unwrap_or_default()));
+    if let Err(write_error) = write_result {
+        eprintln!("settings: couldn't save {}: {write_error}", settings_path.display());
+    }
 }
 
 #[cfg(test)]
@@ -62,5 +86,12 @@ mod tests {
         let partially_saved_settings: Settings = serde_json::from_str(r#"{"claudeModel":"opus"}"#).unwrap();
         assert_eq!(partially_saved_settings.claude_model, "opus");
         assert_eq!(partially_saved_settings.push_to_talk_shortcut, PushToTalkShortcutOption::CtrlWin);
+    }
+
+    #[test]
+    fn missing_or_corrupt_settings_file_means_defaults() {
+        assert_eq!(settings_from_json_text(None), Settings::default());
+        assert_eq!(settings_from_json_text(Some("{not json".to_string())), Settings::default());
+        assert_eq!(settings_from_json_text(Some(r#"{"claudeModel":"haiku"}"#.to_string())).claude_model, "haiku");
     }
 }

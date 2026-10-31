@@ -11,7 +11,7 @@ hellobhai is a local-first AI buddy that lives next to your cursor. Hold a hotke
 | Path | What it is |
 |------|------------|
 | `macos/` | The Mac app (Swift, SwiftUI + AppKit, Xcode project `leanring-buddy`). Details: `macos/CLAUDE.md`. |
-| `tauri/` | The Windows app (Tauri 2: Rust + WebView2; Linux may follow from the same crate), being built. Details: `tauri/README.md` (`tauri/CLAUDE.md` once it exists). |
+| `tauri/` | The Windows app (Tauri 2: Rust + WebView2; Linux may follow from the same crate), being built. Details: `tauri/CLAUDE.md` and `tauri/README.md`. CI: `.github/workflows/tauri.yml`. |
 | `scripts/` | Scripts that span platforms (e.g. exporting the Mac app's web pages and prompts for the other platforms). Mac-only scripts are in `macos/scripts/`. |
 | `docs/` | `architecture.md` (how it works, the tag protocol, what leaves your machine), `mobile-plan.md` (future phone port). |
 
