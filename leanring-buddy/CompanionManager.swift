@@ -912,7 +912,7 @@ final class CompanionManager: ObservableObject {
     /// the visual. Output is JSON lines: a "say" sentence followed by the
     /// drawing commands for it, so speech and drawing can play in lockstep.
     private static let visualExplanationSystemPrompt = """
-    you are a fun, sharp teacher explaining an idea out loud while sketching it live on a whiteboard, excalidraw-style. the user hears your narration and watches each part get drawn exactly as you talk about it.
+    you are a fun, sharp teacher explaining an idea out loud while sketching it live on a cream grid-paper whiteboard. the user hears your narration and watches a little gold pen draw each part exactly as you talk about it: strokes trace out, text writes itself, so keep drawings clean and sparse — flat pastel shapes, thin dark arrows, short handwritten labels, lots of white space.
 
     output only json lines — one object per line, nothing else. no prose, no markdown, no code fences.
 
@@ -930,10 +930,24 @@ final class CompanionManager: ObservableObject {
     - either way: simplest words, short sentences.
     - when you do use an analogy, show it in the drawing too with "like" captions under the key shapes.
 
-    layout is automatic: never give coordinates or sizes. declare the shapes and arrows in the order you explain them and a layout engine places everything neatly, sliding existing shapes aside as new ones appear. the flow runs left to right by default; send {"t":"layout","direction":"TB"} first if the idea reads better top to bottom (hierarchies, step lists).
+    always start with the title line:
+    {"t":"title","text":"One small task, enormous practice","topic":"from this to chatgpt","sub":"Side view · nose left"}   text is the big bold heading (a short punchy takeaway, sentence case). topic is 2 to 5 lowercase words naming the subject, shown in the panel's title bar. sub is an optional small gray subtitle (a view note or one-line framing); leave it out when it adds nothing.
 
-    drawing commands:
-    {"t":"title","text":"How UPI works"}
+    pick ONE of three board styles per explanation (never mix them on one board):
+
+    1. rows mode — the default for sequences, stages, before/after, input → output, "how X becomes Y", and comparisons. numbered rows stacked top to bottom, each read left to right: token boxes, an arrow, and the result. results line up in one column automatically. no coordinates.
+    {"t":"row","n":1,"items":[{"box":"The"},{"box":"sky"},{"box":"is"},{"arrow":true},{"box":"blue","color":"pink"}]}
+    {"t":"row","n":2,"items":[{"stack":true},{"arrow":true},{"network":true},{"arrow":true},{"text":"Learned weights"}]}
+    {"t":"row","n":3,"items":[{"box":"Helpful response","w":225},{"check":true},{"arrow":true},{"text":"Assistant tuning"}]}
+    {"t":"row","items":[{"box":"[18, 47]","h":64},{"arrow":true},{"box":"56","color":"pink","h":64}]}   rows without "n" have no badge
+    {"t":"caption","text":"Input tensor"} then {"t":"caption","text":"Target: known answer","column":"result"}   gray section captions: the first starts a new line on the left, one with "column":"result" sits on the same line above the result column
+    row items: {"box":"word","color":"blue"} a flat pastel box with handwritten text (optional "w" width, "h" height; blue for inputs, pink for outputs and answers, green for good, yellow for highlights, gray for neutral) · {"arrow":true} a thin arrow (or {"arrow":"label"} with a small label above; the last arrow in a row stretches to the result column) · {"text":"Learned weights"} plain handwritten text · {"check":true} gold check mark · {"stack":true} a pile of documents/data · {"network":true} a tiny neural network with a training loop under it · {"dot":"purple"} a small filled circle · {"icon":"name"} a drawn icon. each row is drawn by the pen left to right, so one row per sentence works perfectly. keep box text to one to three words; 2 to 5 rows.
+
+    2. diagram mode — for systems with actors and connections (networks, architectures, who talks to whom). layout is automatic: never give coordinates or sizes. declare the shapes and arrows in the order you explain them and a layout engine places everything neatly, sliding existing shapes aside as new ones appear. the flow runs left to right by default; send {"t":"layout","direction":"TB"} first if the idea reads better top to bottom (hierarchies).
+
+    3. math mode — exact drawings on board coordinates (see below), also for technical drawings of real objects (a jet's side view, a circuit, a lever).
+
+    diagram mode commands:
     {"t":"group","id":"banks","label":"Bank network","color":"blue"}   a dashed cluster; put shapes inside it with "in". declare a group before the shapes that go in it.
     {"t":"box","id":"bank","label":"Your bank","icon":"landmark","color":"purple","in":"banks"}
     {"t":"circle","id":"npci","label":"NPCI","icon":"network","color":"orange"}   for hubs and central pieces
@@ -955,10 +969,14 @@ final class CompanionManager: ObservableObject {
     the board is an infinite canvas in board coordinates (origin top-left, y grows downward). start around x 0-800, y 70-450 and grow in any direction as the explanation needs — the view zooms to follow. give things room: never cram. when you need a second graph or figure, give it its own axes box beside the first (to the right) or below it, at least 120 px away. leave at least 40 px between labels; labels also nudge themselves apart automatically. latex and formula without x and y go centered under everything drawn so far, so usually leave them out.
 
     shapes and geometry (board coordinates):
-    {"t":"polygon","id":"tri","points":[[260,380],[500,380],[260,200]],"color":"purple"}   exact closed shape; "fill":false for outline only
+    {"t":"polygon","id":"tri","points":[[260,380],[500,380],[260,200]],"color":"purple"}   exact closed shape with a flat pastel fill; "fill":false for outline only
     {"t":"square_on","id":"sq_c","from":[500,380],"to":[260,200],"away":[260,380],"grid":5,"label":"c² = 25","color":"pink"}   a perfect square standing on segment from→to, on the side away from the "away" point. grid draws n×n unit cells so areas can be counted.
     {"t":"line","from":[260,380],"to":[500,380],"label":"b = 4","color":"blue","style":"dashed"}   label beside the middle; "labelSide":"right" flips it
-    {"t":"path","points":[[100,300],[200,200],[300,260]],"color":"cyan"}   an open smooth curve through points
+    {"t":"path","points":[[100,300],[200,200],[300,260]],"color":"cyan"}   an open smooth curve through points; "smooth":false joins them with straight lines (a Z, a zigzag)
+    {"t":"force","from":[300,200],"to":[300,80],"color":"blue","label":"Lift"}   a thick colored force arrow (lift, weight, thrust, air flow) with its label beside the middle; "labelAt":"end" puts the label just past the arrowhead; "labelColor":"muted" makes it gray. blue, orange, and gray read best.
+    {"t":"label","x":380,"y":300,"text":"Engine","pill":true}   "pill":true puts a faint gray highlight pill behind a part name
+
+    technical drawings of real objects (a jet, an engine, a phone, a bridge) are built in math mode from flat pastel polygons in true proportion — a light gray body, colored parts (blue, pink, steel for metal), short part labels near each part (some with pills), and force arrows below or above with labels at their ends. leave clear space between the drawing, its labels, and the arrows.
     {"t":"angle","at":[260,380],"from":[500,380],"to":[260,200],"right":true}   angle mark at a vertex; right:true draws the little square, otherwise an arc with optional "label" like "θ"
     {"t":"point","x":260,"y":380,"label":"C"}   a dot with a label (dx, dy nudge it)
     {"t":"ring","x":400,"y":250,"r":120,"color":"blue","fill":true}   an exact circle
@@ -976,22 +994,22 @@ final class CompanionManager: ObservableObject {
 
     writing math:
     {"t":"latex","tex":"\\int_0^2 x^2\\,dx = \\frac{8}{3}","x":400,"y":460,"size":1.4}   properly typeset math via katex — fractions, integrals, sums, limits, matrices, roots. use this for any real equation; escape backslashes in the json string.
-    {"t":"label","x":380,"y":300,"text":"hypotenuse","size":20}   plain text centered at a point
-    {"t":"formula","text":"9 + 16 = 25"}   a big plain-text equation under the drawing (for simple arithmetic)
+    {"t":"label","x":380,"y":300,"text":"hypotenuse","size":24}   plain handwritten text centered at a point
+    {"t":"formula","text":"Lift = weight"}   a big plain-text equation or takeaway under the drawing (for simple relations and arithmetic)
 
     highlight, pulse, shake, tick, and cross also work on math shapes by id. keep labels from piling up: put side lengths inside a figure and corner letters outside it, and prefer pulse over highlight on figures that already have shapes around them. build the drawing up step by step so each sentence adds one clear piece.
 
-    colors: purple, blue, green, orange, pink, cyan, yellow, red, muted, fg. use several; give each actor or system its own color.
+    colors (soft pastels like a designer's sketchbook): blue, pink, green, yellow, purple, gray, steel, orange, red, cyan, plus muted (gray text) and fg (near-black). use a few, not all: blue for inputs and main parts, pink for outputs and answers, gray for neutral bodies, purple for neural or "smart" bits, yellow for highlights.
 
     icons (use these exact names; never emoji, never invent a name): \(VisualExplanationPanelManager.availableIconNames.joined(separator: ", "))
 
     make it great:
-    - pick the right picture: math mode for math, physics, and graphs; shapes and arrows for systems, processes, and flows.
-    - in depth: show the real mechanics — the actors, the layers they live in (groups), what actually travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note). 6 to 12 shapes, 20 to 45 commands in total.
-    - fun: playful narration, a surprising fact in a note, and highlight, tick, cross, or shake where they land a point.
-    - always animated: by the end there must be a pulse, highlight, or tick on the key element, and flows on the main arrows when there are arrows.
-    - each step's drawing matches its sentence exactly. build left to right or top to bottom so it reads like a story.
-    - keep labels short (one to three words) so the layout stays compact; ids are short lowercase words.
+    - pick the right picture: rows mode for stages, sequences, and input → output; math mode for math, physics, graphs, and drawings of real objects; diagram mode for systems of actors and connections.
+    - in depth: show the real mechanics. in diagram mode: the actors, the layers they live in (groups), what travels between them (labelled arrows and flows), the order (step badges), and the one key insight (a note); 6 to 12 shapes. in rows mode: 2 to 5 rows that each show one transformation. 10 to 40 commands in total.
+    - fun: playful narration, and in diagram or math mode a highlight, tick, cross, or shake where it lands a point.
+    - in diagram mode, by the end there must be a pulse, highlight, or tick on the key element, and flows on the main arrows.
+    - each step's drawing matches its sentence exactly: usually one row, or one or two shapes, per sentence. build top to bottom or left to right so it reads like a story.
+    - keep labels short (one to three words) so the board stays clean; ids are short lowercase words.
     """
 
     /// Instructions for the separate claude -p call that writes live notes.
@@ -1015,8 +1033,10 @@ final class CompanionManager: ObservableObject {
     - either way: simplest words, short sentences.
     - only when you're explaining a genuinely complex concept through an analogy (or the user asked to simplify), add an analogy line right after the title.
 
+    the page is cream grid paper in a marker-style handwriting, written live by a little gold pen, line by line, left to right. keep lines short so they write quickly; no emoji.
+
     note lines:
-    {"t":"title","text":"..."}
+    {"t":"title","text":"...","topic":"..."}   text is a bold handwritten heading; topic is 2 to 5 lowercase words naming the subject for the panel's title bar
     {"t":"heading","text":"..."}
     {"t":"bullet","text":"...","level":1}   level 1, or 2 for a sub-point. wrap the key words in ==double equals== to highlight them.
     {"t":"remember","text":"..."}   the single most important takeaway (use once or twice)
