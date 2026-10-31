@@ -69,7 +69,7 @@ final class CompanionManager: ObservableObject {
     /// The in-flight visual generation, cancelled when the user asks something new.
     private var currentVisualTask: Task<Void, Never>?
 
-    /// True while a response is being spoken aloud. Drives the purple
+    /// True while a response is being spoken aloud. Drives the blue
     /// notch indicator in the overlay.
     @Published private(set) var isSpeakingAloud = false
 
