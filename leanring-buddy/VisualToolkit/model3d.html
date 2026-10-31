@@ -351,9 +351,15 @@ function buildPartGeometry(partSpec) {
       } else {
         const outlineShape = buildRoundedShape(bevelSize > 0 ? insetPolygon(outlinePoints, bevelSize) : outlinePoints, Math.max(0, cornerRounding - bevelSize));
         // Holes grow by the bevel so they finish at their given size too.
+        // Their corners are rounded like the outline's ("holeRound", default
+        // 3/4 of "round"): a sharp hole inside a rounded outline (a phone
+        // frame) pokes through the corners and the hole vanishes.
+        const holeCornerRounding = Math.max(0, finiteNumberOr(partSpec.holeRound, cornerRounding * 0.75));
         (Array.isArray(partSpec.holes) ? partSpec.holes : []).slice(0, 24).forEach((holeValue) => {
           const holePoints = pointListOrNull(holeValue);
-          if (holePoints && holePoints.length >= 3) outlineShape.holes.push(new THREE.Path(bevelSize > 0 ? insetPolygon(holePoints, -bevelSize) : holePoints));
+          if (holePoints && holePoints.length >= 3) {
+            outlineShape.holes.push(buildRoundedShape(bevelSize > 0 ? insetPolygon(holePoints, -bevelSize) : holePoints, holeCornerRounding, THREE.Path));
+          }
         });
         (Array.isArray(partSpec.circles) ? partSpec.circles : []).slice(0, 48).forEach((circleValue) => {
           if (!Array.isArray(circleValue) || circleValue.length < 3) return;
@@ -419,9 +425,9 @@ function buildPartGeometry(partSpec) {
 
 // An outline polygon with every corner rounded off by up to "cornerRadius"
 // (never more than half of either neighbouring edge).
-function buildRoundedShape(outlinePoints, cornerRadius) {
-  if (!(cornerRadius > 0)) return new THREE.Shape(outlinePoints);
-  const roundedShape = new THREE.Shape();
+function buildRoundedShape(outlinePoints, cornerRadius, ShapeClass = THREE.Shape) {
+  if (!(cornerRadius > 0)) return new ShapeClass(outlinePoints);
+  const roundedShape = new ShapeClass();
   const pointCount = outlinePoints.length;
   outlinePoints.forEach((cornerPoint, pointIndex) => {
     const previousPoint = outlinePoints[(pointIndex - 1 + pointCount) % pointCount];
@@ -435,7 +441,8 @@ function buildRoundedShape(outlinePoints, cornerRadius) {
     else roundedShape.lineTo(curveStart.x, curveStart.y);
     roundedShape.quadraticCurveTo(cornerPoint.x, cornerPoint.y, curveEnd.x, curveEnd.y);
   });
-  roundedShape.closePath();
+  // No closePath: the outline closes itself, and the repeated first point
+  // closePath adds made a zero-length edge that broke beveled holes.
   return roundedShape;
 }
 
@@ -520,6 +527,7 @@ function buildLoftGeometry(partSpec) {
       round: THREE.MathUtils.clamp(finiteNumberOr(sectionSpec.round, 0.6), 0, 1),
       dy: finiteNumberOr(sectionSpec.dy, 0),
       dz: finiteNumberOr(sectionSpec.dz, 0),
+      chine: THREE.MathUtils.clamp(finiteNumberOr(sectionSpec.chine, 0), 0, 1),
     }))
     .sort((firstSection, secondSection) => firstSection.at - secondSection.at);
   if (sectionSpecs.length < 2) return new THREE.BoxGeometry(1, 1, 1);
@@ -527,7 +535,7 @@ function buildLoftGeometry(partSpec) {
   // Interpolated sections: 8 per span between the given ones.
   const stepsPerSpan = 8;
   const interpolatedSections = [];
-  const sectionKeys = ['at', 'w', 'h', 'round', 'dy', 'dz'];
+  const sectionKeys = ['at', 'w', 'h', 'round', 'dy', 'dz', 'chine'];
   for (let spanIndex = 0; spanIndex < sectionSpecs.length - 1; spanIndex++) {
     const previousSection = sectionSpecs[Math.max(0, spanIndex - 1)];
     const startSection = sectionSpecs[spanIndex];
@@ -544,6 +552,7 @@ function buildLoftGeometry(partSpec) {
       interpolatedSection.w = Math.max(0.0001, interpolatedSection.w);
       interpolatedSection.h = Math.max(0.0001, interpolatedSection.h);
       interpolatedSection.round = THREE.MathUtils.clamp(interpolatedSection.round, 0, 1);
+      interpolatedSection.chine = THREE.MathUtils.clamp(interpolatedSection.chine, 0, 1);
       interpolatedSections.push(interpolatedSection);
     }
   }
@@ -554,15 +563,24 @@ function buildLoftGeometry(partSpec) {
     const halfWidth = Math.max(0.00005, section.w / 2 - inwardOffset);
     const halfHeight = Math.max(0.00005, section.h / 2 - inwardOffset);
     const exponent = 2 / (2 + (1 - section.round) * 8);
+    // "chine" (0 to 1): a stealth-jet nose. The upper half turns pointed
+    // (sloped sides), the lower half flat and boxy, and they meet in a
+    // sharp edge along each side.
+    const chineAmount = section.chine || 0;
+    const upperExponent = THREE.MathUtils.lerp(exponent, 1.7, chineAmount);
+    const lowerExponent = THREE.MathUtils.lerp(exponent, 0.3, chineAmount);
+    const lowerHalfHeight = halfHeight * (1 - 0.45 * chineAmount);
     const ringPoints = [];
     for (let sampleIndex = 0; sampleIndex < ringSampleCount; sampleIndex++) {
       const angle = sampleIndex / ringSampleCount * Math.PI * 2;
       const cosine = Math.cos(angle);
       const sine = Math.sin(angle);
+      const isUpperHalf = sine >= 0;
+      const sampleExponent = isUpperHalf ? upperExponent : lowerExponent;
       ringPoints.push(new THREE.Vector3(
         section.at,
-        section.dy + halfHeight * Math.sign(sine) * Math.pow(Math.abs(sine), exponent),
-        section.dz + halfWidth * Math.sign(cosine) * Math.pow(Math.abs(cosine), exponent),
+        section.dy + (isUpperHalf ? halfHeight : lowerHalfHeight) * Math.sign(sine) * Math.pow(Math.abs(sine), sampleExponent),
+        section.dz + halfWidth * Math.sign(cosine) * Math.pow(Math.abs(cosine), sampleExponent),
       ));
     }
     return ringPoints;
@@ -830,6 +848,7 @@ function attachOutline(partMesh, outlineWidthInPixels = OUTLINE_WIDTH_IN_PIXELS)
   }
   const outlineMesh = new THREE.Mesh(partMesh.geometry, buildOutlineMaterial(outlineWidthInPixels));
   outlineMesh.userData.isHelper = true;
+  outlineMesh.userData.baseOutlineWidth = outlineWidthInPixels;
   partMesh.add(outlineMesh);
   partMesh.userData.outlineMesh = outlineMesh;
 }
@@ -886,8 +905,13 @@ function modelSizeSoFar() {
 
 // Arrows (isArrow) are left out of the model's bounds: like Clicky's flow
 // arrows they may run past the object without shrinking it to fit.
+// Bumped whenever any part's bounds change, so per-frame caches (part
+// corners, label rows) know when to rebuild.
+let boundsVersion = 0;
+
 function registerSceneObject(objectId, sceneObject, objectMaterials, isArrow = false) {
   const objectBounds = boundsInContentSpace(sceneObject);
+  boundsVersion += 1;
   sceneObjectsById.set(objectId, { object: sceneObject, bounds: objectBounds, materials: objectMaterials, isArrow });
   if (!objectBounds.isEmpty() && !isArrow) modelBoundsInContentSpace.union(objectBounds);
   updateContactShadow();
@@ -896,6 +920,7 @@ function registerSceneObject(objectId, sceneObject, objectMaterials, isArrow = f
 
 // After something moved: every part's bounds and the model's, again.
 function refreshAllBounds() {
+  boundsVersion += 1;
   modelBoundsInContentSpace.makeEmpty();
   for (const sceneObjectEntry of sceneObjectsById.values()) {
     if (sceneObjectEntry.isGroup) continue;
@@ -1148,22 +1173,46 @@ function boxCorners(bounds) {
 
 // Corners of every part's own box: much tighter than the corners of the
 // whole model's box once the model is turned.
+// Cached until some bounds change (read-only for callers).
+let cachedPartCorners = [];
+let cachedPartCornersVersion = -1;
 function cornersOfAllParts() {
+  if (cachedPartCornersVersion === boundsVersion) return cachedPartCorners;
   const cornerPoints = [];
   for (const sceneObjectEntry of sceneObjectsById.values()) {
     if (!sceneObjectEntry.isGroup && !sceneObjectEntry.isArrow && !sceneObjectEntry.bounds.isEmpty()) cornerPoints.push(...boxCorners(sceneObjectEntry.bounds));
   }
+  cachedPartCorners = cornerPoints;
+  cachedPartCornersVersion = boundsVersion;
   return cornerPoints;
 }
 
+const cornerScratchVector = new THREE.Vector3();
 function projectedBoundsRectangle(bounds, cornerPoints) {
   if (!cornerPoints && (!bounds || bounds.isEmpty())) return null;
   if (cornerPoints && !cornerPoints.length) return null;
   let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
-  for (const cornerPoint of cornerPoints || boxCorners(bounds)) {
-    const pagePoint = projectContentPointToPage(cornerPoint);
-    left = Math.min(left, pagePoint.x); right = Math.max(right, pagePoint.x);
-    top = Math.min(top, pagePoint.y); bottom = Math.max(bottom, pagePoint.y);
+  const includePoint = (contentPoint) => {
+    projectionScratchVector.copy(contentPoint).applyMatrix4(modelContent.matrixWorld).project(camera);
+    const pageX = (projectionScratchVector.x + 1) / 2 * viewportWidth;
+    const pageY = (1 - projectionScratchVector.y) / 2 * viewportHeight;
+    if (pageX < left) left = pageX;
+    if (pageX > right) right = pageX;
+    if (pageY < top) top = pageY;
+    if (pageY > bottom) bottom = pageY;
+  };
+  if (cornerPoints) {
+    for (const cornerPoint of cornerPoints) includePoint(cornerPoint);
+  } else {
+    // The 8 corners through one scratch vector: no allocations per call.
+    for (let cornerIndex = 0; cornerIndex < 8; cornerIndex++) {
+      cornerScratchVector.set(
+        cornerIndex & 1 ? bounds.max.x : bounds.min.x,
+        cornerIndex & 2 ? bounds.max.y : bounds.min.y,
+        cornerIndex & 4 ? bounds.max.z : bounds.min.z,
+      );
+      includePoint(cornerScratchVector);
+    }
   }
   return { left, top, right, bottom };
 }
@@ -1193,6 +1242,8 @@ const viewState = {
   // around the requested point) or by an anchor (the real object's box).
   fitRectangle: null,
   isAnchored: false,
+  // Page text the labels keep clear of (the anchor's "avoid" boxes, page px).
+  avoidRectangles: [],
   anchorView: null,
   // Small feedback corrections so the projected model lands exactly on
   // the fit rectangle (the analytic fit is conservative under perspective).
@@ -1309,7 +1360,9 @@ function correctFitTowardRectangle(modelRectangle) {
   const fitWidth = fitRectangle.right - fitRectangle.left, fitHeight = fitRectangle.bottom - fitRectangle.top;
   const modelWidth = modelRectangle.right - modelRectangle.left, modelHeight = modelRectangle.bottom - modelRectangle.top;
   if (modelWidth < 2 || modelHeight < 2) return;
-  const sizeRatio = Math.max(modelWidth / fitWidth, modelHeight / fitHeight);
+  // Measured against the zoomed target: a camera "zoom" is meant to make the
+  // model bigger than the fit rectangle, not an error to correct away.
+  const sizeRatio = Math.max(modelWidth / fitWidth, modelHeight / fitHeight) / viewState.zoomMultiplier;
   viewState.fitScaleCorrection = THREE.MathUtils.clamp(viewState.fitScaleCorrection * Math.pow(sizeRatio, 0.1), 0.55, 1.6);
   const centerErrorX = (fitRectangle.left + fitRectangle.right) / 2 - (modelRectangle.left + modelRectangle.right) / 2;
   const centerErrorY = (fitRectangle.top + fitRectangle.bottom) / 2 - (modelRectangle.top + modelRectangle.bottom) / 2;
@@ -1442,15 +1495,39 @@ function isPointClippedAway(meshObject, worldPoint) {
   return !!(clippingPlanes && clippingPlanes.some((clippingPlane) => clippingPlane.distanceToPoint(worldPoint) < 0));
 }
 
+// Every real mesh that can hide another part (arrows left out: labels may
+// point through them). Rebuilt when parts are added or moved.
+let cachedOccludingMeshes = [];
+let cachedOccludingMeshesVersion = -1;
+function occludingMeshes() {
+  if (cachedOccludingMeshesVersion === boundsVersion) return cachedOccludingMeshes;
+  const arrowMeshes = new Set();
+  for (const sceneObjectEntry of sceneObjectsById.values()) {
+    if (sceneObjectEntry.isArrow) meshesUnder(sceneObjectEntry.object).forEach((arrowMesh) => arrowMeshes.add(arrowMesh));
+  }
+  cachedOccludingMeshes = meshesUnder(modelContent).filter((candidateMesh) => !arrowMeshes.has(candidateMesh));
+  cachedOccludingMeshesVersion = boundsVersion;
+  return cachedOccludingMeshes;
+}
+
+// A hit that really blocks the view: not cut away, not hidden, not see-through.
+function isBlockingHit(hit) {
+  const hitMaterial = hit.object.material;
+  if (!hit.object.visible || isPointClippedAway(hit.object, hit.point)) return false;
+  return !(hitMaterial && hitMaterial.transparent && hitMaterial.opacity < 0.6);
+}
+
 // The point on the part the camera actually sees along the line of sight
 // through a spot inside its box (so dots sit on a real face, never in the
-// air), or null when the part is hidden there.
+// air), or null when the part is hidden there: the first thing the ray
+// meets must be the part itself, not something in front of it.
 function visibleSurfacePointOnParts(partMeshes, contentPoint) {
   const worldPoint = contentPoint.clone().applyMatrix4(modelContent.matrixWorld);
   const cameraPosition = new THREE.Vector3().setFromMatrixPosition(camera.matrixWorld);
   anchorRaycaster.set(cameraPosition, worldPoint.clone().sub(cameraPosition).normalize());
-  const hits = anchorRaycaster.intersectObjects(partMeshes, false);
-  return hits.find((hit) => !isPointClippedAway(hit.object, hit.point)) || null;
+  const firstBlockingHit = anchorRaycaster.intersectObjects(occludingMeshes(), false).find(isBlockingHit);
+  if (!firstBlockingHit) return null;
+  return partMeshes.includes(firstBlockingHit.object) ? firstBlockingHit : null;
 }
 
 // Picks, once, where on its part each new label points: a visible spot far
@@ -1468,10 +1545,23 @@ function chooseLabelAnchor(calloutLabel, placedAnchorPoints, modelRectangle) {
       // Along the part's longest horizontal side.
       const alongX = boundsSize.x >= boundsSize.z;
       let bestHit = null, bestDistance = -1, bestFallbackPoint = null;
-      for (const candidateFraction of ANCHOR_FRACTIONS_TO_TRY) {
-        const candidatePoint = anchorBounds.getCenter(new THREE.Vector3());
-        if (alongX) candidatePoint.x = anchorBounds.min.x + boundsSize.x * candidateFraction;
-        else candidatePoint.z = anchorBounds.min.z + boundsSize.z * candidateFraction;
+      // Along the middle first, then along the near and far edges, so a
+      // ring or frame (empty in the middle) still gets a dot on its rim.
+      const candidatePoints = [];
+      for (const acrossFraction of [0.5, 0.94, 0.06]) {
+        for (const candidateFraction of ANCHOR_FRACTIONS_TO_TRY) {
+          const candidatePoint = anchorBounds.getCenter(new THREE.Vector3());
+          if (alongX) {
+            candidatePoint.x = anchorBounds.min.x + boundsSize.x * candidateFraction;
+            candidatePoint.z = anchorBounds.min.z + boundsSize.z * acrossFraction;
+          } else {
+            candidatePoint.z = anchorBounds.min.z + boundsSize.z * candidateFraction;
+            candidatePoint.x = anchorBounds.min.x + boundsSize.x * acrossFraction;
+          }
+          candidatePoints.push(candidatePoint);
+        }
+      }
+      for (const candidatePoint of candidatePoints) {
         if (!bestFallbackPoint) bestFallbackPoint = candidatePoint.clone();
         const hit = visibleSurfacePointOnParts(partMeshes, candidatePoint);
         if (!hit) continue;
@@ -1506,17 +1596,24 @@ function automaticLabelSide(anchorPagePoint, modelRectangle) {
   return anchorPagePoint.y < (modelRectangle.top + modelRectangle.bottom) / 2 ? 'top' : 'bottom';
 }
 
+const anchorScratchVector = new THREE.Vector3();
 function currentAnchorPagePoint(calloutLabel) {
   if (calloutLabel.anchorMesh) {
-    return projectWorldPointToPage(calloutLabel.anchorMesh.localToWorld(calloutLabel.anchorPointInMesh.clone()));
+    return projectWorldPointToPage(calloutLabel.anchorMesh.localToWorld(anchorScratchVector.copy(calloutLabel.anchorPointInMesh)));
   }
   return projectContentPointToPage(calloutLabel.anchorInContentSpace || new THREE.Vector3());
 }
 
-// Each part's box on screen this frame (arrows left out: labels may sit
-// over them, as Clicky's do).
+// Each part's box on screen (arrows left out: labels may sit over them, as
+// Clicky's do). Cached until the view or any bounds change.
+let cachedPartRectangles = [];
+let cachedPartRectanglesKey = '';
 function projectedPartRectangles() {
+  const cacheKey = `${boundsVersion}:${viewVersion}`;
+  if (cacheKey === cachedPartRectanglesKey) return cachedPartRectangles;
+  cachedPartRectanglesKey = cacheKey;
   const partRectangles = [];
+  cachedPartRectangles = partRectangles;
   for (const sceneObjectEntry of sceneObjectsById.values()) {
     if (sceneObjectEntry.isGroup || sceneObjectEntry.isArrow || sceneObjectEntry.bounds.isEmpty()) continue;
     partRectangles.push(projectedBoundsRectangle(sceneObjectEntry.bounds));
@@ -1533,8 +1630,8 @@ const MINIMUM_LEADER_LENGTH_IN_PIXELS = 40;
 // so none overlap while each stays as close as it can to its anchor's x,
 // then hugs the row to the geometry directly under (or over) it.
 function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
-  // Neighbouring tags touch, like Clicky's (GPIO|RAM).
-  const gapBetweenTags = 0;
+  // A small gap so neighbouring tags read as separate.
+  const gapBetweenTags = 8;
   const gapBetweenRows = 8;
   const usableWidth = viewportWidth - 12;
   const sortedLabels = labelsOnSide.slice().sort((firstLabel, secondLabel) => firstLabel.anchorPagePoint.x - secondLabel.anchorPagePoint.x);
@@ -1553,16 +1650,38 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
   let rowEdge = null; // the outer edge of the previous row, for stacking more rows outward
   labelRows.forEach((rowLabels) => {
     if (!rowLabels.length) return;
-    let previousRight = 6 - gapBetweenTags;
+    // Tags that would overlap merge into a cluster laid side by side and
+    // centered on the average of where each wants to be, so the sideways
+    // shift is shared evenly instead of piling up at one end of the row.
+    const tagClusters = [];
     for (const calloutLabel of rowLabels) {
-      calloutLabel.targetLeft = Math.max(calloutLabel.anchorPagePoint.x - calloutLabel.tagWidth / 2, previousRight + gapBetweenTags);
-      previousRight = calloutLabel.targetLeft + calloutLabel.tagWidth;
+      tagClusters.push({ labels: [calloutLabel], width: calloutLabel.tagWidth, desiredOffsetSum: calloutLabel.anchorPagePoint.x - calloutLabel.tagWidth / 2 });
+      for (;;) {
+        const lastCluster = tagClusters[tagClusters.length - 1];
+        const previousCluster = tagClusters[tagClusters.length - 2];
+        if (!previousCluster) break;
+        const clusterLeft = (cluster) => THREE.MathUtils.clamp(cluster.desiredOffsetSum / cluster.labels.length, 6, Math.max(6, viewportWidth - 6 - cluster.width));
+        if (clusterLeft(previousCluster) + previousCluster.width + gapBetweenTags <= clusterLeft(lastCluster)) break;
+        // Each label's desired cluster left is its own desired left minus
+        // the widths of the tags before it in the cluster.
+        let offsetIntoMergedCluster = previousCluster.width + gapBetweenTags;
+        let shiftedDesiredSum = 0;
+        for (const mergedLabel of lastCluster.labels) {
+          shiftedDesiredSum += (mergedLabel.anchorPagePoint.x - mergedLabel.tagWidth / 2) - offsetIntoMergedCluster;
+          offsetIntoMergedCluster += mergedLabel.tagWidth + gapBetweenTags;
+        }
+        previousCluster.labels.push(...lastCluster.labels);
+        previousCluster.width += gapBetweenTags + lastCluster.width;
+        previousCluster.desiredOffsetSum += shiftedDesiredSum;
+        tagClusters.pop();
+      }
     }
-    let nextLeft = viewportWidth - 6 + gapBetweenTags;
-    for (let labelIndex = rowLabels.length - 1; labelIndex >= 0; labelIndex--) {
-      const calloutLabel = rowLabels[labelIndex];
-      calloutLabel.targetLeft = Math.min(calloutLabel.targetLeft, nextLeft - gapBetweenTags - calloutLabel.tagWidth);
-      nextLeft = calloutLabel.targetLeft;
+    for (const tagCluster of tagClusters) {
+      let tagLeft = THREE.MathUtils.clamp(tagCluster.desiredOffsetSum / tagCluster.labels.length, 6, Math.max(6, viewportWidth - 6 - tagCluster.width));
+      for (const clusterLabel of tagCluster.labels) {
+        clusterLabel.targetLeft = tagLeft;
+        tagLeft += clusterLabel.tagWidth + gapBetweenTags;
+      }
     }
 
     // The geometry under this row's span (falls back to the whole model).
@@ -1576,17 +1695,41 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
       let rowBottom = Math.min(geometryTop - ROW_GAP_TO_GEOMETRY_IN_PIXELS, highestAnchorY - MINIMUM_LEADER_LENGTH_IN_PIXELS);
       if (rowEdge !== null) rowBottom = Math.min(rowBottom, rowEdge - gapBetweenRows);
       rowTop = rowBottom - tagHeight;
-      rowEdge = rowTop;
     } else {
       const geometryBottom = rectanglesUnderRow.length ? Math.max(...rectanglesUnderRow.map((partRectangle) => partRectangle.bottom)) : modelRectangle.bottom;
       const lowestAnchorY = Math.max(...rowLabels.map((calloutLabel) => calloutLabel.anchorPagePoint.y));
       rowTop = Math.max(geometryBottom + ROW_GAP_TO_GEOMETRY_IN_PIXELS, lowestAnchorY + MINIMUM_LEADER_LENGTH_IN_PIXELS);
       if (rowEdge !== null) rowTop = Math.max(rowTop, rowEdge + gapBetweenRows);
-      rowEdge = rowTop + tagHeight;
     }
+    rowTop = rowTopClearOfAvoidedAreas(rowTop, rowLeft, rowRight, tagHeight, side);
+    if (side === 'top') rowEdge = rowTop; else rowEdge = rowTop + tagHeight;
     const clampedRowTop = THREE.MathUtils.clamp(rowTop, 4, viewportHeight - tagHeight - 4);
     rowLabels.forEach((calloutLabel) => { calloutLabel.targetTop = clampedRowTop; });
   });
+}
+
+// Page text to keep clear (the anchor's "avoid" boxes, e.g. a headline next
+// to the product photo): a row that would cover one moves outward past it,
+// as long as it stays on the page.
+function rowTopClearOfAvoidedAreas(rowTop, rowLeft, rowRight, tagHeight, side) {
+  let adjustedRowTop = rowTop;
+  for (let pass = 0; pass < 3; pass++) {
+    const coveredArea = viewState.avoidRectangles.find((avoidRectangle) =>
+      avoidRectangle.right > rowLeft && avoidRectangle.left < rowRight
+      && avoidRectangle.bottom > adjustedRowTop && avoidRectangle.top < adjustedRowTop + tagHeight);
+    if (!coveredArea) break;
+    const movedRowTop = side === 'top' ? coveredArea.top - tagHeight - 4 : coveredArea.bottom + 4;
+    if (movedRowTop < 4 || movedRowTop > viewportHeight - tagHeight - 4) break;
+    adjustedRowTop = movedRowTop;
+  }
+  return adjustedRowTop;
+}
+
+// How far a row tag's leader runs sideways: Clicky's are near vertical.
+const MAXIMUM_LEADER_SLANT_IN_PIXELS = 40;
+function leaderSlantOf(calloutLabel) {
+  const lineStartX = THREE.MathUtils.clamp(calloutLabel.anchorPagePoint.x, calloutLabel.targetLeft + 14, calloutLabel.targetLeft + calloutLabel.tagWidth - 10);
+  return Math.abs(calloutLabel.anchorPagePoint.x - lineStartX);
 }
 
 // Tags stacked beside the model (left column right-aligned, right column
@@ -1624,9 +1767,32 @@ function updateCalloutLabels(modelRectangle) {
     calloutLabel.tagHeight = calloutLabel.tagElement.offsetHeight;
   }
   if (!modelRectangle) return;
-  const partRectangles = projectedPartRectangles();
-  layoutCalloutRows(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'top'), modelRectangle, 'top', partRectangles);
-  layoutCalloutRows(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'bottom'), modelRectangle, 'bottom', partRectangles);
+  const rowLabels = visibleLabels.filter((calloutLabel) => calloutLabel.side === 'top' || calloutLabel.side === 'bottom');
+  const partRectangles = rowLabels.length ? projectedPartRectangles() : [];
+  const layoutBothRows = () => {
+    layoutCalloutRows(rowLabels.filter((calloutLabel) => calloutLabel.side === 'top'), modelRectangle, 'top', partRectangles);
+    layoutCalloutRows(rowLabels.filter((calloutLabel) => calloutLabel.side === 'bottom'), modelRectangle, 'bottom', partRectangles);
+  };
+  layoutBothRows();
+  // Rows are filled in anchor-x order, so leaders can't cross. When a row
+  // crowds a tag too far from its anchor (a long slanted leader), one label
+  // of that row moves, once, to the opposite row: the one whose anchor is
+  // nearest that row, so its new leader stays short. One per frame, so the
+  // conflict resolves with the fewest moves.
+  for (const crowdedSide of ['top', 'bottom']) {
+    const sideLabels = rowLabels.filter((calloutLabel) => calloutLabel.side === crowdedSide);
+    if (!sideLabels.some((calloutLabel) => leaderSlantOf(calloutLabel) > MAXIMUM_LEADER_SLANT_IN_PIXELS)) continue;
+    const movableLabels = sideLabels.filter((calloutLabel) => !calloutLabel.requestedSide && !calloutLabel.hasSwitchedSide);
+    if (!movableLabels.length) continue;
+    const labelNearestOppositeRow = movableLabels.reduce((bestLabel, calloutLabel) => {
+      const isNearer = crowdedSide === 'top' ? calloutLabel.anchorPagePoint.y > bestLabel.anchorPagePoint.y : calloutLabel.anchorPagePoint.y < bestLabel.anchorPagePoint.y;
+      return isNearer ? calloutLabel : bestLabel;
+    });
+    labelNearestOppositeRow.side = crowdedSide === 'top' ? 'bottom' : 'top';
+    labelNearestOppositeRow.hasSwitchedSide = true;
+    layoutBothRows();
+    break;
+  }
   layoutCalloutColumn(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'left'), modelRectangle, 'left');
   layoutCalloutColumn(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'right'), modelRectangle, 'right');
 
@@ -1784,8 +1950,7 @@ async function runPartCommand(partSpec) {
   const partBounds = registerSceneObject(partId, partMesh, [partMaterial]);
   await revealObjectWithPen(partMesh, partBounds, 520);
   if (Array.isArray(partSpec.from)) {
-    await tweenObjectPlacement(sceneObjectsById.get(partId), finalPosition, null, finiteNumberOr(partSpec.ms, 1200));
-    refreshAllBounds();
+    await tweenObjectPlacement(sceneObjectsById.get(partId), finalPosition, null, finiteNumberOr(partSpec.ms, 900));
   }
 }
 
@@ -1889,17 +2054,16 @@ async function runCutawayCommand(cutawaySpec) {
   if (!targetMeshes.length) return;
   // The inside of a cut-open shell reads as a dark cavity behind the parts
   // ("inside":"#rrggbb" picks another color; "inside":false keeps the paint).
-  const insideMaterial = cutawaySpec.inside === false ? null : buildPartMaterial({ mat: 'cavity', color: cutawaySpec.inside });
-  if (insideMaterial) insideMaterial.clippingPlanes = [cutaway.worldPlane];
+  const showsDarkInside = cutawaySpec.inside !== false;
   for (const targetMesh of targetMeshes) {
     targetMesh.material = targetMesh.material.clone();
     targetMesh.material.userData = { ...targetMesh.material.userData };
     targetMesh.material.clippingPlanes = [cutaway.worldPlane];
-    targetMesh.material.side = insideMaterial ? THREE.FrontSide : THREE.DoubleSide;
+    targetMesh.material.side = showsDarkInside ? THREE.FrontSide : THREE.DoubleSide;
     // A lofted shell's inner skin carries its dark tint as vertex colors.
-    if (insideMaterial && targetMesh.geometry.attributes.color) targetMesh.material.vertexColors = true;
-    if (insideMaterial) {
-      const insideMaterialBackSide = insideMaterial.clone();
+    if (showsDarkInside && targetMesh.geometry.attributes.color) targetMesh.material.vertexColors = true;
+    if (showsDarkInside) {
+      const insideMaterialBackSide = buildPartMaterial({ mat: 'cavity', color: cutawaySpec.inside });
       insideMaterialBackSide.side = THREE.BackSide;
       insideMaterialBackSide.clippingPlanes = [cutaway.worldPlane];
       const insideMesh = new THREE.Mesh(targetMesh.geometry, insideMaterialBackSide);
@@ -2075,11 +2239,14 @@ function runAnchorCommand(anchorSpec) {
     let rectangleHeight = Math.abs(anchorBox[3] - anchorBox[1]) * verticalScale;
     let centerX = (anchorBox[0] + anchorBox[2]) / 2 * horizontalScale;
     let centerY = (anchorBox[1] + anchorBox[3]) / 2 * verticalScale;
-    const sizeScale = THREE.MathUtils.clamp(finiteNumberOr(anchorSpec.scale, 1), 0.4, 2.5);
+    let placement = anchorSpec.place;
+    // Beside a photo the model matches the photo's size (it may only grow a
+    // little); over a small object in a video it may grow more.
+    const isBesideThePhoto = ['beside', 'left', 'right', 'above', 'below'].includes(placement);
+    const sizeScale = THREE.MathUtils.clamp(finiteNumberOr(anchorSpec.scale, 1), 0.4, isBesideThePhoto ? 1.1 : 2.5);
     const originalWidth = rectangleWidth, originalHeight = rectangleHeight;
     rectangleWidth = Math.max(60, rectangleWidth * sizeScale);
     rectangleHeight = Math.max(40, rectangleHeight * sizeScale);
-    let placement = anchorSpec.place;
     if (placement === 'beside') placement = centerX > viewportWidth / 2 ? 'left' : 'right';
     const besideGap = 24;
     if (placement === 'left') centerX -= (originalWidth + rectangleWidth) / 2 + besideGap;
@@ -2096,6 +2263,13 @@ function runAnchorCommand(anchorSpec) {
       right: centerX + rectangleWidth / 2, bottom: centerY + rectangleHeight / 2,
     };
     viewState.isAnchored = true;
+    viewState.avoidRectangles = (Array.isArray(anchorSpec.avoid) ? anchorSpec.avoid.slice(0, 8) : [])
+      .map((avoidBox) => (Array.isArray(avoidBox) ? avoidBox.slice(0, 4).map((value) => finiteNumberOr(value, NaN)) : []))
+      .filter((avoidBox) => avoidBox.length === 4 && avoidBox.every(Number.isFinite))
+      .map((avoidBox) => ({
+        left: Math.min(avoidBox[0], avoidBox[2]) * horizontalScale, right: Math.max(avoidBox[0], avoidBox[2]) * horizontalScale,
+        top: Math.min(avoidBox[1], avoidBox[3]) * verticalScale, bottom: Math.max(avoidBox[1], avoidBox[3]) * verticalScale,
+      }));
     viewState.fitScaleCorrection = 1;
     viewState.fitCenterCorrection = { x: 0, y: 0 };
   }
@@ -2125,14 +2299,21 @@ async function tweenObjectPlacement(sceneObjectEntry, targetPosition, targetQuat
   const startQuaternion = movingObject.quaternion.clone();
   const endQuaternion = targetQuaternion || startQuaternion.clone();
   const startCenter = boundsOfEntry(sceneObjectEntry).getCenter(new THREE.Vector3());
-  setPenTarget(() => projectContentPointToPage(startCenter.clone().add(movingObject.position).sub(startPosition)), false);
-  await animateOverDuration(THREE.MathUtils.clamp(durationInMilliseconds, 200, 4000), (progress) => {
+  const penPointScratch = new THREE.Vector3();
+  setPenTarget(() => projectContentPointToPage(penPointScratch.copy(startCenter).add(movingObject.position).sub(startPosition)), false);
+  let tweenFrameCount = 0;
+  await animateOverDuration(THREE.MathUtils.clamp(durationInMilliseconds, 200, 2000), (progress) => {
     const easedProgress = easeInOutCubic(progress);
     movingObject.position.lerpVectors(startPosition, targetPosition, easedProgress);
     movingObject.quaternion.slerpQuaternions(startQuaternion, endQuaternion, easedProgress);
+    // Bounds follow the moving part every few frames, so labels and the fit
+    // track it instead of snapping when it lands.
+    tweenFrameCount += 1;
+    if (tweenFrameCount % 4 === 0) refreshAllBounds();
   });
   movingObject.position.copy(targetPosition);
   movingObject.quaternion.copy(endQuaternion);
+  refreshAllBounds();
 }
 
 // {"t":"move","id":..,"to":[x,y,z] | "by":[dx,dy,dz],"rot":[..],"ms":..}:
@@ -2149,8 +2330,7 @@ async function runMoveCommand(moveSpec) {
     const [rotationX, rotationY, rotationZ] = vector3Or(moveSpec.rot, [0, 0, 0]);
     targetQuaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(degreesToRadians(rotationX), degreesToRadians(rotationY), degreesToRadians(rotationZ)));
   }
-  await tweenObjectPlacement(movingEntry, targetPosition, targetQuaternion, finiteNumberOr(moveSpec.ms, 1200));
-  refreshAllBounds();
+  await tweenObjectPlacement(movingEntry, targetPosition, targetQuaternion, finiteNumberOr(moveSpec.ms, 900));
 }
 
 // {"t":"explode","ids":[a,b,c],"gap":[0,8,0]}: the i-th part moves by i x
@@ -2158,7 +2338,7 @@ async function runMoveCommand(moveSpec) {
 async function runExplodeCommand(explodeSpec) {
   const explodeGap = new THREE.Vector3(...vector3Or(explodeSpec.gap, [0, 10, 0]));
   const explodeIds = Array.isArray(explodeSpec.ids) ? explodeSpec.ids.slice(0, 30) : [];
-  const durationInMilliseconds = finiteNumberOr(explodeSpec.ms, 1200);
+  const durationInMilliseconds = finiteNumberOr(explodeSpec.ms, 900);
   await Promise.all(explodeIds.map((explodeId, explodeIndex) => {
     const explodingEntry = sceneObjectsById.get(explodeId);
     if (!explodingEntry) return Promise.resolve();
@@ -2207,9 +2387,9 @@ async function runArrowCommand(arrowSpec) {
   let growProgress = 0;
   const arrowTipPoint = () => projectContentPointToPage(arrowCurve.getPointAt(Math.max(0.001, growProgress * shaftEndFraction)));
   setPenTarget(arrowTipPoint, false);
-  await waitMilliseconds(200);
+  await waitMilliseconds(120);
   setPenTarget(arrowTipPoint, true);
-  await animateOverDuration(THREE.MathUtils.clamp(finiteNumberOr(arrowSpec.ms, 700), 200, 2500), (progress) => {
+  await animateOverDuration(THREE.MathUtils.clamp(finiteNumberOr(arrowSpec.ms, 500), 200, 1500), (progress) => {
     growProgress = easeInOutCubic(progress);
     shaftMesh.geometry.setDrawRange(0, Math.ceil(growProgress * shaftIndexCount / indicesPerSegment) * indicesPerSegment);
   });
@@ -2270,6 +2450,9 @@ const PORT_LIBRARY = {
   rj45: [
     [[21, 13.5, 16], [0, 6.75, 0], 'steel', null, 0.6],
     [[0.4, 8, 11.6], [10.55, 6.2, 0], 'cavity', null, 0.4],
+    // The jack's gold contact fingers along the top of the opening, and its two LEDs.
+    [[0.3, 0.8, 7.6], [10.7, 9.4, 0], 'gold', '#d9a441', 0.1],
+    [[0.3, 1.2, 1.6], [10.7, 12.2, -6], 'glow', '#f2b134', 0.2], [[0.3, 1.2, 1.6], [10.7, 12.2, 6], 'glow', '#7fd16a', 0.2],
   ],
   'usb-c': [
     [[7.4, 3.2, 9], [0, 1.6, 0], 'steel', null, 1.5],
@@ -2320,8 +2503,63 @@ async function runPortCommand(portSpec) {
   await revealObjectWithPen(portGroup, boundsInContentSpace(portGroup), 520);
 }
 
+// {"t":"smd","id":"smd1","rect":[x0,z0,x1,z1],"sit":"board","count":24,"seed":3}:
+// the small parts that cover a real board (resistors, capacitors, little
+// chips), scattered in that footprint rectangle. Seeded, so the same line
+// always gives the same layout. Sizes are millimeters.
+const SMD_PART_KINDS = [
+  { size: [1.0, 0.45, 0.5], mat: 'ceramic', color: '#c9b48a', weight: 4 },
+  { size: [1.6, 0.55, 0.8], mat: 'ceramic', color: '#b9a27a', weight: 3 },
+  { size: [1.6, 0.55, 0.8], mat: 'chip', color: '#2b2d31', weight: 2 },
+  { size: [2.2, 0.9, 1.3], mat: 'chip', color: '#2b2d31', weight: 1 },
+  { size: [3.2, 0.8, 3.2], mat: 'chip', color: '#26282c', weight: 1 },
+];
+async function runSmdCommand(smdSpec) {
+  const smdId = uniqueObjectId(smdSpec.id, 'smd');
+  const footprint = Array.isArray(smdSpec.rect) ? smdSpec.rect.slice(0, 4).map((value) => finiteNumberOr(value, 0)) : [-10, -10, 10, 10];
+  if (footprint.length !== 4) return;
+  const partCount = THREE.MathUtils.clamp(Math.round(finiteNumberOr(smdSpec.count, 24)), 1, 80);
+  const sizeScale = THREE.MathUtils.clamp(finiteNumberOr(smdSpec.scale, 1), 0.1, 10);
+  // mulberry32: a tiny seeded random generator.
+  let randomState = (Math.round(finiteNumberOr(smdSpec.seed, 1)) >>> 0) || 1;
+  const seededRandom = () => {
+    randomState = (randomState + 0x6D2B79F5) >>> 0;
+    let mixed = Math.imul(randomState ^ (randomState >>> 15), randomState | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+  const totalWeight = SMD_PART_KINDS.reduce((weightSum, partKind) => weightSum + partKind.weight, 0);
+  const pickPartKind = () => {
+    let remainingWeight = seededRandom() * totalWeight;
+    return SMD_PART_KINDS.find((partKind) => (remainingWeight -= partKind.weight) < 0) || SMD_PART_KINDS[0];
+  };
+
+  const smdGroup = new THREE.Group();
+  smdGroup.position.set(0, surfaceHeightFor(smdSpec), 0);
+  parentObjectFor(smdSpec.in).add(smdGroup);
+  const materialByKind = new Map();
+  for (let partIndex = 0; partIndex < partCount; partIndex++) {
+    const partKind = pickPartKind();
+    if (!materialByKind.has(partKind)) materialByKind.set(partKind, buildPartMaterial({ mat: partKind.mat, color: partKind.color }));
+    const [partWidth, partHeight, partDepth] = partKind.size.map((dimension) => dimension * sizeScale);
+    const smdMesh = new THREE.Mesh(buildPartGeometry({ shape: 'box', size: [partWidth, partHeight, partDepth], radius: Math.min(partWidth, partDepth) * 0.08 }), materialByKind.get(partKind));
+    smdMesh.position.set(
+      THREE.MathUtils.lerp(footprint[0], footprint[2], seededRandom()),
+      partHeight / 2,
+      THREE.MathUtils.lerp(footprint[1], footprint[3], seededRandom()),
+    );
+    if (seededRandom() < 0.5) smdMesh.rotation.y = Math.PI / 2;
+    smdGroup.add(smdMesh);
+    const outlineWidth = outlineWidthForPart(smdMesh, {});
+    if (outlineWidth > 0) attachOutline(smdMesh, outlineWidth);
+  }
+  const smdBounds = registerSceneObject(smdId, smdGroup, Array.from(materialByKind.values()));
+  await revealObjectWithPen(smdGroup, smdBounds, 420);
+}
+
 async function runCommand(command) {
   switch (command.t) {
+    case 'smd': return runSmdCommand(command);
     case 'part': return runPartCommand(command);
     case 'group': return runGroupCommand(command);
     case 'array': return runArrayCommand(command);
@@ -2429,19 +2667,63 @@ function updateCloseButton(modelRectangle) {
 // Render loop
 // ---------------------------------------------------------------------------
 
+// Parts that are small on screen (a lens, a chip seen from afar) get a 1px
+// outline so they stay crisp; the rest keep their own width.
+const SMALL_ON_SCREEN_PART_SIZE_IN_PIXELS = 40;
+function updateOutlineWidthsForScreenSize() {
+  modelContent.traverse((childObject) => {
+    const outlineMesh = childObject.userData.outlineMesh;
+    if (!outlineMesh || !childObject.isMesh) return;
+    if (!childObject.geometry.boundingSphere) childObject.geometry.computeBoundingSphere();
+    const projectedSizeInPixels = 2 * childObject.geometry.boundingSphere.radius * childObject.matrixWorld.getMaxScaleOnAxis() * pixelsPerContentUnit;
+    const baseOutlineWidth = outlineMesh.userData.baseOutlineWidth;
+    outlineMesh.material.uniforms.outlineWidthInPixels.value = projectedSizeInPixels < SMALL_ON_SCREEN_PART_SIZE_IN_PIXELS ? Math.min(baseOutlineWidth, 1) : baseOutlineWidth;
+  });
+}
+
+// The full view transform (projection x camera x model placement); when it
+// changes, the picture and everything projected from it must update.
+const viewSignatureMatrix = new THREE.Matrix4();
+const previousViewSignature = new Array(16).fill(NaN);
+let viewVersion = 0;
+function updateViewVersion() {
+  viewSignatureMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(modelContent.matrixWorld);
+  const signatureElements = viewSignatureMatrix.elements;
+  let hasChanged = false;
+  for (let elementIndex = 0; elementIndex < 16; elementIndex++) {
+    if (!(Math.abs(signatureElements[elementIndex] - previousViewSignature[elementIndex]) <= 1e-7 * (1 + Math.abs(signatureElements[elementIndex])))) {
+      hasChanged = true;
+      previousViewSignature[elementIndex] = signatureElements[elementIndex];
+    }
+  }
+  if (hasChanged) viewVersion += 1;
+  return hasChanged;
+}
+
 function resizeRendererToWindow() {
   viewportWidth = Math.max(1, window.innerWidth);
   viewportHeight = Math.max(1, window.innerHeight);
+  // The overlay spans the whole display: on a big external screen a 2x
+  // buffer is several times the fill work, so it renders at 1.5x there.
+  const isLargeViewport = viewportWidth * viewportHeight > 2000000;
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, isLargeViewport ? 1.5 : 2));
   renderer.setSize(viewportWidth, viewportHeight, false);
   camera.aspect = viewportWidth / viewportHeight;
   camera.updateProjectionMatrix();
   renderer.getDrawingBufferSize(outlineViewportSize);
   outlineViewportSize.divideScalar(renderer.getPixelRatio());
+  framesToRenderRegardless = 2;
 }
+let framesToRenderRegardless = 2;
 window.addEventListener('resize', resizeRendererToWindow);
 resizeRendererToWindow();
 
 let previousFrameTime = performance.now();
+// Render on demand: the WebGL pass (outlines, stencil caps) runs only while
+// something changes, plus a couple of frames after to land the last state
+// (framesToRenderRegardless, declared with the resize handler).
+let renderedFrameCount = 0;
+let lastRenderedBoundsVersion = -1;
 function renderFrame(now) {
   const secondsSinceLastFrame = Math.min(0.1, (now - previousFrameTime) / 1000);
   previousFrameTime = now;
@@ -2449,11 +2731,23 @@ function renderFrame(now) {
   updateView(now, secondsSinceLastFrame);
   updateHighlightsAndSpins(now, secondsSinceLastFrame);
   modelRoot.updateMatrixWorld(true);
-  for (const cutaway of activeCutaways) {
-    positionCutawayCaps(cutaway);
-    cutaway.worldPlane.copy(cutaway.localPlane).applyMatrix4(modelContent.matrixWorld);
+  camera.updateMatrixWorld();
+  const hasViewChanged = updateViewVersion();
+  const isSceneChanging = hasViewChanged || isProcessingCommands || activeTweens.size > 0 || spinningObjects.length > 0
+    || highlightPulses.length > 0 || lastRenderedBoundsVersion !== boundsVersion;
+  if (isSceneChanging) framesToRenderRegardless = Math.max(framesToRenderRegardless, 2);
+  if (framesToRenderRegardless > 0) {
+    framesToRenderRegardless -= 1;
+    lastRenderedBoundsVersion = boundsVersion;
+    for (const cutaway of activeCutaways) {
+      positionCutawayCaps(cutaway);
+      cutaway.worldPlane.copy(cutaway.localPlane).applyMatrix4(modelContent.matrixWorld);
+    }
+    // Every 10th frame, and on the last frame before rendering pauses.
+    if (renderedFrameCount % 10 === 0 || framesToRenderRegardless === 0) updateOutlineWidthsForScreenSize();
+    renderedFrameCount += 1;
+    renderer.render(scene, camera);
   }
-  renderer.render(scene, camera);
 
   const modelRectangle = projectedBoundsRectangle(null, cornersOfAllParts());
   correctFitTowardRectangle(modelRectangle);

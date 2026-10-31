@@ -842,7 +842,7 @@ final class CompanionManager: ObservableObject {
 
     output only json lines — one object per line, nothing else. no prose, no markdown, no code fences.
 
-    structure: a title line, then an anchor line, then 5 to 8 steps. each step is {"t":"say","text":"..."} (one spoken sentence, under about 18 words) followed by the commands that build exactly what it talks about: base shape first, then parts in the order you explain them. 20 to 45 commands in total.
+    structure: a title line, then an anchor line, then 5 to 8 steps. each step is {"t":"say","text":"..."} (one spoken sentence, under about 18 words) followed by the commands that build exactly what it talks about: base shape first, then parts in the order you explain them. 20 to 45 commands in total. the first step builds the whole recognisable silhouette (a board with its pin header and port block, a jet with its tails and intakes) before any label.
 
     narration language: if the user spoke hindi or hinglish, natural hinglish (hindi grammar, everyday english words) written in devanagari. if they spoke english, english. labels are always english, one or two words.
     teaching: direct and exact. name each part and what it does. an everyday analogy only for something genuinely hard to picture.
@@ -855,20 +855,21 @@ final class CompanionManager: ObservableObject {
     - the silhouette must match: true outlines (polygon points for wings, plates and boards), lofts for curved bodies, real corner radii.
 
     anchor (always the second line):
-    {"t":"anchor","box":[805,280,1195,575],"yaw":32,"pitch":45,"roll":0,"place":"beside","scale":1.2,"backdrop":"light","shadow":true}
+    {"t":"anchor","box":[805,280,1195,575],"yaw":32,"pitch":45,"roll":0,"place":"below","scale":1,"avoid":[[195,355,640,500]],"backdrop":"light","shadow":true}
     - box: the real object's tight box [left,top,right,bottom] in the target screenshot's pixels. leave box out if it isn't on screen.
     - yaw/pitch/roll: how the object is turned in the screenshot, so the model matches it. yaw 0 shows its front face straight on; positive yaw turns its left end toward the viewer (its right end recedes, going up-right on screen), negative turns its right end toward the viewer. pitch is how far you look down on it (0 eye level, 90 straight down). roll is the picture's clockwise tilt. read these off the screenshot carefully.
-    - place: "over" draws it on top of the object (videos, small things: scale 1.3 to 1.8 when the object is tiny in the frame); "beside" puts it next to a product photo (scale 1.1 to 1.3); or left, right, above, below.
+    - place: "over" draws it on top of the object (videos: scale 1 to 1.2, the model stays within the box); next to a product photo pick the side with empty or plain page space (left, right, above, below, or "beside"), never over headings or body text; it comes out the photo's size.
+    - avoid: boxes [left,top,right,bottom] of nearby page text (headline, price, paragraph) that labels must not cover.
     - backdrop: "dark" when the page behind it is dark (dark mode, a black video), else "light". shadow false for anything flying or floating (aircraft, drones, satellites).
 
-    camera: {"t":"camera","elevation":20,"azimuth":28,"zoom":1} eases there in about a second. start high (pitch 40 to 55) so the layout or planform reads, then lower it step by step to 15 to 22 as tall parts arrive; 5 to 12 for an edge-on close look (something plugging in). keep azimuth near the anchor's yaw. {"t":"camera","view":"anchor"} returns to the anchored view.
+    camera: {"t":"camera","elevation":20,"azimuth":28,"zoom":1} eases there in about a second. after the anchor view, lower the camera step by step as tall parts arrive (15 to 22); 5 to 12 for an edge-on close look (something plugging in). keep azimuth near the anchor's yaw. {"t":"camera","view":"anchor"} returns to the anchored view.
 
     parts: {"t":"part","id":"soc","shape":"box","size":[17,1.6,17],"pos":[-10,0,2],"sit":"board","mat":"chip","color":"#b7bcba"}
     shapes:
       box: "size":[w,h,d]; "radius" edge rounding (default small; metal shields 0.3 to 0.6 mm, plastic housings 1 to 3 mm, 0 sharp); "chamfer":true for machined edges
       cylinder/cone: "r", "h", "rTop", "axis":"x"|"y"|"z" (default y). tube (hollow: casings, ducts, rings, nozzles): "r","inner","h","rTop","innerTop","axis". sphere: "r". torus: "r","tube","axis". capsule: "r","h","axis"
-      extrude: flat outline pushed out: "points":[[x,y],...], "depth", "round" (corner radius), "bevel" (soft edges, size stays exact), "holes":[[[x,y],...]], "circles":[[x,y,r]], "shell":t (hollow). "axis" is the push direction (default z: side profiles, tails); "axis":"y" lays it flat (boards, wings, plates, floors) and the second number of each point is then -z. use for every flat part.
-      loft: a smooth body through cross-sections along x: "sections":[{"at":x,"w":width along z,"h":height,"round":0 boxy to 1 oval,"dy":up shift,"dz":side shift},...] (3 to 8 sections, nose/tail tips w and h about 0.05), "shell":t for a cutaway skin, "axis" turns it. use for every curved body: fuselages, car bodies, phones' rounded backs, mice, bottles, bones.
+      extrude: flat outline pushed out: "points":[[x,y],...], "depth", "round" (corner radius), "bevel" (soft edges, size stays exact), "holes":[[[x,y],...]] ("holeRound" their corner radius), "circles":[[x,y,r]], "shell":t (hollow). "axis" is the push direction (default z: side profiles, tails); "axis":"y" lays it flat (boards, wings, plates, floors) and the second number of each point is then -z. use for every flat part.
+      loft: a smooth body through cross-sections along x: "sections":[{"at":x,"w":width along z,"h":height,"round":0 boxy to 1 oval,"chine":0 to 1 (stealth nose: flat bottom, sharp side edges),"dy":up shift,"dz":side shift},...] (3 to 8 sections, nose/tail tips w and h about 0.05), "shell":t for a cutaway skin, "axis" turns it. use for every curved body: fuselages, car bodies, phones' rounded backs, mice, bottles, bones.
       lathe: profile [[radius,y],...] spun around y: nozzles, domes, bottles. "shell":t.
       ribbon: flat cable or strap along a path: "path":[[x,y,z],...],"width","thickness","up":[x,y,z] (the ribbon's face normal direction, roughly). cable: round wire: "path","r".
     materials ("mat"): plastic, paint, steel, aluminum, darkmetal, titanium, copper, brass, bronze, gold, pcb, chip, rubber, ceramic, glass, glow (flames, leds), interior, cavity (the near-black inside of a body), tissue, bone, wood, concrete. "color":"#rrggbb" overrides it. "opacity" makes it see-through. "in":"groupid" places it inside a group. "outline":false hides its outline.
@@ -876,16 +877,17 @@ final class CompanionManager: ObservableObject {
 
     helpers (one line instead of many parts, real sizes in mm; "pos" is the footprint's center on the surface, use "sit"):
     {"t":"pins","id":"gpio","pos":[-10,0,-24.5],"sit":"board","count":20,"rows":2,"pitch":2.54,"len":8.5,"axis":"x"}   pin header on a black housing
+    {"t":"smd","id":"smd1","rect":[x0,z0,x1,z1],"sit":"board","count":24,"seed":3}   scatters small resistors, capacitors and chips in that footprint (real boards are covered in them)
     {"t":"port","id":"usb3","kind":"usb3-2","pos":[35.75,0,-1],"sit":"board","facing":"+x"}   kinds: usb-a, usb-a2 (stacked pair), usb3-2 (stacked pair, blue), usb-c, hdmi, hdmi-micro, rj45, ffc (camera/display flat-cable connector), microsd, audio. "facing" (+x,-x,+z,-z) is the side its opening faces.
 
     more commands:
     {"t":"group","id":"cammod","pos":[8,70,15]}   a sub-assembly; parts with "in":"cammod" are placed relative to it and move with it
     {"t":"array","id":"blades","of":{part},"count":16,"step":[dx,dy,dz],"count2":2,"step2":[...]} a line or grid of copies; or "radial":{"axis":"x"} with the array's "pos" as the hub (the part's pos is its offset from the hub): blades, teeth, spokes, bolts
     {"t":"cutaway","parts":["body"],"remove":"+z","at":0}   slices those shells open toward the viewer; cut faces get hatching, the inside goes dark. declare it right after the shell, before the insides.
-    {"t":"arrow","from":[x,y,z],"to":[x,y,z],"color":"air"}   a 3d flow or force arrow that grows along its length; "path":[[x,y,z],...] curves it. colors air (teal), hot (bronze exhaust), force (gray), or #rrggbb. "r" shaft radius (default about 1.3% of the model). use for airflow, exhaust, water, current, forces; 150 to 250 points long on screen, they may run past the model.
+    {"t":"arrow","from":[x,y,z],"to":[x,y,z],"color":"air"}   a 3d flow or force arrow that grows along its length; "path":[[x,y,z],...] curves it. colors air (teal), hot (bronze exhaust), force (gray), or #rrggbb. "r" shaft radius (default about 1.3% of the model). use for airflow, exhaust, water, current, forces, pointing the way it really flows; about 1/4 to 1/3 of the model's length, they may run past the model.
     {"t":"move","id":"cammod","to":[x,y,z],"ms":1400}   slides a part or group to a new position ("by":[dx,dy,dz] for relative, "rot" to turn): assembly, plugging in, a lid opening. a part can also start elsewhere: "from":[x,y,z] on the part line.
     {"t":"explode","ids":["back","frame","inside","screen"],"gap":[0,30,0]}   pulls stacked layers apart (the i-th moves i x gap)
-    {"t":"label","text":"GPIO","on":"gpio","color":"yellow"}   callout tag with a leader to a visible point on that part ("at":[x,y,z] for an exact spot). colors yellow, green, blue, pink, mixed. leave "side" out (it picks top or bottom by where the part is); "side":"left"|"right" stacks tags in a column beside the model, for parts at its far ends. 4 to 6 labels.
+    {"t":"label","text":"GPIO","on":"gpio","color":"yellow"}   callout tag with a leader to a visible point on that part ("at":[x,y,z] for an exact spot). colors yellow, green, blue, pink. leave "side" out (it picks top or bottom by where the part is); "side":"left"|"right" stacks tags in a column beside the model, for parts at its far ends. 4 to 6 labels.
     {"t":"highlight","id":"soc"} glows a part for a moment. {"t":"focus","id":"fan"} zooms to a part, {"t":"focus"} back out. {"t":"spin","id":"fan","axis":"y","speed":1} keeps spinning. {"t":"fade","id":"case","opacity":0.15} makes a cover see-through.
 
     make it great:
@@ -896,13 +898,14 @@ final class CompanionManager: ObservableObject {
     - every part a label or command points at must exist first. ids are short lowercase words.
 
     example, raspberry pi 5 (mm; board 85 x 56, gpio along the back edge, usb and ethernet on the right, usb-c and two micro hdmi on the front):
-    {"t":"anchor","box":[805,280,1195,575],"yaw":32,"pitch":50,"place":"beside","scale":1.2,"backdrop":"light"}
+    {"t":"anchor","box":[805,280,1195,575],"yaw":32,"pitch":50,"place":"below","avoid":[[195,355,640,500]],"backdrop":"light"}
     {"t":"part","id":"board","shape":"extrude","axis":"y","points":[[-42.5,-28],[42.5,-28],[42.5,28],[-42.5,28]],"round":3,"depth":1.6,"bevel":0.3,"circles":[[-39,24.5,1.4],[19,24.5,1.4],[-39,-24.5,1.4],[19,-24.5,1.4]],"mat":"pcb"}
     {"t":"part","id":"soc","shape":"box","size":[17,1.6,17],"pos":[-10,0,2],"sit":"board","mat":"chip","color":"#b7bcba"}
     {"t":"part","id":"ram","shape":"box","size":[14,1.1,10],"pos":[-10,0,-14],"sit":"board","mat":"chip"}
     {"t":"pins","id":"gpio","pos":[-10,0,-24.5],"sit":"board","count":20,"rows":2}
     {"t":"port","id":"usb2","kind":"usb-a2","pos":[35.75,0,-19],"sit":"board","facing":"+x"}
     {"t":"port","id":"eth","kind":"rj45","pos":[34.5,0,17.75],"sit":"board","facing":"+x"}
+    {"t":"smd","id":"smd1","rect":[-38,4,-20,20],"sit":"board","count":22,"seed":3}
     {"t":"port","id":"power","kind":"usb-c","pos":[-31.3,0,25.3],"sit":"board","facing":"+z"}
     {"t":"port","id":"cam0","kind":"ffc","pos":[8,0,15],"sit":"board","facing":"+z"}
 
@@ -910,23 +913,18 @@ final class CompanionManager: ObservableObject {
     {"t":"camera","elevation":9}
     {"t":"group","id":"cammod","pos":[8,72,15]}
     {"t":"part","id":"ribbon","in":"cammod","shape":"ribbon","path":[[0,0,0],[0,38,0]],"width":11.5,"thickness":0.3,"up":[0,0,1],"mat":"plastic","color":"#c9c4b4"}
+    {"t":"part","id":"band","in":"cammod","shape":"box","size":[12,5,0.5],"pos":[0,35.5,0.35],"mat":"plastic","color":"#6f6a5e"}
     {"t":"part","id":"cambrd","in":"cammod","shape":"box","size":[25,24,1],"pos":[0,50,0],"mat":"pcb"}
     {"t":"part","id":"lens","in":"cammod","shape":"box","size":[8.5,8.5,4],"pos":[0,52,2.5],"mat":"chip"}
     {"t":"move","id":"cammod","to":[8,2.6,15],"ms":1600}
     {"t":"label","text":"22-pin end","on":"ribbon","color":"green"}
 
-    example, a jet fighter cutaway (meters, nose at -x, dark page):
-    {"t":"anchor","box":[430,320,970,620],"yaw":-30,"pitch":42,"place":"over","scale":1.45,"backdrop":"dark","shadow":false}
-    {"t":"part","id":"body","shape":"loft","shell":0.06,"sections":[{"at":-7.8,"w":0.06,"h":0.06},{"at":-6.6,"w":0.8,"h":0.7,"round":0.7},{"at":-4.8,"w":1.5,"h":1.25,"round":0.5,"dy":0.15},{"at":-3.2,"w":3.0,"h":1.45,"round":0.25},{"at":0,"w":3.5,"h":1.5,"round":0.2},{"at":4,"w":3.0,"h":1.3,"round":0.25},{"at":7.6,"w":1.25,"h":1.0,"round":0.7}],"mat":"paint"}
-    {"t":"part","id":"wing","shape":"extrude","axis":"y","points":[[-3.2,1.4],[1.0,5.35],[2.6,5.35],[3.6,1.6],[3.6,-1.6],[2.6,-5.35],[1.0,-5.35],[-3.2,-1.4]],"depth":0.16,"bevel":0.04,"pos":[0,-0.12,0],"mat":"paint"}
-    {"t":"part","id":"canopy","shape":"loft","sections":[{"at":-5.9,"w":0.1,"h":0.1,"dy":0.75},{"at":-5.0,"w":0.85,"h":0.75,"round":1,"dy":0.78},{"at":-3.8,"w":0.8,"h":0.7,"round":1,"dy":0.78},{"at":-3.1,"w":0.1,"h":0.1,"dy":0.72}],"mat":"glass"}
-    {"t":"part","id":"tail1","shape":"extrude","points":[[4.0,0.6],[5.9,2.6],[6.9,2.6],[7.1,0.6]],"depth":0.1,"pos":[0,0,0.75],"rot":[24,0,0],"mat":"paint"}
-    {"t":"camera","elevation":16,"azimuth":-26}
+    example, a jet fighter cutaway (meters, nose at -x, dark page). its first step must already read as that jet: a chined, flat-bottomed nose (wider than tall), d-shaped side intakes behind the canopy, a trapezoid wing (leading edge swept about 35 deg, trailing edge slightly forward-swept), twin tails canted out about 25 deg and about 0.6 of the wing's half-span tall, all-moving stabilizers, a canopy about 15% of the length sitting flush, a round nozzle (lathe):
+    {"t":"anchor","box":[430,320,970,620],"yaw":-30,"pitch":42,"place":"over","scale":1,"backdrop":"dark","shadow":false}
+    {"t":"part","id":"body","shape":"loft","shell":0.06,"sections":[{"at":-7.8,"w":0.05,"h":0.05},{"at":-6.6,"w":1.0,"h":0.6,"round":0.3,"chine":1},{"at":-5.0,"w":1.7,"h":1.05,"round":0.35,"chine":0.9,"dy":0.1},{"at":-3.4,"w":2.4,"h":1.35,"round":0.3,"chine":0.6},{"at":0,"w":3.4,"h":1.45,"round":0.25},{"at":4,"w":3.0,"h":1.3,"round":0.3},{"at":7.3,"w":1.3,"h":1.0,"round":0.9}],"mat":"paint"}
     {"t":"cutaway","parts":["body"],"remove":"+z","at":0.05}
     {"t":"array","id":"comp","of":{"shape":"cylinder","axis":"x","r":0.5,"h":0.06,"pos":[0.6,0.15,0],"mat":"darkmetal"},"count":7,"step":[0.27,0,0]}
-    {"t":"part","id":"noz","shape":"tube","r":0.44,"inner":0.36,"h":0.6,"pos":[7.75,-0.75,0],"mat":"darkmetal"}
-    {"t":"label","text":"Swivel nozzle","on":"noz","color":"pink","side":"right"}
-    {"t":"arrow","from":[7.75,-1.15,0],"to":[7.75,-3.6,0],"color":"hot"}
+    {"t":"arrow","from":[7.8,-1.15,0],"to":[7.8,-3.4,0],"color":"hot"}
     """
 
     /// Splits a MODEL3D request, "what to show:x,y:screenN", into its parts.
