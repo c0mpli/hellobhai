@@ -23,7 +23,7 @@ https://github.com/user-attachments/assets/305cff8a-7777-4671-906f-11a68852630f
 
 - **Talks Hinglish.** Speak however you normally do; it auto-detects Hindi or English and replies the same way, in natural Hinglish.
 - **Sees your screen.** Every question comes with a screenshot of all your displays.
-- **Lives in an orb.** A small glowing orb sits in the corner of your screen and shows what it's doing: listening, thinking, speaking (only while it's actually talking), or dozing. Drag it anywhere; click it to chat. Pick from 10 colors in the menu bar panel.
+- **Lives in an orb.** A small glowing orb sits in the corner of your screen and shows what it's doing: listening, thinking, speaking (only while it's actually talking), or dozing. Drag it anywhere; click it to chat. Pick from 10 colors in the menu bar panel. Prefer the classic look? Switch the voice style to **Cursor** and a blue pointer stays next to your mouse instead, showing a waveform while it listens and a spinner while it thinks.
 - **Chats too.** Click the orb (or set the hotkey to Chat mode) and a dark chat card slides in from the right or left edge. Typed questions go through the same pipeline as spoken ones: it sees your screen, points, draws and can act for you. Replies stream in as text, or text plus voice if you pick it; spoken questions always get a spoken answer, shown in the chat too. Minimize it to a small tab on the screen edge (Esc), which shows a dot when a reply arrives.
 - **Points at things.** A blue pointer flies out of the orb to the button or menu it's talking about, then back in.
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your "haan", spoken or typed.
@@ -89,7 +89,7 @@ Pressing the hotkey again interrupts whatever it's doing, in either mode.
 Click the orb glyph in the menu bar to open the panel:
 
 - **Claude model**: Fable, Opus, Sonnet (default) or Haiku.
-- **Orb**: its color.
+- **Buddy**: voice style (**Orb** or **Cursor**), and the orb's size and color.
 - **Chat**: hotkey mode (**Voice**: hold to talk; **Chat**: press to open the chat, press again to tuck it away), how typed questions are answered (text, or text + voice), and which screen edge the chat slides in from.
 - **Voice**: engine and voice, with previews; speech model status.
 - Shortcut, permissions, launch at login, replay onboarding, quit.

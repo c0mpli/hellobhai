@@ -53,6 +53,23 @@ struct OrbColorVariant: Identifiable {
     ]
 }
 
+/// How bhai shows up in voice mode, picked in the panel's Buddy tab
+/// (UserDefaults `voiceBuddyStyle`).
+enum VoiceBuddyStyle: String {
+    /// The draggable orb; the pointer launches out of it for each job.
+    case orb
+    /// The original look: the blue pointer stays next to the mouse all the
+    /// time (waveform while listening, spinner while thinking) and the orb
+    /// is hidden.
+    case cursor
+
+    static let userDefaultsKey = "voiceBuddyStyle"
+
+    static var savedStyle: VoiceBuddyStyle {
+        VoiceBuddyStyle(rawValue: UserDefaults.standard.string(forKey: userDefaultsKey) ?? "") ?? .orb
+    }
+}
+
 /// How big the orb is on screen, in points, set with the panel's slider
 /// (UserDefaults `orbSideLength`).
 enum OrbSize {
@@ -144,9 +161,26 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
     /// In chat mode the chat sidebar stands in for the orb, so it stays hidden.
     private(set) var isHiddenForChatMode = false
 
+    /// In the cursor voice style the pointer next to the mouse stands in
+    /// for the orb, so it stays hidden.
+    private(set) var isHiddenForCursorStyle = false
+
+    private var isHiddenForChatModeOrCursorStyle: Bool {
+        isHiddenForChatMode || isHiddenForCursorStyle
+    }
+
     func setHiddenForChatMode(_ shouldHideForChatMode: Bool) {
         isHiddenForChatMode = shouldHideForChatMode
-        if shouldHideForChatMode {
+        applyHiddenForChatModeOrCursorStyle()
+    }
+
+    func setHiddenForCursorStyle(_ shouldHideForCursorStyle: Bool) {
+        isHiddenForCursorStyle = shouldHideForCursorStyle
+        applyHiddenForChatModeOrCursorStyle()
+    }
+
+    private func applyHiddenForChatModeOrCursorStyle() {
+        if isHiddenForChatModeOrCursorStyle {
             panel?.orderOut(nil)
             systemPointerVisibilityTimer?.invalidate()
             systemPointerVisibilityTimer = nil
@@ -157,7 +191,7 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
 
     func show() {
         isRequestedByOverlay = true
-        guard !isHiddenForChatMode else { return }
+        guard !isHiddenForChatModeOrCursorStyle else { return }
         if panel == nil {
             createPanel()
         }

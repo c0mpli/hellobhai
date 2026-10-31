@@ -222,6 +222,16 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.orbWindowManager.setColorInputValue(orbColorInputValue)
     }
 
+    /// Orb or cursor-next-to-the-mouse in voice mode. Persisted. The overlay
+    /// reads it live; the orb window is hidden in the cursor style.
+    @Published private(set) var voiceBuddyStyle: VoiceBuddyStyle = VoiceBuddyStyle.savedStyle
+
+    func setVoiceBuddyStyle(_ newVoiceBuddyStyle: VoiceBuddyStyle) {
+        voiceBuddyStyle = newVoiceBuddyStyle
+        UserDefaults.standard.set(newVoiceBuddyStyle.rawValue, forKey: VoiceBuddyStyle.userDefaultsKey)
+        overlayWindowManager.orbWindowManager.setHiddenForCursorStyle(newVoiceBuddyStyle == .cursor)
+    }
+
     // MARK: - Orb State
 
     /// After this long with nothing happening, the orb dozes off.
@@ -237,6 +247,7 @@ final class CompanionManager: ObservableObject {
         let orbWindowManager = overlayWindowManager.orbWindowManager
         orbWindowManager.setColorInputValue(selectedOrbColor)
         orbWindowManager.setHiddenForChatMode(isChatInputMode)
+        orbWindowManager.setHiddenForCursorStyle(voiceBuddyStyle == .cursor)
         orbWindowManager.onOrbClicked = { [weak self] in
             self?.handleOrbClicked()
         }
