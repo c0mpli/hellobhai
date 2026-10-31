@@ -114,8 +114,16 @@ final class CompanionManager: ObservableObject {
 
     /// What the push-to-talk hotkey does: talk (voice mode) or open the
     /// typed chat (chat mode). Persisted.
+    /// The orb follows it too: in chat mode a click opens the chat, in voice
+    /// mode a click starts or stops listening. Switching to voice puts the
+    /// chat away; opening the chat switches to chat mode.
     @Published var isChatInputMode: Bool = UserDefaults.standard.bool(forKey: "isChatInputMode") {
-        didSet { UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode") }
+        didSet {
+            UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode")
+            if !isChatInputMode {
+                chatPanelManager?.hide()
+            }
+        }
     }
 
     /// Which screen edge the chat panel slides in from. Persisted.
@@ -127,6 +135,9 @@ final class CompanionManager: ObservableObject {
     private var chatPanelManager: ChatPanelManager?
 
     func showChatPanel() {
+        if !isChatInputMode {
+            isChatInputMode = true
+        }
         if chatPanelManager == nil {
             chatPanelManager = ChatPanelManager(companionManager: self)
             // The orb floats above everything, and by default it sits on the
@@ -136,6 +147,19 @@ final class CompanionManager: ObservableObject {
             }
         }
         chatPanelManager?.show()
+    }
+
+    /// Chat mode: the orb opens the chat. Voice mode: the orb is a
+    /// tap-to-talk button (first click listens, second click sends), the
+    /// same as pressing and releasing the hotkey.
+    private func handleOrbClicked() {
+        if isChatInputMode {
+            showChatPanel()
+        } else if buddyDictationManager.isDictationInProgress {
+            handleShortcutTransition(.released)
+        } else {
+            handleShortcutTransition(.pressed)
+        }
     }
 
     /// Chat mode's hotkey: open the chat, or tuck it into its edge tab if it
@@ -175,6 +199,14 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
         ?? OrbColorVariant.defaultColorInputValue
 
+    @Published private(set) var selectedOrbSize: OrbSizeOption = OrbSizeOption.current
+
+    func setSelectedOrbSize(_ orbSizeOption: OrbSizeOption) {
+        selectedOrbSize = orbSizeOption
+        UserDefaults.standard.set(orbSizeOption.rawValue, forKey: OrbSizeOption.userDefaultsKey)
+        overlayWindowManager.orbWindowManager.applyOrbSize()
+    }
+
     func setSelectedOrbColor(_ orbColorInputValue: Int) {
         selectedOrbColor = orbColorInputValue
         UserDefaults.standard.set(orbColorInputValue, forKey: "selectedOrbColor")
@@ -196,7 +228,7 @@ final class CompanionManager: ObservableObject {
         let orbWindowManager = overlayWindowManager.orbWindowManager
         orbWindowManager.setColorInputValue(selectedOrbColor)
         orbWindowManager.onOrbClicked = { [weak self] in
-            self?.showChatPanel()
+            self?.handleOrbClicked()
         }
         orbWindowManager.onUserInteractedWithOrb = { [weak self] in
             guard let self else { return }

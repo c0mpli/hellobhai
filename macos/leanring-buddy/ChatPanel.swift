@@ -315,7 +315,9 @@ struct ChatPanelView: View {
                 chatPanelManager.minimize()
             }
             ChatIconButton(systemImageName: "xmark", helpText: "Close") {
-                chatPanelManager.hide()
+                // Closing the chat (not minimizing it) goes back to voice mode,
+                // which also slides the chat away.
+                companionManager.isChatInputMode = false
             }
         }
         .padding(.horizontal, 14)

@@ -52,11 +52,43 @@ struct OrbColorVariant: Identifiable {
     ]
 }
 
+/// How big the orb is on screen, picked in the panel (UserDefaults `orbSize`).
+enum OrbSizeOption: String, CaseIterable {
+    case small
+    case medium
+    case large
+
+    static let userDefaultsKey = "orbSize"
+
+    var sideLengthInPoints: CGFloat {
+        switch self {
+        case .small: return 64
+        case .medium: return 88
+        case .large: return 116
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    static var current: OrbSizeOption {
+        OrbSizeOption(rawValue: UserDefaults.standard.string(forKey: userDefaultsKey) ?? "") ?? .medium
+    }
+}
+
 @MainActor
 final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
-    static let orbWindowSize = NSSize(width: 76, height: 76)
-    /// Gap kept between the default position and the screen's corner.
-    private static let defaultMarginFromScreenCorner: CGFloat = 24
+    static var orbWindowSize: NSSize {
+        let sideLength = OrbSizeOption.current.sideLengthInPoints
+        return NSSize(width: sideLength, height: sideLength)
+    }
+    /// Gap kept between the default position and the screen's right edge.
+    private static let defaultMarginFromScreenEdge: CGFloat = 20
     private static let savedOriginXUserDefaultsKey = "orbWindowOriginX"
     private static let savedOriginYUserDefaultsKey = "orbWindowOriginY"
     /// orb.riv's own "asleep" animation shrinks the orb to nothing, which
@@ -265,29 +297,65 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
             )
             // Only reuse it if that spot is still on a connected screen.
             let savedFrame = NSRect(origin: savedOrigin, size: Self.orbWindowSize)
-            if NSScreen.screens.contains(where: { $0.visibleFrame.intersects(savedFrame) }) {
+            if NSScreen.screens.contains(where: { Self.areaOrbMayUse(on: $0).intersects(savedFrame) }) {
                 return Self.originKeptOnScreen(savedOrigin)
             }
         }
-        // Bottom-right of the main screen; visibleFrame already ends above the Dock.
-        let mainVisibleFrame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        return NSPoint(
-            x: mainVisibleFrame.maxX - Self.orbWindowSize.width - Self.defaultMarginFromScreenCorner,
-            y: mainVisibleFrame.minY + Self.defaultMarginFromScreenCorner
-        )
+        return Self.defaultOriginInDockRow()
     }
 
-    /// Clamps a window origin so the whole orb stays inside the visible
-    /// frame (no menu bar, no Dock) of the screen it is mostly on.
+    /// Sits in the Dock's row at the right edge of the main screen, centred
+    /// on the Dock's height, like an extra item beside the Dock. With the
+    /// Dock hidden or on a side it sits in the bottom-right corner.
+    private static func defaultOriginInDockRow() -> NSPoint {
+        guard let mainScreen = NSScreen.main ?? NSScreen.screens.first else { return .zero }
+        let screenFrame = mainScreen.frame
+        let bottomDockHeight = mainScreen.visibleFrame.minY - screenFrame.minY
+        let orbSize = orbWindowSize
+        let originY = bottomDockHeight > 20
+            ? screenFrame.minY + max((bottomDockHeight - orbSize.height) / 2, 4)
+            : screenFrame.minY + defaultMarginFromScreenEdge
+        return NSPoint(x: screenFrame.maxX - orbSize.width - defaultMarginFromScreenEdge, y: originY)
+    }
+
+    /// Everything below the menu bar, Dock row included, so the orb can sit
+    /// in line with the Dock.
+    private static func areaOrbMayUse(on screen: NSScreen) -> NSRect {
+        var usableArea = screen.frame
+        usableArea.size.height = screen.visibleFrame.maxY - screen.frame.minY
+        return usableArea
+    }
+
+    /// Clamps a window origin so the whole orb stays below the menu bar on
+    /// the screen it is mostly on.
     private static func originKeptOnScreen(_ proposedOrigin: NSPoint) -> NSPoint {
         let proposedCenter = NSPoint(x: proposedOrigin.x + orbWindowSize.width / 2, y: proposedOrigin.y + orbWindowSize.height / 2)
         let screenUnderOrb = NSScreen.screens.first(where: { $0.frame.contains(proposedCenter) })
             ?? NSScreen.screens.min(by: { distanceSquared(from: proposedCenter, to: $0.frame) < distanceSquared(from: proposedCenter, to: $1.frame) })
-        guard let visibleFrame = screenUnderOrb?.visibleFrame else { return proposedOrigin }
+        guard let screenUnderOrb else { return proposedOrigin }
+        let usableArea = areaOrbMayUse(on: screenUnderOrb)
         return NSPoint(
-            x: min(max(proposedOrigin.x, visibleFrame.minX), visibleFrame.maxX - orbWindowSize.width),
-            y: min(max(proposedOrigin.y, visibleFrame.minY), visibleFrame.maxY - orbWindowSize.height)
+            x: min(max(proposedOrigin.x, usableArea.minX), usableArea.maxX - orbWindowSize.width),
+            y: min(max(proposedOrigin.y, usableArea.minY), usableArea.maxY - orbWindowSize.height)
         )
+    }
+
+    /// Applies a new size from the panel, growing or shrinking around the
+    /// orb's centre so it stays where the user put it.
+    func applyOrbSize() {
+        guard let panel else {
+            orbFrameInScreenCoordinates = NSRect(origin: savedOrDefaultOrigin(), size: Self.orbWindowSize)
+            return
+        }
+        let newSize = Self.orbWindowSize
+        let currentCenter = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        let proposedOrigin = NSPoint(x: currentCenter.x - newSize.width / 2, y: currentCenter.y - newSize.height / 2)
+        panel.setFrame(NSRect(origin: Self.originKeptOnScreen(proposedOrigin), size: newSize), display: true, animate: true)
+        orbFrameInScreenCoordinates = panel.frame
+        if UserDefaults.standard.object(forKey: Self.savedOriginXUserDefaultsKey) != nil {
+            UserDefaults.standard.set(Double(panel.frame.origin.x), forKey: Self.savedOriginXUserDefaultsKey)
+            UserDefaults.standard.set(Double(panel.frame.origin.y), forKey: Self.savedOriginYUserDefaultsKey)
+        }
     }
 
     private static func distanceSquared(from point: NSPoint, to rect: NSRect) -> CGFloat {

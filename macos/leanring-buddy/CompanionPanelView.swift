@@ -26,6 +26,13 @@ struct CompanionPanelView: View {
     @State private var isCloseButtonHovered = false
     @State private var isQuitButtonHovered = false
     @State private var isOpenChatButtonHovered = false
+    /// Settings are split into tabs so the panel stays short.
+    @AppStorage("selectedPanelSettingsTab") private var selectedSettingsTabRawValue = PanelSettingsTab.general.rawValue
+
+    private var selectedSettingsTab: PanelSettingsTab {
+        get { PanelSettingsTab(rawValue: selectedSettingsTabRawValue) ?? .general }
+        nonmutating set { selectedSettingsTabRawValue = newValue.rawValue }
+    }
 
     private static let panelWidth: CGFloat = 340
 
@@ -86,13 +93,36 @@ struct CompanionPanelView: View {
                 openChatButton
             }
 
-            modelSection
-            orbSection
-            chatSection
-            PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
-            listeningSection
-            permissionsSection
-            generalSection
+            // Missing permissions block everything, so they stay in view
+            // above the tabs until granted.
+            if !companionManager.allPermissionsGranted {
+                permissionsSection
+            }
+
+            PanelSegmentedControl(
+                options: PanelSettingsTab.allCases.map { (label: $0.title, optionID: $0.rawValue) },
+                selectedOptionID: selectedSettingsTab.rawValue,
+                onSelectOption: { selectedTabRawValue in
+                    selectedSettingsTab = PanelSettingsTab(rawValue: selectedTabRawValue) ?? .general
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .center)
+
+            switch selectedSettingsTab {
+            case .general:
+                modelSection
+                listeningSection
+                if companionManager.allPermissionsGranted {
+                    permissionsSection
+                }
+                generalSection
+            case .voice:
+                PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
+            case .chat:
+                chatSection
+            case .orb:
+                orbSection
+            }
         }
         .padding(16)
     }
@@ -266,6 +296,18 @@ struct CompanionPanelView: View {
     private var orbSection: some View {
         VStack(alignment: .leading, spacing: 2) {
             PanelSectionLabel(title: "Orb")
+
+            PanelSettingsRow(iconName: "arrow.up.left.and.arrow.down.right", label: "Size") {
+                PanelSegmentedControl(
+                    options: OrbSizeOption.allCases.map { (label: $0.displayName, optionID: $0.rawValue) },
+                    selectedOptionID: companionManager.selectedOrbSize.rawValue,
+                    onSelectOption: { selectedSizeRawValue in
+                        if let selectedOrbSize = OrbSizeOption(rawValue: selectedSizeRawValue) {
+                            companionManager.setSelectedOrbSize(selectedOrbSize)
+                        }
+                    }
+                )
+            }
 
             PanelSettingsRow(iconName: "circle.circle", label: "Color") {
                 HStack(spacing: 4) {
@@ -705,6 +747,22 @@ private struct PanelVoiceSection: View {
 }
 
 // MARK: - Shared Panel Components
+
+private enum PanelSettingsTab: String, CaseIterable {
+    case general
+    case voice
+    case chat
+    case orb
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .voice: return "Voice"
+        case .chat: return "Chat"
+        case .orb: return "Orb"
+        }
+    }
+}
 
 private struct PanelSectionLabel: View {
     let title: String
