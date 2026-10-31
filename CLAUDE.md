@@ -23,6 +23,7 @@ No servers, API keys, analytics, or auto-updater. Network traffic is `claude -p`
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine`. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
+- **Screen Circles**: Claude can also append `[CIRCLE:x,y,width,height:label:screenN]` (center + size, same coordinate space as POINT) to circle the exact on-screen text it is talking about. `parseCircleTags` strips them before POINT parsing (shares POINT's label/screen pattern and `globalAppKitLocation` mapping); the overlay traces each as a thin gold hand-drawn ellipse (`HandDrawnEllipseShape`: wobbly radius, ~1.1 turns so it overshoots, pill-like when wide) with `trim`, ~1.2s apart, kept until speech ends, then faded over 0.6s; cleared on hotkey press. **User drawing**: while the hotkey is held, `OverlayWindow` (a non-activating `NSPanel`) stops ignoring mouse events and its `sendEvent` turns drags into gold freehand strokes (`userDrawnStrokes`); click-through returns on release. Each stroke's bounding box is mapped back to screenN + screenshot pixels (`CompanionScreenCapture.screenshotPixelRect`) and added to the prompt, plus a native-resolution crop (`captureRegionAsJPEG`) as an extra image. A drawing with no speech is sent as "What is this?". Strokes fade with Claude's circles when the reply ends.
 - **Concurrency**: `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, async/await throughout
 
 ### Key Architecture Decisions
@@ -53,9 +54,9 @@ No servers, API keys, analytics, or auto-updater. Network traffic is `claude -p`
 | `ComputerControl.swift` | ~198 | Parses `[CLICK]`/`[TYPE]`/`[KEY]` tags and posts synthetic mouse/keyboard events. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Menu bar icon, floating panel show/hide/position, click-outside-to-dismiss. |
 | `CompanionPanelView.swift` | ~607 | SwiftUI panel content: status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, quit button. Uses `DS` design system. |
-| `OverlayWindow.swift` | ~895 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Cursor animation, bezier-arc pointing, multi-monitor mapping. |
+| `OverlayWindow.swift` | ~1040 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, spinner, gold screen circles, and user drawing. Cursor animation, bezier-arc pointing, multi-monitor mapping. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI response text bubble and waveform next to the cursor. |
-| `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor JPEG screenshots via ScreenCaptureKit. |
+| `CompanionScreenCaptureUtility.swift` | ~195 | Multi-monitor JPEG screenshots via ScreenCaptureKit, native-resolution region crops, global rect → screenshot pixel mapping. |
 | `BuddyDictationManager.swift` | ~860 | Push-to-talk voice pipeline: `AVAudioEngine` mic capture, permission checks, transcript finalization, shortcut parsing, keyterms, audio levels for the waveform. |
 | `BuddyTranscriptionProvider.swift` | ~30 | Protocols for the transcription provider/session. |
 | `AppleSpeechTranscriptionProvider.swift` | ~150 | On-device Apple Speech provider, used as the fallback while Whisper loads. |
