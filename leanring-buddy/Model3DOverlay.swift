@@ -52,6 +52,10 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    /// Called when the user dismisses the model (Esc or its close button),
+    /// not when the app closes it, so the narration about it can be stopped.
+    var onUserClosedOverlay: (() -> Void)?
+
     // MARK: - Page
 
     private static func bundledResourceData(named resourceName: String, withExtension fileExtension: String) -> Data? {
@@ -112,6 +116,8 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
     /// Builds one streamed command line. Lines that aren't JSON objects are
     /// ignored by the page.
     func addCommandLine(_ commandLine: String) {
+        // Closed (by the user or a newer request): nothing left to build on.
+        guard panel?.isVisible == true else { return }
         guard isPageReady else {
             pendingCommandLines.append(commandLine)
             return
@@ -167,10 +173,16 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
                 return CGRect(x: rectangleValue[0], y: rectangleValue[1], width: rectangleValue[2], height: rectangleValue[3])
             }
         case "close":
-            close()
+            closeBecauseUserAskedTo()
         default:
             break
         }
+    }
+
+    private func closeBecauseUserAskedTo() {
+        guard isVisible else { return }
+        close()
+        onUserClosedOverlay?()
     }
 
     // MARK: - Mouse Pass-Through and Escape
@@ -188,14 +200,18 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
         if globalEscapeKeyMonitor == nil {
             globalEscapeKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] keyEvent in
                 guard keyEvent.keyCode == Self.escapeKeyCode else { return }
-                Task { @MainActor in self?.close() }
+                Task { @MainActor in self?.closeBecauseUserAskedTo() }
             }
         }
         if localEscapeKeyMonitor == nil {
             localEscapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] keyEvent in
-                guard keyEvent.keyCode == Self.escapeKeyCode, self?.isVisible == true else { return keyEvent }
-                self?.close()
-                return nil
+                guard let self, keyEvent.keyCode == Self.escapeKeyCode, self.isVisible else { return keyEvent }
+                // Esc still closes the model from this app's other windows
+                // (menu bar panel, whiteboard), but only an Esc aimed at the
+                // overlay itself is swallowed; the others keep working there.
+                let isAimedAtOverlay = keyEvent.window === self.panel
+                self.closeBecauseUserAskedTo()
+                return isAimedAtOverlay ? nil : keyEvent
             }
         }
     }

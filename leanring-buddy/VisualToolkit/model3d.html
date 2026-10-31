@@ -66,13 +66,16 @@ const MATERIAL_PRESETS = {
   plastic: { color: '#d9d6cf', roughness: 0.55, metalness: 0 },
   paint: { color: '#8a8f99', roughness: 0.42, metalness: 0.1 },
   steel: { color: '#b9bdc4', roughness: 0.34, metalness: 0.85 },
-  aluminum: { color: '#d3d6db', roughness: 0.4, metalness: 0.8 },
+  aluminum: { color: '#c9cdd3', roughness: 0.4, metalness: 0.8 },
   darkmetal: { color: '#5d6169', roughness: 0.45, metalness: 0.7 },
   titanium: { color: '#8f949b', roughness: 0.38, metalness: 0.8 },
   copper: { color: '#c47a4c', roughness: 0.32, metalness: 0.9 },
   brass: { color: '#b8913f', roughness: 0.3, metalness: 0.9 },
   gold: { color: '#d8b04a', roughness: 0.25, metalness: 1 },
-  pcb: { color: '#2f8040', roughness: 0.68, metalness: 0 },
+  pcb: { color: '#3a7a47', roughness: 0.74, metalness: 0 },
+  // Cool blue-gray for the inside of machines (ducts, bays, inner casings),
+  // so a cutaway reads as "inside" against the painted shell.
+  interior: { color: '#8a9cb0', roughness: 0.5, metalness: 0.35 },
   chip: { color: '#2c2e33', roughness: 0.5, metalness: 0.1 },
   rubber: { color: '#2b2b2b', roughness: 0.92, metalness: 0 },
   ceramic: { color: '#f1efe9', roughness: 0.6, metalness: 0 },
@@ -321,9 +324,12 @@ function buildPartGeometry(partSpec) {
       if (!outlinePoints || outlinePoints.length < 3) return new THREE.BoxGeometry(1, 1, 1);
       const extrusionDepth = Math.max(0.0001, finiteNumberOr(partSpec.depth, 1));
       const bevelSize = Math.max(0, finiteNumberOr(partSpec.bevel, 0));
-      const extrudedGeometry = new THREE.ExtrudeGeometry(new THREE.Shape(outlinePoints), {
-        depth: extrusionDepth, bevelEnabled: bevelSize > 0, bevelSize, bevelThickness: bevelSize, bevelSegments: 3, curveSegments: 24,
-      });
+      const shellThickness = finiteNumberOr(partSpec.shell, 0);
+      const extrudedGeometry = shellThickness > 0
+        ? buildExtrudedShellGeometry(outlinePoints, extrusionDepth, bevelSize, shellThickness)
+        : new THREE.ExtrudeGeometry(new THREE.Shape(outlinePoints), {
+          depth: extrusionDepth, bevelEnabled: bevelSize > 0, bevelSize, bevelThickness: bevelSize, bevelSegments: 3, curveSegments: 24,
+        });
       extrudedGeometry.translate(0, 0, -extrusionDepth / 2);
       // "axis" is the extrusion direction here (default z).
       if (partSpec.axis === 'y') extrudedGeometry.rotateX(-Math.PI / 2);
@@ -352,6 +358,70 @@ function buildPartGeometry(partSpec) {
       return buildRoundedBoxGeometry(boxWidth, boxHeight, boxDepth, Math.max(0, finiteNumberOr(partSpec.radius, defaultCornerRadius)));
     }
   }
+}
+
+// The outline moved inward by "thickness" (each corner where its two
+// neighbouring edges, shifted inward, meet).
+function insetPolygon(outlinePoints, thickness) {
+  let doubledSignedArea = 0;
+  outlinePoints.forEach((point, pointIndex) => {
+    const nextPoint = outlinePoints[(pointIndex + 1) % outlinePoints.length];
+    doubledSignedArea += point.x * nextPoint.y - nextPoint.x * point.y;
+  });
+  const windingSign = doubledSignedArea >= 0 ? 1 : -1;
+  const inwardEdgeNormals = outlinePoints.map((point, pointIndex) => {
+    const nextPoint = outlinePoints[(pointIndex + 1) % outlinePoints.length];
+    const edgeLength = Math.hypot(nextPoint.x - point.x, nextPoint.y - point.y) || 1;
+    return new THREE.Vector2(-(nextPoint.y - point.y) / edgeLength * windingSign, (nextPoint.x - point.x) / edgeLength * windingSign);
+  });
+  return outlinePoints.map((point, pointIndex) => {
+    const previousNormal = inwardEdgeNormals[(pointIndex - 1 + outlinePoints.length) % outlinePoints.length];
+    const nextNormal = inwardEdgeNormals[pointIndex];
+    const cornerDirection = previousNormal.clone().add(nextNormal);
+    const cornerDirectionLength = cornerDirection.length();
+    if (cornerDirectionLength < 1e-4) return point.clone().addScaledVector(nextNormal, thickness);
+    cornerDirection.divideScalar(cornerDirectionLength);
+    // Miter length, capped so sharp corners (a nose tip) don't shoot out.
+    const miterLength = Math.min(thickness / Math.max(cornerDirection.dot(nextNormal), 0.2), thickness * 3);
+    return point.clone().addScaledVector(cornerDirection, miterLength);
+  });
+}
+
+function mergeNonIndexedGeometries(geometries) {
+  const mergedAttributes = { position: [], normal: [], uv: [] };
+  for (const geometry of geometries) {
+    const flatGeometry = geometry.index ? geometry.toNonIndexed() : geometry;
+    for (const attributeName of Object.keys(mergedAttributes)) {
+      const attribute = flatGeometry.getAttribute(attributeName);
+      if (attribute) mergedAttributes[attributeName].push(...attribute.array);
+    }
+  }
+  const mergedGeometry = new THREE.BufferGeometry();
+  mergedGeometry.setAttribute('position', new THREE.Float32BufferAttribute(mergedAttributes.position, 3));
+  mergedGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(mergedAttributes.normal, 3));
+  if (mergedAttributes.uv.length) mergedGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(mergedAttributes.uv, 2));
+  return mergedGeometry;
+}
+
+// A hollow extrusion (a faceted fuselage, a box casing): a thin wall around
+// the outline plus thin side plates, so a cutaway shows a hatched skin and
+// the parts inside instead of one solid hatched slab.
+function buildExtrudedShellGeometry(outlinePoints, extrusionDepth, bevelSize, shellThickness) {
+  const innerOutlinePoints = insetPolygon(outlinePoints, shellThickness);
+  const wallShape = new THREE.Shape(outlinePoints);
+  wallShape.holes.push(new THREE.Path(innerOutlinePoints));
+  // A bevel wider than the wall would eat into the hole and thicken the skin.
+  const wallBevelSize = Math.min(bevelSize, shellThickness * 0.4);
+  const wallGeometry = new THREE.ExtrudeGeometry(wallShape, {
+    depth: extrusionDepth, bevelEnabled: wallBevelSize > 0, bevelSize: wallBevelSize, bevelThickness: wallBevelSize, bevelSegments: 2, curveSegments: 12,
+  });
+  // The side plates fill the hole, flush with the wall's faces.
+  const plateThickness = Math.min(shellThickness, extrusionDepth / 4);
+  const nearPlateGeometry = new THREE.ExtrudeGeometry(new THREE.Shape(innerOutlinePoints), { depth: plateThickness, bevelEnabled: false });
+  nearPlateGeometry.translate(0, 0, extrusionDepth + wallBevelSize - plateThickness);
+  const farPlateGeometry = new THREE.ExtrudeGeometry(new THREE.Shape(innerOutlinePoints), { depth: plateThickness, bevelEnabled: false });
+  farPlateGeometry.translate(0, 0, -wallBevelSize);
+  return mergeNonIndexedGeometries([wallGeometry, nearPlateGeometry, farPlateGeometry]);
 }
 
 function buildPartMaterial(partSpec) {
@@ -916,17 +986,47 @@ function boundsOfEntry(sceneObjectEntry) {
   return sceneObjectEntry.isGroup ? boundsInContentSpace(sceneObjectEntry.object) : sceneObjectEntry.bounds;
 }
 
-function anchorPointForLabel(calloutLabel) {
+// A point on the named part: on its top face for labels above the model,
+// its bottom face for labels below (so the leader doesn't cross the whole
+// model), at "alongFraction" of the way along its length.
+function anchorPointForLabel(calloutLabel, alongFraction) {
   if (calloutLabel.anchorInContentSpace) return calloutLabel.anchorInContentSpace;
   const anchorBounds = boundsOfEntry(sceneObjectsById.get(calloutLabel.anchorObjectId));
   if (anchorBounds.isEmpty()) return new THREE.Vector3();
-  return new THREE.Vector3((anchorBounds.min.x + anchorBounds.max.x) / 2, anchorBounds.max.y, (anchorBounds.min.z + anchorBounds.max.z) / 2);
+  const fraction = alongFraction === undefined ? 0.5 : alongFraction;
+  return new THREE.Vector3(
+    anchorBounds.min.x + (anchorBounds.max.x - anchorBounds.min.x) * fraction,
+    calloutLabel.side === 'bottom' ? anchorBounds.min.y : anchorBounds.max.y,
+    (anchorBounds.min.z + anchorBounds.max.z) / 2,
+  );
+}
+
+// Anchor dots at least this far apart on screen, so neighbouring leaders
+// don't run into each other.
+const MINIMUM_ANCHOR_SEPARATION_IN_PIXELS = 42;
+const ANCHOR_FRACTIONS_TO_TRY = [0.5, 0.3, 0.7, 0.15, 0.85, 0.05, 0.95];
+
+// Picks, once, where along its part each new label points: the first spot
+// far enough from the anchors already placed. It then stays put so the dot
+// doesn't jump around as the model turns.
+function chooseAnchorFraction(calloutLabel, placedAnchorPoints) {
+  if (calloutLabel.anchorFraction !== undefined || calloutLabel.anchorInContentSpace) return;
+  let bestFraction = 0.5, bestDistance = -1;
+  for (const candidateFraction of ANCHOR_FRACTIONS_TO_TRY) {
+    const candidatePoint = projectContentPointToPage(anchorPointForLabel(calloutLabel, candidateFraction));
+    const nearestDistance = placedAnchorPoints.reduce((nearest, placedPoint) =>
+      Math.min(nearest, Math.hypot(placedPoint.x - candidatePoint.x, placedPoint.y - candidatePoint.y)), Infinity);
+    if (nearestDistance >= MINIMUM_ANCHOR_SEPARATION_IN_PIXELS) { bestFraction = candidateFraction; break; }
+    if (nearestDistance > bestDistance) { bestDistance = nearestDistance; bestFraction = candidateFraction; }
+  }
+  calloutLabel.anchorFraction = bestFraction;
 }
 
 // Splits labels into rows that fit the width, then slides each row's tags
 // apart left to right (and back from the right edge) so none overlap.
 function layoutCalloutRows(labelsOnSide, modelRectangle, side) {
-  const gapBetweenTags = 4;
+  // Neighbouring tags touch, like Clicky's (GPIO|RAM).
+  const gapBetweenTags = 0;
   const gapBetweenRows = 8;
   const usableWidth = viewportWidth - 12;
   const sortedLabels = labelsOnSide.slice().sort((firstLabel, secondLabel) => firstLabel.anchorPagePoint.x - secondLabel.anchorPagePoint.x);
@@ -964,8 +1064,11 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side) {
 
 function updateCalloutLabels(modelRectangle) {
   const visibleLabels = calloutLabels.filter((calloutLabel) => calloutLabel.isVisible);
+  const placedAnchorPoints = [];
   for (const calloutLabel of visibleLabels) {
-    calloutLabel.anchorPagePoint = projectContentPointToPage(anchorPointForLabel(calloutLabel));
+    chooseAnchorFraction(calloutLabel, placedAnchorPoints);
+    calloutLabel.anchorPagePoint = projectContentPointToPage(anchorPointForLabel(calloutLabel, calloutLabel.anchorFraction));
+    placedAnchorPoints.push(calloutLabel.anchorPagePoint);
     // Measured every frame because the handwriting font may finish loading late.
     calloutLabel.tagWidth = calloutLabel.tagElement.offsetWidth;
     calloutLabel.tagHeight = calloutLabel.tagElement.offsetHeight;
@@ -1006,6 +1109,7 @@ function updateCalloutLabels(modelRectangle) {
 // Highlights and spinning parts
 // ---------------------------------------------------------------------------
 
+const HIGHLIGHT_GLOW_COLOR = new THREE.Color(0xfff0d2);
 const spinningObjects = []; // { object, axisName, radiansPerSecond }
 const highlightPulses = []; // { materials, startTime }
 
@@ -1018,10 +1122,21 @@ function updateHighlightsAndSpins(now, secondsSinceLastFrame) {
     const elapsedSeconds = (now - highlightPulse.startTime) / 1000;
     const pulseCycleCount = 3;
     const isFinished = elapsedSeconds > pulseCycleCount * 1.1;
-    const glowStrength = isFinished ? 0 : (1 - Math.cos(elapsedSeconds / 1.1 * Math.PI * 2)) / 2 * 0.55;
+    // A soft warm-white glow: the pen's saturated gold turned metal parts
+    // into a yellow splash that looked like an explosion.
+    const glowStrength = isFinished ? 0 : (1 - Math.cos(elapsedSeconds / 1.1 * Math.PI * 2)) / 2 * 0.3;
     for (const highlightedMaterial of highlightPulse.materials) {
-      highlightedMaterial.emissive.copy(highlightedMaterial.userData.baseEmissive).lerp(new THREE.Color(0xffc93a), glowStrength > 0 ? 1 : 0);
-      highlightedMaterial.emissiveIntensity = glowStrength > 0 ? Math.max(highlightedMaterial.userData.baseEmissiveIntensity, glowStrength) : highlightedMaterial.userData.baseEmissiveIntensity;
+      // Parts that already glow (flames, leds) keep their own color; the rest
+      // get the glow color at the pulse's strength. (emissiveIntensity
+      // defaults to 1, so it must not be max()'d with the base: that lit
+      // highlighted parts at full strength, washing them out to ivory.)
+      const isAlreadyGlowing = highlightedMaterial.userData.baseEmissive.getHex() !== 0;
+      if (isAlreadyGlowing) {
+        highlightedMaterial.emissiveIntensity = highlightedMaterial.userData.baseEmissiveIntensity + glowStrength;
+      } else {
+        highlightedMaterial.emissive.copy(HIGHLIGHT_GLOW_COLOR);
+        highlightedMaterial.emissiveIntensity = glowStrength;
+      }
     }
     if (isFinished) {
       highlightPulse.materials.forEach((highlightedMaterial) => {
