@@ -44,7 +44,7 @@ The full walkthrough, diagrams, the pieces and where they live, and exactly what
 | Platform | Status | Folder |
 |----------|--------|--------|
 | macOS (Apple Silicon, 14.2+) | Ready | [`macos/`](macos) |
-| Windows 10/11 | In progress | `windows/` |
+| Windows 10/11 | In progress | [`tauri/`](tauri) |
 
 ## Setup (macOS)
 
@@ -90,7 +90,7 @@ macos/                     Mac app (Swift; legacy Xcode name leanring-buddy)
   leanring-buddy.xcodeproj
   scripts/                   create-signing-cert.sh, build-and-run.sh
   CLAUDE.md                  Mac architecture for coding agents
-windows/                   Windows app (Tauri), in progress
+tauri/                     Windows app (Tauri; Linux later), in progress
 scripts/                   cross-platform scripts
 docs/                      architecture.md, mobile-plan.md
 CLAUDE.md                  repo map + shared conventions (AGENTS.md links here)

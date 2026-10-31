@@ -1,0 +1,31 @@
+/* Colors from macos/leanring-buddy/DesignSystem.swift (DS.Colors). */
+:root {
+  --background: #101211;
+  --surface-1: #171918;
+  --surface-2: #202221;
+  --text-primary: #ECEEED;
+  --text-secondary: #ADB5B2;
+  --text-tertiary: #6B736F;
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+}
+
+html, body {
+  margin: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  font-size: 13px;
+}
+
+.settings-panel {
+  width: 340px;
+  box-sizing: border-box;
+  padding: 16px;
+  background: var(--background);
+  border-radius: 12px;
+}
+
+button {
+  cursor: pointer;
+}

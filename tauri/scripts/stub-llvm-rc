@@ -1,0 +1,10 @@
+#!/bin/sh
+# Check-only stand-in for llvm-rc (see check-windows-target.sh): writes an empty
+# output file wherever /fo points, so tauri-build's resource step succeeds.
+while [ $# -gt 0 ]; do
+    case "$1" in
+        /fo|-fo|/FO) shift; : > "$1" ;;
+        /fo*) : > "${1#/fo}" ;;
+    esac
+    shift
+done

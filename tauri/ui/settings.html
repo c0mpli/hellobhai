@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>hellobhai</title>
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<!-- Tray settings panel, the Windows counterpart of the Mac's CompanionPanelView. -->
+<main class="settings-panel">
+  <header>
+    <h1>hellobhai</h1>
+    <p id="status-line"></p>
+  </header>
+  <section id="push-to-talk-hint"></section>
+  <section>
+    <h2>Claude model</h2>
+    <div id="claude-model-picker"></div>
+  </section>
+  <section>
+    <h2>Voice</h2>
+    <div id="voice-picker"></div>
+    <p id="voice-status"></p>
+    <p id="speech-model-status"></p>
+  </section>
+  <section>
+    <h2>Shortcut</h2>
+    <div id="shortcut-picker"></div>
+  </section>
+  <section>
+    <h2>Microphone</h2>
+    <p id="microphone-status"></p>
+    <button id="open-microphone-settings-button" type="button">Open microphone settings</button>
+  </section>
+  <section>
+    <label><input id="launch-at-login-toggle" type="checkbox"> Launch at login</label>
+    <button id="replay-onboarding-button" type="button">Replay onboarding</button>
+  </section>
+  <footer>
+    <button id="quit-button" type="button">Quit hellobhai</button>
+    <span id="version-label"></span>
+  </footer>
+</main>
+<script src="settings.js"></script>
+</body>
+</html>

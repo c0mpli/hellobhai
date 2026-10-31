@@ -1,0 +1,11 @@
+{
+  "name": "hellobhai-tauri",
+  "private": true,
+  "description": "Tauri CLI for the hellobhai Windows (later Linux) app. The frontend is plain HTML/JS in ui/ with no build step.",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4"
+  }
+}

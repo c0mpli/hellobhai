@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hellobhai",
+  "version": "0.1.0",
+  "identifier": "ai.hellobhai.desktop",
+  "build": {
+    "frontendDist": [
+      "../ui",
+      "../generated/board.html",
+      "../generated/notes.html",
+      "../generated/model3d.html"
+    ]
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  }
+}
