@@ -26,6 +26,9 @@ struct CompanionPanelView: View {
     @State private var isCloseButtonHovered = false
     @State private var isQuitButtonHovered = false
     @State private var isOpenChatButtonHovered = false
+    /// nil while the lookup runs. It can start a login shell, so it runs off
+    /// the main thread instead of freezing the panel.
+    @State private var isSelectedBrainCLIFound: Bool?
     /// Settings are split into tabs so the panel stays short.
     @AppStorage("selectedPanelSettingsTab") private var selectedSettingsTabRawValue = PanelSettingsTab.general.rawValue
 
@@ -274,6 +277,16 @@ struct CompanionPanelView: View {
             PanelSettingsRow(iconName: "terminal", label: "CLI") {
                 selectedBrainCLIStatusLabel
             }
+            .task(id: companionManager.selectedBrainEngine) {
+                let brainEngineToLookUp = companionManager.selectedBrainEngine
+                isSelectedBrainCLIFound = nil
+                isSelectedBrainCLIFound = await Task.detached {
+                    switch brainEngineToLookUp {
+                    case .claude: return ClaudeCLI.claudeExecutableURL != nil
+                    case .codex: return CodexCLI.codexExecutableURL != nil
+                    }
+                }.value
+            }
         }
     }
 
@@ -288,14 +301,16 @@ struct CompanionPanelView: View {
     @ViewBuilder
     private var selectedBrainCLIStatusLabel: some View {
         switch companionManager.selectedBrainEngine {
+        case _ where isSelectedBrainCLIFound == nil:
+            PanelStatusLabel(statusText: "Looking for the CLI...", statusColor: DS.Colors.textTertiary)
         case .claude:
-            if ClaudeCLI.claudeExecutableURL != nil {
+            if isSelectedBrainCLIFound == true {
                 PanelStatusLabel(statusText: "Claude Code found", statusColor: DS.Colors.success)
             } else {
                 PanelStatusLabel(statusText: "Claude CLI not found: install Claude Code, then run claude", statusColor: DS.Colors.warning)
             }
         case .codex:
-            if CodexCLI.codexExecutableURL != nil {
+            if isSelectedBrainCLIFound == true {
                 PanelStatusLabel(statusText: "Codex CLI found", statusColor: DS.Colors.success)
             } else {
                 PanelStatusLabel(statusText: "Codex CLI not found: install it, then sign in with codex login", statusColor: DS.Colors.warning)

@@ -197,7 +197,8 @@ final class ClaudeCLI {
 
     /// GUI apps launch with a minimal PATH, so check the usual install
     /// locations first, then ask a login shell as a last resort.
-    static let claudeExecutableURL: URL? = {
+    /// nonisolated so the panel can resolve it off the main thread.
+    nonisolated static let claudeExecutableURL: URL? = {
         let homeDirectoryPath = FileManager.default.homeDirectoryForCurrentUser.path
         let candidatePaths = [
             "\(homeDirectoryPath)/.local/bin/claude",
@@ -208,14 +209,24 @@ final class ClaudeCLI {
         if let installedPath = candidatePaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
             return URL(fileURLWithPath: installedPath)
         }
+        return executableURLFromLoginShell(commandName: "claude")
+    }()
 
+    /// Asks `zsh -ilc 'command -v <name>'`. Blocks while the user's shell
+    /// starts, so call it off the main thread. A .zshrc that waits for input
+    /// is killed after 5 seconds.
+    nonisolated static func executableURLFromLoginShell(commandName: String) -> URL? {
         let loginShellProcess = Process()
         let loginShellOutputPipe = Pipe()
         loginShellProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        loginShellProcess.arguments = ["-ilc", "command -v claude"]
+        loginShellProcess.arguments = ["-ilc", "command -v \(commandName)"]
+        loginShellProcess.standardInput = FileHandle.nullDevice
         loginShellProcess.standardOutput = loginShellOutputPipe
         loginShellProcess.standardError = FileHandle.nullDevice
         guard (try? loginShellProcess.run()) != nil else { return nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if loginShellProcess.isRunning { loginShellProcess.terminate() }
+        }
         loginShellProcess.waitUntilExit()
         let resolvedPath = String(
             data: loginShellOutputPipe.fileHandleForReading.readDataToEndOfFile(),
@@ -226,5 +237,5 @@ final class ClaudeCLI {
             .map { String($0).trimmingCharacters(in: .whitespaces) }
         guard let resolvedPath, FileManager.default.isExecutableFile(atPath: resolvedPath) else { return nil }
         return URL(fileURLWithPath: resolvedPath)
-    }()
+    }
 }

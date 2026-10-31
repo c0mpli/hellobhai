@@ -58,7 +58,7 @@ The full walkthrough, diagrams, the pieces and where they live, and exactly what
 
 ### Use Codex instead of Claude
 
-bhai can also think with OpenAI's [Codex CLI](https://github.com/openai/codex). Install it, run `codex login` once in a terminal, then pick **Brain → Codex** in the menu bar panel (General tab). It runs `codex exec` read-only with your ChatGPT login, with no access to your Codex config, MCP servers or AGENTS.md files. Pointing, circles, whiteboard, notes, 3D models and on-screen clicks/typing all work. The Mac command tools (osascript, open, mdfind, Shortcuts, saving notes to Apple Notes) are Claude-only, because Codex has no safe command allowlist; with Codex, bhai does those tasks by clicking and typing instead.
+bhai can also think with OpenAI's [Codex CLI](https://github.com/openai/codex). Install it, run `codex login` once in a terminal, then pick **Brain → Codex** in the menu bar panel (General tab). It runs `codex exec` with your ChatGPT login and bhai's own instructions, with no shell, connectors or plugins, and without your Codex config, MCP servers or project AGENTS.md files (a global `~/.codex/AGENTS.md`, if you have one, is still read). Pointing, circles, whiteboard, notes, 3D models and on-screen clicks/typing all work. The Mac command tools (osascript, open, mdfind, Shortcuts, saving notes to Apple Notes) are Claude-only, because Codex has no safe command allowlist; with Codex, bhai does those tasks by clicking and typing instead.
 
 ### Build & run
 

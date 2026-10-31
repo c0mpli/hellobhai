@@ -23,8 +23,9 @@ final class CodexCLI {
     var reasoningEffort: String?
 
     /// Send screenshots + prompt to `codex exec` and stream the reply.
-    /// Calls `onTextChunk` with the accumulated text each time an agent
-    /// message completes (codex exec emits whole messages, not deltas).
+    /// Calls `onTextChunk` with each agent message as it completes (codex
+    /// exec emits whole messages, not deltas). Only the last message is the
+    /// answer, so a later message replaces an earlier one.
     /// Cancelling the calling task terminates the subprocess.
     /// `allowsMacTools` is ignored: Codex has no command allowlist, so it
     /// always runs in the read-only sandbox.
@@ -39,7 +40,8 @@ final class CodexCLI {
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
 
-        guard let codexExecutableURL = Self.codexExecutableURL else {
+        // The lookup may start a login shell, so keep it off the main thread.
+        guard let codexExecutableURL = await Task.detached(operation: { Self.codexExecutableURL }).value else {
             throw ClaudeCLIError(message: "couldn't find the codex CLI. install it, then run `codex login` once in Terminal.")
         }
 
@@ -49,6 +51,12 @@ final class CodexCLI {
             .appendingPathComponent("hellobhai-codex-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: callFolderURL, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: callFolderURL) }
+
+        // bhai's system prompt replaces Codex's built-in coding-agent
+        // instructions (which ask for Markdown and file references) instead
+        // of being added on top of them.
+        let instructionsFileURL = callFolderURL.appendingPathComponent("instructions.md")
+        try Data(systemPrompt.utf8).write(to: instructionsFileURL)
 
         var imageFilePaths: [String] = []
         var promptText = ""
@@ -71,7 +79,7 @@ final class CodexCLI {
         process.arguments = Self.codexExecArguments(
             imageFilePaths: imageFilePaths,
             workingDirectoryPath: callFolderURL.path,
-            systemPrompt: systemPrompt,
+            instructionsFilePath: instructionsFileURL.path,
             reasoningEffort: effort ?? reasoningEffort
         )
         process.currentDirectoryURL = callFolderURL
@@ -106,8 +114,8 @@ final class CodexCLI {
 
         try await withTaskCancellationHandler {
             for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                if let accumulatedResponseText = eventStreamParser.handleJSONLine(line) {
-                    await onTextChunk(accumulatedResponseText)
+                if let latestAgentMessageText = eventStreamParser.handleJSONLine(line) {
+                    await onTextChunk(latestAgentMessageText)
                 }
             }
         } onCancel: {
@@ -126,8 +134,14 @@ final class CodexCLI {
             throw ClaudeCLIError(message: Self.userFacingErrorMessage(for: "codex exec exited with \(process.terminationStatus): \(failureDetail)"))
         }
 
+        // An interrupted turn, or one that ended on a tool call, exits 0
+        // without any answer; say so instead of staying silent.
+        guard let lastAgentMessageText = eventStreamParser.lastAgentMessageText else {
+            throw ClaudeCLIError(message: "codex returned no reply. try again.")
+        }
+
         let duration = Date().timeIntervalSince(startTime)
-        return (text: eventStreamParser.accumulatedAgentMessageText, duration: duration)
+        return (text: lastAgentMessageText, duration: duration)
     }
 
     /// The full `codex exec` argument list. Kept separate so it can be
@@ -135,7 +149,7 @@ final class CodexCLI {
     static func codexExecArguments(
         imageFilePaths: [String],
         workingDirectoryPath: String,
-        systemPrompt: String,
+        instructionsFilePath: String,
         reasoningEffort: String?
     ) -> [String] {
         var arguments = [
@@ -156,7 +170,15 @@ final class CodexCLI {
             // Don't read AGENTS.md files into the prompt.
             "--config", "project_doc_max_bytes=0",
             "--config", "web_search=\"disabled\"",
-            "--config", "developer_instructions=\(tomlBasicString(systemPrompt))"
+            "--config", "model_instructions_file=\(tomlBasicString(instructionsFilePath))",
+            // No shell: the read-only sandbox still lets commands read the
+            // whole disk (~/.ssh, ~/.codex/auth.json), and text on screen
+            // could ask for that. Also saves the delay of exploring.
+            "--config", "features.shell_tool=false",
+            // ChatGPT connectors and installed plugins load from the login,
+            // not config.toml, so --ignore-user-config doesn't drop them.
+            "--config", "features.apps=false",
+            "--config", "features.plugins=false"
         ]
         if let reasoningEffort {
             arguments += ["--config", "model_reasoning_effort=\(tomlBasicString(reasoningEffort))"]
@@ -207,8 +229,9 @@ final class CodexCLI {
 
     /// GUI apps launch with a minimal PATH, so check the usual install
     /// locations each time (cheap, so installing codex shows up without a
-    /// restart), then fall back to a login shell lookup done once.
-    static var codexExecutableURL: URL? {
+    /// restart), then fall back to a login shell lookup done once. The
+    /// login shell can be slow, so call this off the main thread.
+    nonisolated static var codexExecutableURL: URL? {
         let homeDirectoryPath = FileManager.default.homeDirectoryForCurrentUser.path
         let candidatePaths = [
             "\(homeDirectoryPath)/.local/bin/codex",
@@ -224,39 +247,22 @@ final class CodexCLI {
 
     // ponytail: resolved once per launch; a codex installed only on a custom
     // PATH (nvm, volta) needs an app restart to be found.
-    private static let codexExecutableURLFromLoginShell: URL? = {
-        let loginShellProcess = Process()
-        let loginShellOutputPipe = Pipe()
-        loginShellProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        loginShellProcess.arguments = ["-ilc", "command -v codex"]
-        loginShellProcess.standardOutput = loginShellOutputPipe
-        loginShellProcess.standardError = FileHandle.nullDevice
-        guard (try? loginShellProcess.run()) != nil else { return nil }
-        loginShellProcess.waitUntilExit()
-        let resolvedPath = String(
-            data: loginShellOutputPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        )?
-            .split(separator: "\n")
-            .last
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
-        guard let resolvedPath, FileManager.default.isExecutableFile(atPath: resolvedPath) else { return nil }
-        return URL(fileURLWithPath: resolvedPath)
-    }()
+    private nonisolated static let codexExecutableURLFromLoginShell: URL? = ClaudeCLI.executableURLFromLoginShell(commandName: "codex")
 }
 
 /// Reads the `codex exec --json` JSONL stream (ThreadEvent in
 /// codex-rs/exec/src/exec_events.rs). Agent text only arrives in
 /// `item.completed` events with `item.type == "agent_message"`.
 struct CodexEventStreamParser {
-    private(set) var accumulatedAgentMessageText = ""
+    /// The answer: codex treats the turn's last agent message as final.
+    private(set) var lastAgentMessageText: String?
     /// Set by `turn.failed`; the run has no usable answer.
     private(set) var turnFailedMessage: String?
     /// The latest top-level `error` event. Codex also sends these for
     /// retries ("Reconnecting..."), so they only matter if the run fails.
     private(set) var lastErrorMessage: String?
 
-    /// Returns the new accumulated text when this line added agent text.
+    /// Returns the agent message text when this line completed one.
     mutating func handleJSONLine(_ jsonLine: String) -> String? {
         guard let lineData = jsonLine.data(using: .utf8),
               let threadEvent = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
@@ -272,12 +278,8 @@ struct CodexEventStreamParser {
                   !agentMessageText.isEmpty else {
                 return nil
             }
-            // Several messages in one turn are joined like Claude's text blocks.
-            if !accumulatedAgentMessageText.isEmpty {
-                accumulatedAgentMessageText += "\n"
-            }
-            accumulatedAgentMessageText += agentMessageText
-            return accumulatedAgentMessageText
+            lastAgentMessageText = agentMessageText
+            return agentMessageText
         case "turn.failed":
             let failureError = threadEvent["error"] as? [String: Any]
             turnFailedMessage = failureError?["message"] as? String ?? lastErrorMessage ?? "codex turn failed"
