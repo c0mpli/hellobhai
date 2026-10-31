@@ -351,6 +351,7 @@ final class CompanionManager: ObservableObject {
             currentVisualTask?.cancel()
             localTTSClient.stopPlayback()
             visualExplanationPanelManager.finishLiveContent()
+            visualExplanationPanelManager.stopDrawing()
             model3DOverlayManager.close()
             clearDetectedElementLocation()
             screenCircleFadeTask?.cancel()
@@ -451,7 +452,7 @@ final class CompanionManager: ObservableObject {
     live notes:
     when the user wants something summarized or noted down — the page, email, document, video, code, spreadsheet, or chat on their screen, or your conversation so far — or asks for notes, key points, a list, a comparison, or steps, append [NOTES:what to cover, in one line]. the app writes live notes (with tables, code, and charts when useful) on a panel next to the cursor while narrating the highlights, so your own spoken reply must be only one short intro sentence, like "ठीक है, नोट्स बना देता हूँ". prefer SHOW for how something works, NOTES for summaries, lists, and anything text-heavy, and never use both in one reply.
     3d models:
-    when the question is about a physical thing and how it's built or works inside — a machine, engine, vehicle, aircraft, gadget, circuit board, hardware part, building, or a body part — and especially when that thing is on their screen (a product photo, a video, a diagram), append [MODEL3D:what to show, in one line:x,y:screenN] where x,y is the center of that thing in the screenshot (same coordinates and screen rules as POINT; leave out :screenN for the cursor's screen, and leave out x,y if it isn't on screen). the app builds a 3d model of it live, right on top of it, with labeled parts and a cutaway when the inside matters, narrated step by step. your own spoken reply must be only one short intro sentence, like "चलो, इसका 3D मॉडल बनाकर दिखाता हूँ". prefer MODEL3D for physical objects and "what's inside / how does this machine work", SHOW for ideas, processes, flows, and math, NOTES for summaries and lists. never use more than one of SHOW, NOTES, and MODEL3D in one reply.
+    when the question is about a physical thing and how it's built or works inside — a machine, engine, vehicle, aircraft, gadget, circuit board, hardware part, building, or a body part — and especially when that thing is on their screen (a product photo, a video, a diagram), append [MODEL3D:what to show, in one line:x,y:screenN] where x,y is the center of that thing in the screenshot (same coordinates and screen rules as POINT; leave out :screenN for the cursor's screen, and leave out x,y if it isn't on screen). the app builds a 3d model of it live, right on top of it, with labeled parts and a cutaway when the inside matters, narrated step by step. your own spoken reply must be only one short intro sentence, like "चलो, इसका 3D मॉडल बनाकर दिखाता हूँ". prefer MODEL3D for physical objects and "what's inside / how does this machine work", SHOW for ideas, processes, flows, and math, NOTES for summaries and lists. for a physical object: forces, motion, or physics about it → SHOW; what it looks like or what is inside → MODEL3D. never use more than one of SHOW, NOTES, and MODEL3D in one reply.
     if the user asks to close the model, append [CLOSE_DRAWING] too.
 
     if the user asks to save the notes, save them to the apple notes app with osascript, for example: osascript -e 'tell application "Notes" to make new note with properties {name:"title", body:"<h1>title</h1><ul><li>point</li></ul>"}'. the notes you wrote are in the conversation so far.
@@ -840,16 +841,16 @@ final class CompanionManager: ObservableObject {
       sphere: "r"
       torus: "r", "tube", "axis" (the axis it rings around)
       capsule: "r", "h" (straight length), "axis"
-      extrude: a flat outline pushed out: "points":[[x,y],...] (at least 3, in the x-y plane), "depth", "axis" is the push direction (default z; "y" makes it lie flat: wings, plates, floors — then the second number of each point is -z)
+      extrude: a flat outline pushed out: "points":[[x,y],...] (at least 3, in the x-y plane), "depth", optional "bevel" for softened faceted edges, "axis" is the push direction (default z; "y" makes it lie flat: wings, plates, floors — then the second number of each point is -z); add "shell":thickness to make it hollow so a cutaway shows inside
       lathe: a profile spun around the y axis (nozzles, fuselages, bottles, domes, bones): "points":[[radius,y],...], "axis"; add "shell":thickness to make it a hollow skin so a cutaway can show inside
-      materials ("mat"): plastic, paint, steel, aluminum, darkmetal, titanium, copper, brass, gold, pcb, chip, rubber, ceramic, glass, glow (flames, leds), tissue, bone, wood, concrete. "color":"#rrggbb" overrides the color, "opacity" makes it see-through.
+      materials ("mat"): plastic, paint, steel, aluminum, darkmetal, titanium, copper, brass, gold, pcb, chip, rubber, ceramic, glass, glow (flames, leds), tissue, bone, wood, concrete, interior (the cool blue-gray inside of machines: ducts, bays, inner casings). "color":"#rrggbb" overrides the color, "opacity" makes it see-through.
       "in":"groupid" puts the part inside a group; "outline":false hides its light outline.
     {"t":"group","id":"fan","pos":[-3,0.4,0],"rot":[0,0,0]}   a sub-assembly; parts with "in":"fan" are placed relative to it
     {"t":"array","id":"pins","of":{"shape":"box","size":[0.64,8.5,0.64],"pos":[-24.1,5.5,-25.7],"mat":"brass"},"count":20,"step":[2.54,0,0],"count2":2,"step2":[0,0,2.54]}   repeats one part in a line (step) or a grid (step2): pins, vents, keys, bolts, cells, teeth.
     {"t":"array","id":"blades","of":{"shape":"box","size":[0.05,0.34,0.16],"pos":[0,0.42,0],"mat":"titanium"},"count":20,"radial":{"axis":"x"},"pos":[1.3,0,0]}   a ring of copies around an axis through the array's pos: fan and compressor blades, spokes, bolts on a flange. the part's pos is its offset from the hub.
     {"t":"cutaway","parts":["casing","fuselage"],"remove":"+z","at":0}   slices those parts open and removes the side facing the viewer, so the inside shows; the cut faces get a hatched section. declare it right after the shell parts and before the insides.
     {"t":"label","text":"GPIO","on":"pins","color":"yellow","side":"top"}   a callout tag with a leader line to the part ("at":[x,y,z] points at an exact spot instead). colors yellow, green, blue, pink, mixed. side top or bottom: split labels between both rows, 4 to 7 labels in total.
-    {"t":"highlight","id":"soc"}   glows a part gold for a moment: the star of that sentence
+    {"t":"highlight","id":"soc"}   glows a part softly for a moment: the star of that sentence
     {"t":"focus","id":"fan"}   zooms in on a part; {"t":"focus"} zooms back out to the whole model
     {"t":"spin","id":"blades","axis":"x","speed":1}   keeps spinning (turns per second): fans, rotors, wheels, gears
     {"t":"fade","id":"case","opacity":0.15}   makes a cover see-through to reveal what's under it
@@ -857,7 +858,8 @@ final class CompanionManager: ObservableObject {
     make it great:
     - recognisable at a glance: true proportions, the real layout, the characteristic details (pin headers, port stacks, fins, blade rings, rivet rows) using arrays. 15 to 45 commands.
     - for "how does it work inside" use a cutaway of the shell, then build the insides.
-    - stylized but realistic colors: a pcb is green, ports are steel, chips are near black, engines are dark metal and titanium.
+    - stylized but realistic colors: a pcb is green, ports are steel, processor lids are matte metal gray ("mat":"chip","color":"#a3a7ad"), chips are near black, engines inside are interior blue-gray with brass compressor blades.
+    - vehicles and aircraft: build the body from faceted extruded profiles, never one round lathe cigar: the side profile as an extrude with "bevel" and "shell" (so the cutaway shows a thin hatched skin), a flat plan-view wing (an aircraft's delta wing, tails), and characteristic features (an aircraft's intakes beside the cockpit, a canopy seated flush into the top line of the body). put parts where they really are (an aircraft's roll posts are in the wings).
     - every part a label points at must exist before the label. ids are short lowercase words.
 
     example, a raspberry pi 5 (millimeters):
@@ -870,7 +872,7 @@ final class CompanionManager: ObservableObject {
     {"t":"array","id":"gpio","of":{"shape":"box","size":[0.64,8.6,0.64],"pos":[-30.1,5.5,-25.7],"mat":"brass","radius":0.1},"count":20,"step":[2.54,0,0],"count2":2,"step2":[0,0,2.54]}
     {"t":"label","text":"GPIO","on":"gpio","color":"yellow","side":"top"}
     {"t":"say","text":"in the middle sits the processor, four arm cores, with the ram right beside it."}
-    {"t":"part","id":"soc","shape":"box","size":[16,1.8,16],"pos":[-12,1.7,4],"mat":"aluminum"}
+    {"t":"part","id":"soc","shape":"box","size":[16,1.8,16],"pos":[-12,1.7,4],"mat":"chip","color":"#a3a7ad"}
     {"t":"part","id":"ram","shape":"box","size":[13,1.2,10],"pos":[-14,1.4,-13],"mat":"chip"}
     {"t":"label","text":"Processor","on":"soc","color":"pink","side":"bottom"}
     {"t":"label","text":"RAM","on":"ram","color":"green","side":"top"}
@@ -899,7 +901,7 @@ final class CompanionManager: ObservableObject {
     /// The position and screen are optional; without a position the model
     /// goes in the middle of the screen.
     static func parseModel3DRequest(_ model3DRequest: String) -> (modelDescription: String, screenshotPoint: CGPoint?, screenNumber: Int?) {
-        let pattern = #"^(.*?)(?::\s*(\d+)\s*,\s*(\d+))?(?::\s*screen(\d+))?\s*$"#
+        let pattern = #"^(.*?)(?::\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?))?(?::\s*screen(\d+))?\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
               let match = regex.firstMatch(in: model3DRequest, range: NSRange(model3DRequest.startIndex..., in: model3DRequest)),
               let descriptionRange = Range(match.range(at: 1), in: model3DRequest) else {
@@ -936,6 +938,11 @@ final class CompanionManager: ObservableObject {
         currentVisualTask?.cancel()
         // One visual at a time: the model replaces any whiteboard or notes.
         visualExplanationPanelManager.close()
+        // Esc or the model's close button also stops the narration about it.
+        model3DOverlayManager.onUserClosedOverlay = { [weak self] in
+            self?.currentVisualTask?.cancel()
+            self?.localTTSClient.stopPlayback()
+        }
         model3DOverlayManager.begin(centeredOnAppKitGlobalPoint: overlayCenter, onDisplayFrame: overlayDisplayFrame)
         print("🧊 Building 3D model: \(modelDescription)")
 
@@ -1300,7 +1307,7 @@ final class CompanionManager: ObservableObject {
 
     2. diagram mode — for systems with actors and connections (networks, architectures, who talks to whom). layout is automatic: never give coordinates or sizes. declare the shapes and arrows in the order you explain them and a layout engine places everything neatly, sliding existing shapes aside as new ones appear. the flow runs left to right by default; send {"t":"layout","direction":"TB"} first if the idea reads better top to bottom (hierarchies).
 
-    3. math mode — exact drawings on board coordinates (see below), also for technical drawings of real objects (a jet's side view, a circuit, a lever).
+    3. math mode — exact drawings on board coordinates (see below), also for physics and force diagrams on real objects (a lever, the forces on a wing).
 
     diagram mode commands:
     {"t":"group","id":"banks","label":"Bank network","color":"blue"}   a dashed cluster; put shapes inside it with "in". declare a group before the shapes that go in it.
@@ -1331,7 +1338,7 @@ final class CompanionManager: ObservableObject {
     {"t":"force","from":[300,200],"to":[300,80],"color":"blue","label":"Lift"}   a thick colored force arrow (lift, weight, thrust, air flow) with its label beside the middle; "labelAt":"end" puts the label just past the arrowhead; "labelColor":"muted" makes it gray. blue, orange, and gray read best.
     {"t":"label","x":380,"y":300,"text":"Engine","pill":true}   "pill":true puts a faint gray highlight pill behind a part name
 
-    technical drawings of real objects (a jet, an engine, a phone, a bridge) are built in math mode from flat pastel polygons in true proportion — a light gray body, colored parts (blue, pink, steel for metal), short part labels near each part (some with pills), and force arrows below or above with labels at their ends. leave clear space between the drawing, its labels, and the arrows.
+    physics and force diagrams on real objects (the forces on a hovering jet, a lever, a bridge) are built in math mode from a simple flat side view in true proportion — a light gray body, key parts in "bluestrong" (the part the explanation is about), pink, or steel, short part labels near each part (some with pills), and force arrows below or above with labels at their ends. how an object looks or what is inside it is not drawn here (that is the 3D model's job). leave clear space between the drawing, its labels, and the arrows.
     {"t":"angle","at":[260,380],"from":[500,380],"to":[260,200],"right":true}   angle mark at a vertex; right:true draws the little square, otherwise an arc with optional "label" like "θ"
     {"t":"point","x":260,"y":380,"label":"C"}   a dot with a label (dx, dy nudge it)
     {"t":"ring","x":400,"y":250,"r":120,"color":"blue","fill":true}   an exact circle
