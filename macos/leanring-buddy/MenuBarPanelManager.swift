@@ -77,45 +77,44 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeMenuBarIcon()
+        button.image = Self.makeMenuBarIcon()
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the hellobhai triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeMenuBarIcon() -> NSImage {
+    /// Draws the logo (an orb sending out a pointer) as a template menu bar
+    /// glyph: a solid ball at the upper left and a small arrow at the lower
+    /// right, with a thin gap cut around the arrow so the two read apart at
+    /// 18pt. Template images are tinted by macOS for light and dark menu bars.
+    static func makeMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
-        let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
-        image.lockFocus()
+        let image = NSImage(size: NSSize(width: iconSize, height: iconSize), flipped: false) { _ in
+            NSGraphicsContext.saveGraphicsState()
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 1, y: 5, width: 12, height: 12)).fill()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
+            // Arrow pointing up-left at the orb, like the pointer leaving it.
+            let pointerArrow = NSBezierPath()
+            pointerArrow.move(to: NSPoint(x: 10.2, y: 8.6))
+            pointerArrow.line(to: NSPoint(x: 11.6, y: 1.4))
+            pointerArrow.line(to: NSPoint(x: 13.4, y: 4.2))
+            pointerArrow.line(to: NSPoint(x: 16.8, y: 4.6))
+            pointerArrow.close()
+            pointerArrow.lineJoinStyle = .round
 
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
-
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
+            // Erase a halo around the arrow from the ball, then draw the arrow.
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            pointerArrow.lineWidth = 3.2
+            pointerArrow.stroke()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            pointerArrow.lineWidth = 0.8
+            pointerArrow.fill()
+            pointerArrow.stroke()
+            NSGraphicsContext.restoreGraphicsState()
+            return true
         }
-
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
-
-        NSColor.black.setFill()
-        path.fill()
-
-        image.unlockFocus()
+        image.isTemplate = true
         return image
     }
 

@@ -44,17 +44,7 @@ final class ClaudeCLI {
             throw ClaudeCLIError(message: "couldn't find the claude CLI. install claude code and run `claude` once to log in.")
         }
 
-        // The CLI's stream-json input takes one user message, so prior turns
-        // are folded into the prompt text instead of sent as separate messages.
-        var promptText = ""
-        if !conversationHistory.isEmpty {
-            promptText += "conversation so far:\n"
-            for (userPlaceholder, assistantResponse) in conversationHistory {
-                promptText += "user: \(userPlaceholder)\nyou: \(assistantResponse)\n"
-            }
-            promptText += "\nnew message from the user:\n"
-        }
-        promptText += userPrompt
+        let promptText = Self.foldedPromptText(conversationHistory: conversationHistory, userPrompt: userPrompt)
 
         var contentBlocks: [[String: Any]] = []
         for image in images {
@@ -168,6 +158,25 @@ final class ClaudeCLI {
         return (text: finalResultText ?? accumulatedResponseText, duration: duration)
     }
 
+    /// The CLI's stream-json input takes one user message, so prior turns
+    /// are folded into the prompt text instead of sent as separate messages.
+    /// CodexCLI reuses this, since `codex exec` also takes one prompt.
+    static func foldedPromptText(
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String
+    ) -> String {
+        var promptText = ""
+        if !conversationHistory.isEmpty {
+            promptText += "conversation so far:\n"
+            for (userPlaceholder, assistantResponse) in conversationHistory {
+                promptText += "user: \(userPlaceholder)\nyou: \(assistantResponse)\n"
+            }
+            promptText += "\nnew message from the user:\n"
+        }
+        promptText += userPrompt
+        return promptText
+    }
+
     /// Lets Claude drive the Mac with a short allowlist of commands. In print
     /// mode anything not allowlisted (and not read-only) is denied outright,
     /// so `rm`, `mv`, `curl` and friends never run. `osascript` is the
@@ -188,7 +197,8 @@ final class ClaudeCLI {
 
     /// GUI apps launch with a minimal PATH, so check the usual install
     /// locations first, then ask a login shell as a last resort.
-    private static let claudeExecutableURL: URL? = {
+    /// nonisolated so the panel can resolve it off the main thread.
+    nonisolated static let claudeExecutableURL: URL? = {
         let homeDirectoryPath = FileManager.default.homeDirectoryForCurrentUser.path
         let candidatePaths = [
             "\(homeDirectoryPath)/.local/bin/claude",
@@ -199,14 +209,24 @@ final class ClaudeCLI {
         if let installedPath = candidatePaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
             return URL(fileURLWithPath: installedPath)
         }
+        return executableURLFromLoginShell(commandName: "claude")
+    }()
 
+    /// Asks `zsh -ilc 'command -v <name>'`. Blocks while the user's shell
+    /// starts, so call it off the main thread. A .zshrc that waits for input
+    /// is killed after 5 seconds.
+    nonisolated static func executableURLFromLoginShell(commandName: String) -> URL? {
         let loginShellProcess = Process()
         let loginShellOutputPipe = Pipe()
         loginShellProcess.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        loginShellProcess.arguments = ["-ilc", "command -v claude"]
+        loginShellProcess.arguments = ["-ilc", "command -v \(commandName)"]
+        loginShellProcess.standardInput = FileHandle.nullDevice
         loginShellProcess.standardOutput = loginShellOutputPipe
         loginShellProcess.standardError = FileHandle.nullDevice
         guard (try? loginShellProcess.run()) != nil else { return nil }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            if loginShellProcess.isRunning { loginShellProcess.terminate() }
+        }
         loginShellProcess.waitUntilExit()
         let resolvedPath = String(
             data: loginShellOutputPipe.fileHandleForReading.readDataToEndOfFile(),
@@ -217,5 +237,5 @@ final class ClaudeCLI {
             .map { String($0).trimmingCharacters(in: .whitespaces) }
         guard let resolvedPath, FileManager.default.isExecutableFile(atPath: resolvedPath) else { return nil }
         return URL(fileURLWithPath: resolvedPath)
-    }()
+    }
 }

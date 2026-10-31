@@ -4,7 +4,7 @@
 
 ## Overview
 
-hellobhai is a local-first AI buddy that lives next to your cursor. Hold a hotkey, talk in Hindi, English or Hinglish, and it looks at your screen, talks back, points at and circles things, draws live whiteboards, notes and 3D models, and can click and type for you. Speech-to-text and text-to-speech run on-device; the only network traffic is the local `claude -p` CLI (the user's own Claude Code login) plus one-time model downloads. No servers, API keys, analytics or auto-updater.
+hellobhai is a local-first AI buddy that lives in a small draggable orb on screen; the assistant is called "bhai" in the UI. Hold a hotkey and talk in Hindi, English or Hinglish (or type in its side chat), and it looks at your screen, talks back, points at and circles things, draws live whiteboards, notes and 3D models, and can click and type for you. Speech-to-text and text-to-speech run on-device; the only network traffic is the local `claude -p` CLI (the user's own Claude Code login) plus one-time model downloads. No servers, API keys, analytics or auto-updater.
 
 ## Repository layout
 

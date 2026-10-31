@@ -81,6 +81,13 @@ final class CompanionManager: ObservableObject {
     /// Runs the local `claude -p` CLI — uses your Claude Code login, no API keys.
     private lazy var claudeCLI = ClaudeCLI(model: selectedModel)
 
+    /// Runs the local `codex exec` CLI instead when the panel's Brain is Codex.
+    private lazy var codexCLI: CodexCLI = {
+        let codexCLI = CodexCLI()
+        codexCLI.reasoningEffort = selectedCodexReasoningEffort
+        return codexCLI
+    }()
+
     /// On-device neural text-to-speech (Kokoro for English, Supertonic-3 for
     /// Hindi and as fallback). Exposed so the panel can switch engine and voice.
     private(set) lazy var localTTSClient = LocalTTSClient { [weak self] isSpeaking in
@@ -114,8 +121,14 @@ final class CompanionManager: ObservableObject {
 
     /// What the push-to-talk hotkey does: talk (voice mode) or open the
     /// typed chat (chat mode). Persisted.
+    /// The orb follows it too: in chat mode a click opens the chat, in voice
+    /// mode a click starts or stops listening. Switching to voice puts the
+    /// chat away; opening the chat switches to chat mode.
     @Published var isChatInputMode: Bool = UserDefaults.standard.bool(forKey: "isChatInputMode") {
-        didSet { UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode") }
+        didSet {
+            UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode")
+            applyInputModeToOrbAndChat()
+        }
     }
 
     /// Which screen edge the chat panel slides in from. Persisted.
@@ -127,10 +140,42 @@ final class CompanionManager: ObservableObject {
     private var chatPanelManager: ChatPanelManager?
 
     func showChatPanel() {
+        if !isChatInputMode {
+            isChatInputMode = true
+        }
         if chatPanelManager == nil {
             chatPanelManager = ChatPanelManager(companionManager: self)
+            // The orb floats above everything, and by default it sits on the
+            // chat's send button, so it drops below the chat while it is open.
+            chatPanelManager?.onChatWindowShownOrHidden = { [weak self] chatWindowNumber in
+                self?.overlayWindowManager.orbWindowManager.placeBelowWindow(withNumber: chatWindowNumber)
+            }
         }
         chatPanelManager?.show()
+    }
+
+    /// Voice mode shows the orb (and puts the chat away); chat mode shows
+    /// the chat sidebar instead of the orb.
+    private func applyInputModeToOrbAndChat() {
+        overlayWindowManager.orbWindowManager.setHiddenForChatMode(isChatInputMode)
+        if isChatInputMode {
+            showChatPanel()
+        } else {
+            chatPanelManager?.hide()
+        }
+    }
+
+    /// Chat mode: the orb opens the chat. Voice mode: the orb is a
+    /// tap-to-talk button (first click listens, second click sends), the
+    /// same as pressing and releasing the hotkey.
+    private func handleOrbClicked() {
+        if isChatInputMode {
+            showChatPanel()
+        } else if buddyDictationManager.isDictationInProgress {
+            handleShortcutTransition(.released)
+        } else {
+            handleShortcutTransition(.pressed)
+        }
     }
 
     /// Chat mode's hotkey: open the chat, or tuck it into its edge tab if it
@@ -166,11 +211,151 @@ final class CompanionManager: ObservableObject {
     /// The Claude Code model alias ("fable", "opus", "sonnet" or "haiku") used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "sonnet"
 
+    /// Which local CLI answers: `claude -p` (default) or `codex exec`. Persisted to UserDefaults.
+    @Published private(set) var selectedBrainEngine: BrainEngine = BrainEngine(rawValue: UserDefaults.standard.string(forKey: "selectedBrainEngine") ?? "") ?? .claude
+
+    /// Codex reasoning effort ("low", "medium", "high"), or nil for the model default. Persisted to UserDefaults.
+    @Published private(set) var selectedCodexReasoningEffort: String? = UserDefaults.standard.string(forKey: "selectedCodexReasoningEffort")
+
+    /// Which orb.riv color variant the orb shows. Persisted to UserDefaults.
+    @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
+        ?? OrbColorVariant.defaultColorInputValue
+
+    @Published private(set) var orbSideLength: CGFloat = OrbSize.currentSideLength
+
+    func setOrbSideLength(_ newOrbSideLength: CGFloat) {
+        orbSideLength = newOrbSideLength.rounded()
+        UserDefaults.standard.set(Double(orbSideLength), forKey: OrbSize.userDefaultsKey)
+        overlayWindowManager.orbWindowManager.applyOrbSize()
+    }
+
+    func setSelectedOrbColor(_ orbColorInputValue: Int) {
+        selectedOrbColor = orbColorInputValue
+        UserDefaults.standard.set(orbColorInputValue, forKey: "selectedOrbColor")
+        overlayWindowManager.orbWindowManager.setColorInputValue(orbColorInputValue)
+    }
+
+    // MARK: - Orb State
+
+    /// After this long with nothing happening, the orb dozes off.
+    private static let orbFallsAsleepAfterIdleSeconds: TimeInterval = 5 * 60
+    private var lastOrbActivityDate = Date()
+    private var orbVisualStateCancellable: AnyCancellable?
+    private var orbFallAsleepCheckTimer: Timer?
+
+    /// Mirrors what bhai is doing onto the orb's animation. Speaking covers
+    /// narrated whiteboard and 3D steps too, since they speak through the
+    /// same TTS client.
+    private func bindOrbVisualState() {
+        let orbWindowManager = overlayWindowManager.orbWindowManager
+        orbWindowManager.setColorInputValue(selectedOrbColor)
+        orbWindowManager.setHiddenForChatMode(isChatInputMode)
+        orbWindowManager.onOrbClicked = { [weak self] in
+            self?.handleOrbClicked()
+        }
+        orbWindowManager.onUserInteractedWithOrb = { [weak self] in
+            guard let self else { return }
+            self.lastOrbActivityDate = Date()
+            self.refreshOrbVisualState(voiceState: self.voiceState, isSpeakingAloud: self.isSpeakingAloud)
+        }
+        // @Published emits before the property changes, so the new values
+        // are passed along instead of read back from self.
+        orbVisualStateCancellable = $voiceState
+            .combineLatest($isSpeakingAloud)
+            .sink { [weak self] newVoiceState, newIsSpeakingAloud in
+                self?.refreshOrbVisualState(voiceState: newVoiceState, isSpeakingAloud: newIsSpeakingAloud)
+            }
+        orbFallAsleepCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.refreshOrbVisualState(voiceState: self.voiceState, isSpeakingAloud: self.isSpeakingAloud)
+            }
+        }
+    }
+
+    private func refreshOrbVisualState(voiceState: CompanionVoiceState, isSpeakingAloud: Bool) {
+        let orbVisualState: OrbVisualState
+        if isSpeakingAloud {
+            orbVisualState = .speaking
+        } else {
+            switch voiceState {
+            case .listening:
+                orbVisualState = .listening
+            case .processing:
+                orbVisualState = .thinking
+            case .responding:
+                // Waiting for the voice, a typed reply that isn't read aloud,
+                // or on-screen actions. Speaking only shows while audio plays.
+                orbVisualState = .thinking
+            case .idle:
+                let hasBeenIdleTooLong = Date().timeIntervalSince(lastOrbActivityDate) > Self.orbFallsAsleepAfterIdleSeconds
+                orbVisualState = (!hasCompletedOnboarding || hasBeenIdleTooLong) ? .asleep : .idle
+            }
+        }
+        if orbVisualState != .idle && orbVisualState != .asleep {
+            lastOrbActivityDate = Date()
+        }
+        overlayWindowManager.orbWindowManager.setVisualState(orbVisualState)
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeCLI.model = model
     }
+
+    func setSelectedBrainEngine(_ brainEngine: BrainEngine) {
+        selectedBrainEngine = brainEngine
+        UserDefaults.standard.set(brainEngine.rawValue, forKey: "selectedBrainEngine")
+    }
+
+    func setSelectedCodexReasoningEffort(_ reasoningEffort: String?) {
+        selectedCodexReasoningEffort = reasoningEffort
+        UserDefaults.standard.set(reasoningEffort, forKey: "selectedCodexReasoningEffort")
+        codexCLI.reasoningEffort = reasoningEffort
+    }
+
+    /// Sends one request to whichever CLI the panel's Brain picks. Claude
+    /// gets the arguments untouched. Codex can't run the Mac tools, so the
+    /// voice prompt (the only one with `allowsMacTools`) gets a note
+    /// steering it to on-screen actions instead.
+    private func askSelectedBrain(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        allowsMacTools: Bool = false,
+        effort: String? = nil,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        switch selectedBrainEngine {
+        case .claude:
+            return try await claudeCLI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                allowsMacTools: allowsMacTools,
+                effort: effort,
+                onTextChunk: onTextChunk
+            )
+        case .codex:
+            return try await codexCLI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: allowsMacTools ? systemPrompt + Self.codexCannotRunMacToolsNote : systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                effort: effort,
+                onTextChunk: onTextChunk
+            )
+        }
+    }
+
+    private static let codexCannotRunMacToolsNote = """
+
+
+    important: in this session you cannot run shell commands, so the mac tools above (osascript, open, mdfind, ls, shortcuts) are not available, and you can't save notes to apple notes. do everything with on-screen actions ([CLICK], [TYPE], [KEY]) instead, for example [KEY:cmd+space] then [TYPE:whatsapp][KEY:return] to open an app.
+    """
 
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
@@ -190,6 +375,7 @@ final class CompanionManager: ObservableObject {
         print("🔑 hellobhai start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
+        bindOrbVisualState()
         bindAudioPowerLevel()
         bindShortcutTransitions()
         // Create the TTS client now so its model download starts at launch
@@ -203,6 +389,10 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
+            // Chat mode starts with the chat sidebar where the orb would be.
+            if isChatInputMode {
+                showChatPanel()
+            }
         }
     }
 
@@ -217,6 +407,8 @@ final class CompanionManager: ObservableObject {
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
+        lastOrbActivityDate = Date()
+        refreshOrbVisualState(voiceState: voiceState, isSpeakingAloud: isSpeakingAloud)
 
         // Show the overlay for the first time — isFirstAppearance triggers
         // the welcome animation and pointing demo
@@ -253,6 +445,8 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        orbFallAsleepCheckTimer?.invalidate()
+        orbFallAsleepCheckTimer = nil
     }
 
     func refreshAllPermissions() {
@@ -398,10 +592,28 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    /// Cancel any in-progress response, on-screen actions, narrated
+    /// explanation, and TTS, so nothing talks over or acts past the user.
+    private func stopEverythingInProgressForHotkeyPress() {
+        currentResponseTask?.cancel()
+        currentVisualTask?.cancel()
+        localTTSClient.stopPlayback()
+        visualExplanationPanelManager.finishLiveContent()
+        visualExplanationPanelManager.stopDrawing()
+        model3DOverlayManager.close()
+        clearDetectedElementLocation()
+        screenCircleFadeTask?.cancel()
+        screenCircleAnnotations = []
+        userDrawnStrokes = []
+        userDrawnStrokesAwaitingRequest = false
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         if isChatInputMode {
             if case .pressed = transition {
                 NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
+                // The hotkey is also the documented way to stop bhai, in both modes.
+                stopEverythingInProgressForHotkeyPress()
                 toggleChatPanelFromHotkey()
             }
             return
@@ -413,19 +625,7 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
 
-            // Cancel any in-progress response, narrated explanation, and TTS
-            // from a previous utterance, so nothing talks over the user.
-            currentResponseTask?.cancel()
-            currentVisualTask?.cancel()
-            localTTSClient.stopPlayback()
-            visualExplanationPanelManager.finishLiveContent()
-            visualExplanationPanelManager.stopDrawing()
-            model3DOverlayManager.close()
-            clearDetectedElementLocation()
-            screenCircleFadeTask?.cancel()
-            screenCircleAnnotations = []
-            userDrawnStrokes = []
-            userDrawnStrokesAwaitingRequest = false
+            stopEverythingInProgressForHotkeyPress()
             // While the hotkey is held, a mouse drag draws on the overlay
             // instead of clicking the app underneath.
             overlayWindowManager.setAcceptsUserDrawing(true)
@@ -592,8 +792,12 @@ final class CompanionManager: ObservableObject {
     /// removed, and a tag that has only half arrived hidden so "[POI" never
     /// flashes on screen.
     static func chatDisplayText(forPartialReply partialReply: String) -> String {
-        var displayText = partialReply.replacingOccurrences(of: "\\[[A-Z0-9_]+(:[^\\]]*)?\\]", with: "", options: .regularExpression)
-        if let unfinishedTagRange = displayText.range(of: "\\[[A-Z0-9_]*(:[^\\]]*)?$", options: .regularExpression) {
+        // Only bhai's own tags, so ordinary brackets like [1] or arr[0] stay.
+        let knownTagNames = "(POINT|CIRCLE|CLICK|TYPE|KEY|SHOW|NOTES|MODEL3D|CLOSE_DRAWING)"
+        var displayText = partialReply.replacingOccurrences(of: "\\[\(knownTagNames)(:[^\\]]*)?\\]", with: "", options: .regularExpression)
+        // A bare "[POI" at the very end is hidden until it closes; if it
+        // turns out to be ordinary text it shows again once the ] arrives.
+        if let unfinishedTagRange = displayText.range(of: "\\[([A-Z0-9_]*|\(knownTagNames):[^\\]]*)$", options: .regularExpression) {
             displayText.removeSubrange(unfinishedTagRange)
         }
         return displayText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -613,9 +817,12 @@ final class CompanionManager: ObservableObject {
         chatMessages[messageIndex].isStreaming = isStreaming
     }
 
-    private func markAllChatMessagesFinishedStreaming() {
-        chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
-        for messageIndex in chatMessages.indices where chatMessages[messageIndex].isStreaming {
+    /// Only touches the given rows: a cancelled request's cleanup runs after
+    /// its claude process exits, when the next request's empty placeholder
+    /// row may already be in the list.
+    private func finishStreamingChatMessages(withIDs chatMessageIDs: [UUID]) {
+        chatMessages.removeAll { chatMessageIDs.contains($0.id) && $0.isStreaming && $0.text.isEmpty }
+        for messageIndex in chatMessages.indices where chatMessageIDs.contains(chatMessages[messageIndex].id) && chatMessages[messageIndex].isStreaming {
             chatMessages[messageIndex].isStreaming = false
         }
     }
@@ -655,6 +862,7 @@ final class CompanionManager: ObservableObject {
         userDrawnStrokesAwaitingRequest = false
 
         currentResponseTask = Task {
+            var replyChatMessageIDsFromThisRequest: [UUID] = []
             do {
                 var previousStepActionSummary: [String] = []
                 for agentStepNumber in 1...Self.maximumAgentSteps {
@@ -703,7 +911,8 @@ final class CompanionManager: ObservableObject {
                     // The reply streams into the chat as it arrives, like a chat app.
                     let streamingReplyMessage = CompanionChatMessage(isFromUser: false, text: "", isStreaming: true)
                     chatMessages.append(streamingReplyMessage)
-                    let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
+                    replyChatMessageIDsFromThisRequest.append(streamingReplyMessage.id)
+                    let (fullResponseText, _) = try await askSelectedBrain(
                         images: imagesForThisStep,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
                         conversationHistory: historyForAPI,
@@ -780,10 +989,8 @@ final class CompanionManager: ObservableObject {
                         )
                     }
 
-                    // Handle element pointing if Claude returned coordinates.
-                    // Switch to idle BEFORE setting the location so the triangle
-                    // becomes visible and can fly to the target. Without this, the
-                    // spinner hides the triangle and the flight animation is invisible.
+                    // Handle element pointing if Claude returned coordinates: the
+                    // pointer launches out of the orb and flies to the target.
                     if let pointCoordinate = parseResult.coordinate,
                        let targetScreenCapture = Self.screenCapture(forScreenNumber: parseResult.screenNumber, in: screenCaptures) {
                         voiceState = .idle
@@ -857,11 +1064,10 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted. Keep whatever
                 // streamed in, but stop showing it as still typing.
-                markAllChatMessagesFinishedStreaming()
+                finishStreamingChatMessages(withIDs: replyChatMessageIDsFromThisRequest)
             } catch {
                 print("⚠️ Companion response error: \(error)")
-                chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
-                markAllChatMessagesFinishedStreaming()
+                finishStreamingChatMessages(withIDs: replyChatMessageIDsFromThisRequest)
                 chatMessages.append(CompanionChatMessage(isFromUser: false, text: "couldn't reach claude. make sure claude code is installed and logged in."))
                 if repliesAreSpoken {
                     speakErrorFallback()
@@ -933,7 +1139,7 @@ final class CompanionManager: ObservableObject {
                 you already said, as an intro: \(spokenIntro)
                 \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
-                let (fullVisualScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
+                let (fullVisualScript, visualDuration) = try await askSelectedBrain(
                     images: screenImages,
                     systemPrompt: liveContentKind == .drawing ? Self.visualExplanationSystemPrompt : Self.liveNotesSystemPrompt,
                     userPrompt: visualRequestPrompt,
@@ -1150,7 +1356,7 @@ final class CompanionManager: ObservableObject {
                 you already said, as an intro: \(spokenIntro)
                 \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
-                let (fullModelScript, modelScriptDuration) = try await claudeCLI.analyzeImageStreaming(
+                let (fullModelScript, modelScriptDuration) = try await askSelectedBrain(
                     images: screenImages,
                     systemPrompt: Self.model3DSystemPrompt,
                     userPrompt: model3DRequestPrompt,
@@ -1187,6 +1393,15 @@ final class CompanionManager: ObservableObject {
     private func performComputerActions(_ computerActions: [ComputerAction], screenCaptures: [CompanionScreenCapture]) async {
         // Typing and key presses must reach the user's app, not the chat box.
         chatPanelManager?.giveKeyboardFocusBackToFrontmostApp()
+        // Screenshots leave out bhai's own windows, so Claude may click
+        // something that sits behind the chat or the orb. Let clicks pass
+        // through both until the actions are done.
+        chatPanelManager?.setLetsClicksPassThrough(true)
+        overlayWindowManager.orbWindowManager.setLetsClicksPassThrough(true)
+        defer {
+            chatPanelManager?.setLetsClicksPassThrough(false)
+            overlayWindowManager.orbWindowManager.setLetsClicksPassThrough(false)
+        }
         for computerAction in computerActions {
             guard !Task.isCancelled else { return }
 
@@ -1642,7 +1857,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await askSelectedBrain(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
