@@ -120,9 +120,7 @@ final class CompanionManager: ObservableObject {
     @Published var isChatInputMode: Bool = UserDefaults.standard.bool(forKey: "isChatInputMode") {
         didSet {
             UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode")
-            if !isChatInputMode {
-                chatPanelManager?.hide()
-            }
+            applyInputModeToOrbAndChat()
         }
     }
 
@@ -147,6 +145,17 @@ final class CompanionManager: ObservableObject {
             }
         }
         chatPanelManager?.show()
+    }
+
+    /// Voice mode shows the orb (and puts the chat away); chat mode shows
+    /// the chat sidebar instead of the orb.
+    private func applyInputModeToOrbAndChat() {
+        overlayWindowManager.orbWindowManager.setHiddenForChatMode(isChatInputMode)
+        if isChatInputMode {
+            showChatPanel()
+        } else {
+            chatPanelManager?.hide()
+        }
     }
 
     /// Chat mode: the orb opens the chat. Voice mode: the orb is a
@@ -227,6 +236,7 @@ final class CompanionManager: ObservableObject {
     private func bindOrbVisualState() {
         let orbWindowManager = overlayWindowManager.orbWindowManager
         orbWindowManager.setColorInputValue(selectedOrbColor)
+        orbWindowManager.setHiddenForChatMode(isChatInputMode)
         orbWindowManager.onOrbClicked = { [weak self] in
             self?.handleOrbClicked()
         }
@@ -313,6 +323,10 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
+            // Chat mode starts with the chat sidebar where the orb would be.
+            if isChatInputMode {
+                showChatPanel()
+            }
         }
     }
 

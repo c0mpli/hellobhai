@@ -139,7 +139,25 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
 
     // MARK: - Showing
 
+    /// The overlay wants the orb on screen (it shows and hides with it).
+    private var isRequestedByOverlay = false
+    /// In chat mode the chat sidebar stands in for the orb, so it stays hidden.
+    private(set) var isHiddenForChatMode = false
+
+    func setHiddenForChatMode(_ shouldHideForChatMode: Bool) {
+        isHiddenForChatMode = shouldHideForChatMode
+        if shouldHideForChatMode {
+            panel?.orderOut(nil)
+            systemPointerVisibilityTimer?.invalidate()
+            systemPointerVisibilityTimer = nil
+        } else if isRequestedByOverlay {
+            show()
+        }
+    }
+
     func show() {
+        isRequestedByOverlay = true
+        guard !isHiddenForChatMode else { return }
         if panel == nil {
             createPanel()
         }
@@ -154,6 +172,7 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func hide() {
+        isRequestedByOverlay = false
         panel?.orderOut(nil)
         systemPointerVisibilityTimer?.invalidate()
         systemPointerVisibilityTimer = nil
