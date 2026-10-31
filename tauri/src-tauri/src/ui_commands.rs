@@ -101,10 +101,8 @@ pub fn get_status(app: AppHandle, state: State<'_, AppState>) -> StatusSnapshot 
         claude_found: find_claude_executable().is_some(),
         speech_model: speech_model_status_text(&state.whisper_transcriber.state()),
         voice: voice_status_text(&state.speech_player.load_state()),
-        // Nothing reports microphone results yet; the page shows "not tried yet".
-        microphone_working: None,
-        // The page follows `buddy-voice-state` for this; the snapshot starts idle.
-        is_listening: false,
+        microphone_working: state.companion_brain.microphone_working(),
+        is_listening: state.companion_brain.is_listening(),
         version: app.package_info().version.to_string(),
     }
 }

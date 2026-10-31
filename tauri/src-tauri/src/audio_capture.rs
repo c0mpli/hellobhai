@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use cpal::{FromSample, SampleFormat, SizedSample};
 
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 const AUDIO_LEVEL_EMIT_INTERVAL: Duration = Duration::from_millis(50);

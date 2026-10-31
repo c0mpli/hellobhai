@@ -26,6 +26,7 @@ use crate::conversation_history::{ConversationEntry, ConversationHistory};
 use crate::model3d_window::Model3DWindow;
 use crate::narrated_step_queue::{NarratedStepQueue, StreamedLineForwarder};
 use crate::overlay_windows;
+use crate::page_bridge::emit_to_overlays;
 use crate::prompts::{self, SystemPromptKind};
 use crate::push_to_talk::HotkeyEvent;
 use crate::response_tags::{parse_point_tag, parse_reply, CircleTag, ComputerAction};
@@ -44,6 +45,7 @@ const REPEATED_ACTIONS_MESSAGE: &str = "that didn't seem to work, so i stopped. 
 /// No Apple-Speech-style fallback on Windows while Whisper downloads.
 const SPEECH_MODEL_NOT_READY_MESSAGE: &str = "my ears are still downloading. give me a minute.";
 const DRAWING_WITHOUT_SPEECH_PROMPT: &str = "What is this?";
+const ONBOARDING_WELCOME_MESSAGE: &str = "hey! i'm bhai";
 const ONBOARDING_USER_PROMPT: &str = "look around my screen and find something interesting to point at";
 
 /// Emitted to overlays and settings as `buddy-voice-state` `{state}`.
@@ -59,6 +61,8 @@ pub enum VoiceState {
 /// Everything that changes, behind one lock.
 struct BrainState {
     voice_state: VoiceState,
+    /// None until the hotkey has tried the microphone once (shown in the settings panel).
+    microphone_working: Option<bool>,
     is_recording: bool,
     is_transcribing: bool,
     response_task: Option<JoinHandle<()>>,
@@ -157,7 +161,7 @@ impl CompanionBrain {
     ) -> Arc<Self> {
         let app_for_audio_level = app.clone();
         let push_to_talk_recorder = PushToTalkRecorder::new(Box::new(move |audio_level| {
-            let _ = app_for_audio_level.emit("audio-level", json!({ "level": audio_level }));
+            emit_to_overlays(&app_for_audio_level, "audio-level", json!({ "level": audio_level }));
         }));
         Arc::new(CompanionBrain {
             app,
@@ -169,6 +173,7 @@ impl CompanionBrain {
             push_to_talk_recorder: Mutex::new(push_to_talk_recorder),
             state: Mutex::new(BrainState {
                 voice_state: VoiceState::Idle,
+                microphone_working: None,
                 is_recording: false,
                 is_transcribing: false,
                 response_task: None,
@@ -187,6 +192,14 @@ impl CompanionBrain {
         let _ = self.app.emit("buddy-voice-state", json!({ "state": voice_state }));
     }
 
+    pub fn microphone_working(&self) -> Option<bool> {
+        self.state.lock().unwrap().microphone_working
+    }
+
+    pub fn is_listening(&self) -> bool {
+        self.state.lock().unwrap().voice_state == VoiceState::Listening
+    }
+
     fn claude_model(&self) -> String {
         self.settings.read().unwrap().claude_model.clone()
     }
@@ -202,7 +215,7 @@ impl CompanionBrain {
     }
 
     fn emit_point_at(&self, global_point: (i32, i32), bubble_text: Option<String>) {
-        let _ = self.app.emit("point-at", json!({ "x": global_point.0, "y": global_point.1, "bubbleText": bubble_text }));
+        emit_to_overlays(&self.app, "point-at", json!({ "x": global_point.0, "y": global_point.1, "bubbleText": bubble_text }));
     }
 
     fn hide_onboarding_prompt(&self) {
@@ -213,7 +226,7 @@ impl CompanionBrain {
             was_showing
         };
         if onboarding_prompt_was_showing {
-            let _ = self.app.emit("onboarding-text", json!({ "text": "", "visible": false }));
+            emit_to_overlays(&self.app, "onboarding-text", json!({ "text": "", "visible": false }));
         }
     }
 
@@ -248,12 +261,13 @@ impl CompanionBrain {
         self.board_panel.finish_live_content();
         self.board_panel.stop_drawing();
         self.model3d_window.close();
-        let _ = self.app.emit("clear-annotations", json!({}));
+        emit_to_overlays(&self.app, "clear-annotations", json!({}));
         // While the hotkey is held, a mouse drag draws on the overlay instead of clicking the app underneath.
         overlay_windows::set_overlays_accept_user_drawing(&self.app, true);
         self.hide_onboarding_prompt();
 
         let start_result = self.push_to_talk_recorder.lock().unwrap().start_recording();
+        self.state.lock().unwrap().microphone_working = Some(start_result.is_ok());
         match start_result {
             Ok(()) => self.set_voice_state(VoiceState::Listening),
             Err(recording_error) => {
@@ -553,7 +567,7 @@ impl CompanionBrain {
             }));
         }
         let last_circle_appear_delay_seconds = if circle_annotations.is_empty() { 0.0 } else { 0.3 + (circle_annotations.len() - 1) as f64 * 1.2 };
-        let _ = self.app.emit("screen-circles", json!({ "circles": circle_annotations }));
+        emit_to_overlays(&self.app, "screen-circles", json!({ "circles": circle_annotations }));
 
         let brain = self.clone();
         let fade_task = tauri::async_runtime::spawn(async move {
@@ -562,7 +576,7 @@ impl CompanionBrain {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             brain.state.lock().unwrap().user_drawn_strokes.clear();
-            let _ = brain.app.emit("fade-annotations", json!({}));
+            emit_to_overlays(&brain.app, "fade-annotations", json!({}));
         });
         self.state.lock().unwrap().screen_circle_fade_task = Some(fade_task);
     }
@@ -735,18 +749,22 @@ impl CompanionBrain {
 
         let brain = self.clone();
         let onboarding_prompt_task = tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(8)).await;
+            // The overlay types the welcome out itself; the demo's claude call runs meanwhile.
+            emit_to_overlays(&brain.app, "onboarding-text", json!({ "text": ONBOARDING_WELCOME_MESSAGE, "visible": true }));
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            emit_to_overlays(&brain.app, "onboarding-text", json!({ "text": "", "visible": false }));
+            tokio::time::sleep(Duration::from_secs(5)).await;
             let shortcut_display_text = brain.settings.read().unwrap().push_to_talk_shortcut.display_text();
             let onboarding_message = format!("press {shortcut_display_text} and introduce yourself");
             let mut streamed_text = String::new();
             for character in onboarding_message.chars() {
                 streamed_text.push(character);
-                let _ = brain.app.emit("onboarding-text", json!({ "text": streamed_text, "visible": true }));
+                emit_to_overlays(&brain.app, "onboarding-text", json!({ "text": streamed_text, "visible": true }));
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
             // Auto-dismiss after 10 seconds.
             tokio::time::sleep(Duration::from_secs(10)).await;
-            let _ = brain.app.emit("onboarding-text", json!({ "text": "", "visible": false }));
+            emit_to_overlays(&brain.app, "onboarding-text", json!({ "text": "", "visible": false }));
             brain.state.lock().unwrap().onboarding_prompt_task = None;
         });
         let mut state = self.state.lock().unwrap();

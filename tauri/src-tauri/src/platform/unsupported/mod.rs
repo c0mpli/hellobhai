@@ -2,6 +2,9 @@
 //! function names as `../windows/`; they return `PlatformError::Unsupported`,
 //! `false`, `None` or empty lists so the crate builds and tests run anywhere.
 
+// Stubs ignore their arguments by design.
+#![allow(unused_variables)]
+
 mod child_process;
 mod claude_tools;
 mod input;

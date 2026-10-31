@@ -4,8 +4,6 @@
 //! Only `platform/` may call OS APIs (Windows today, Linux later); everything
 //! else here is cross-platform.
 
-// scaffold: the module bodies are still todo!(); remove once every module is filled in.
-#![allow(dead_code, unused_variables, unused_imports)]
 
 // (A) voice input
 pub mod audio_capture;

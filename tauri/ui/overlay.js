@@ -681,6 +681,8 @@ async function startOverlay() {
   });
   await listen('fade-annotations', () => { if (annotationFadeStartSeconds === null) annotationFadeStartSeconds = nowInSeconds(); });
   await listen('clear-annotations', () => {
+    // The hotkey also cancels a pointing flight in progress, like the Mac.
+    if (buddy.mode !== 'following') finishNavigationAndResumeFollowing();
     screenCircles = [];
     userStrokes = [];
     currentStrokeGlobalPoints = null;
