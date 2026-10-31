@@ -268,20 +268,26 @@ struct ChatPanelView: View {
     private var expandedChat: some View {
         VStack(spacing: 0) {
             header
-            Divider().background(DS.Colors.borderSubtle)
+            // Divider() ignores .background, so the line is drawn by hand.
+            Rectangle()
+                .fill(DS.Colors.borderSubtle)
+                .frame(height: 1)
             messageList
             composer
         }
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge, style: .continuous)
                 .fill(DS.Colors.background)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge, style: .continuous)
                         .stroke(DS.Colors.borderSubtle, lineWidth: 1)
                 )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DS.CornerRadius.extraLarge, style: .continuous))
         .onAppear { isComposerFocused = true }
+        // The focused text field takes Esc before the panel's
+        // cancelOperation would, so it is caught here too.
+        .onExitCommand { chatPanelManager.minimize() }
     }
 
     // MARK: Header
@@ -296,12 +302,11 @@ struct ChatPanelView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
             Spacer()
-            ChatSegmentedToggle(
-                options: [(label: "L", optionID: ChatPanelSide.left.rawValue), (label: "R", optionID: ChatPanelSide.right.rawValue)],
-                selectedOptionID: companionManager.chatPanelSide.rawValue,
-                helpText: "Which side of the screen the chat sits on"
-            ) { selectedSideRawValue in
-                companionManager.chatPanelSide = ChatPanelSide(rawValue: selectedSideRawValue) ?? .right
+            ChatIconButton(
+                systemImageName: "arrow.left.arrow.right",
+                helpText: companionManager.chatPanelSide == .right ? "Move the chat to the left edge" : "Move the chat to the right edge"
+            ) {
+                companionManager.chatPanelSide = companionManager.chatPanelSide == .right ? .left : .right
             }
             ChatIconButton(
                 systemImageName: companionManager.chatPanelSide == .right ? "chevron.right.2" : "chevron.left.2",
@@ -322,12 +327,18 @@ struct ChatPanelView: View {
     private var messageList: some View {
         ScrollViewReader { scrollProxy in
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     if companionManager.chatMessages.isEmpty {
                         emptyState
                     }
-                    ForEach(companionManager.chatMessages) { chatMessage in
+                    ForEach(Array(companionManager.chatMessages.enumerated()), id: \.element.id) { messageIndex, chatMessage in
+                        // Extra space above each new question, so a question
+                        // and its answer read as one group.
+                        let isQuestionAfterReply = chatMessage.isFromUser
+                            && messageIndex > 0
+                            && !companionManager.chatMessages[messageIndex - 1].isFromUser
                         ChatMessageRow(chatMessage: chatMessage)
+                            .padding(.top, isQuestionAfterReply ? 12 : 0)
                             .id(chatMessage.id)
                     }
                 }
@@ -375,6 +386,8 @@ struct ChatPanelView: View {
                     .font(.system(size: 13))
                     .foregroundColor(DS.Colors.textPrimary)
                     .lineLimit(1...6)
+                    // Lines the first row up with the middle of the send button.
+                    .padding(.vertical, 3)
                     .focused($isComposerFocused)
                     .onSubmit { send(draftMessage) }
 
@@ -385,10 +398,10 @@ struct ChatPanelView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
                     .fill(DS.Colors.surface2)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: DS.CornerRadius.large, style: .continuous)
                             .stroke(isComposerFocused ? DS.Colors.overlayCursorColor.opacity(0.6) : DS.Colors.borderSubtle, lineWidth: 1)
                     )
             )
@@ -447,12 +460,8 @@ private struct ChatMessageRow: View {
             ChatThinkingDots()
         } else {
             HStack(alignment: .top, spacing: 8) {
-                Circle()
-                    .fill(DS.Colors.overlayCursorColor.opacity(0.9))
-                    .frame(width: 6, height: 6)
-                    .padding(.top, 6)
-                // A blinking caret trails the text while it is still streaming.
-                (Text(chatMessage.text) + Text(chatMessage.isStreaming ? " \u{258D}" : "").foregroundColor(DS.Colors.overlayCursorColor))
+                // A thin caret trails the text while it is still streaming.
+                (Text(chatMessage.text) + Text(chatMessage.isStreaming ? "\u{2009}\u{258F}" : "").foregroundColor(DS.Colors.overlayCursorColor))
                     .font(.system(size: 13))
                     .foregroundColor(DS.Colors.textPrimary)
                     .textSelection(.enabled)
@@ -480,7 +489,6 @@ private struct ChatThinkingDots: View {
                     )
             }
         }
-        .padding(.leading, 14)
         .onAppear { isAnimating = true }
     }
 }
@@ -550,7 +558,7 @@ private struct ChatIconButton: View {
     }
 }
 
-/// Small two-or-more option toggle used in the chat header and composer.
+/// Small two-or-more option toggle used under the composer.
 private struct ChatSegmentedToggle: View {
     let options: [(label: String, optionID: String)]
     let selectedOptionID: String
@@ -567,9 +575,10 @@ private struct ChatSegmentedToggle: View {
                 )
             }
         }
-        .padding(1)
+        .padding(2)
         .background(Capsule().fill(Color.white.opacity(0.06)))
-        .overlay(Capsule().stroke(DS.Colors.borderSubtle, lineWidth: 0.5))
+        // strokeBorder keeps the ring inside the capsule so it isn't cut off at the ends.
+        .overlay(Capsule().strokeBorder(DS.Colors.borderSubtle, lineWidth: 0.5))
         .help(helpText)
     }
 }
@@ -604,6 +613,8 @@ private struct ChatMinimizedTab: View {
     let action: () -> Void
     @State private var isHovered = false
 
+    private var tabBackgroundColor: Color { isHovered ? DS.Colors.surface3 : DS.Colors.surface2 }
+
     var body: some View {
         let innerCornerRadius: CGFloat = 12
         let tabShape = UnevenRoundedRectangle(
@@ -614,19 +625,27 @@ private struct ChatMinimizedTab: View {
             style: .continuous
         )
         Button(action: action) {
-            VStack(spacing: 10) {
+            VStack(spacing: 8) {
                 Image(systemName: panelSide == .right ? "chevron.left" : "chevron.right")
                     .font(.system(size: 11, weight: .bold))
                 Image(systemName: "bubble.left.fill")
                     .font(.system(size: 12))
-                Circle()
-                    .fill(hasUnreadReply ? DS.Colors.overlayCursorColor : Color.clear)
-                    .frame(width: 6, height: 6)
+                    // Unread badge on the bubble's corner, ringed in the tab's color.
+                    .overlay(alignment: .topTrailing) {
+                        if hasUnreadReply {
+                            Circle()
+                                .fill(DS.Colors.overlayCursorColor)
+                                .frame(width: 7, height: 7)
+                                .overlay(Circle().stroke(tabBackgroundColor, lineWidth: 1.5))
+                                .offset(x: 4, y: -3)
+                        }
+                    }
             }
             .foregroundColor(isHovered ? .white : DS.Colors.textSecondary)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(tabShape.fill(isHovered ? DS.Colors.surface3 : DS.Colors.background))
-            .overlay(tabShape.stroke(DS.Colors.borderSubtle, lineWidth: 1))
+            .background(tabShape.fill(tabBackgroundColor))
+            // A lighter edge than the chat's, so the tab stays visible on dark wallpapers.
+            .overlay(tabShape.stroke(Color.white.opacity(0.14), lineWidth: 1))
             .contentShape(tabShape)
         }
         .buttonStyle(.plain)

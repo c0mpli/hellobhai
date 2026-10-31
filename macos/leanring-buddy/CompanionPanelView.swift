@@ -267,8 +267,8 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: 2) {
             PanelSectionLabel(title: "Orb")
 
-            PanelSettingsRow(iconName: "circle.circle", label: "Orb color") {
-                HStack(spacing: 3) {
+            PanelSettingsRow(iconName: "circle.circle", label: "Color") {
+                HStack(spacing: 4) {
                     ForEach(OrbColorVariant.allVariants) { orbColorVariant in
                         OrbColorSwatchButton(
                             orbColorVariant: orbColorVariant,
@@ -439,11 +439,7 @@ struct CompanionPanelView: View {
                 )
             }
 
-            PanelSettingsRow(iconName: "mic", label: "When you speak", subtitle: "Always replies out loud") {
-                PanelStatusLabel(statusText: "Voice", statusColor: DS.Colors.success)
-            }
-
-            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "How replies come back") {
+            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "Spoken questions always get voice") {
                 PanelSegmentedControl(
                     options: [(label: "Text", optionID: "text"), (label: "Text + voice", optionID: "voice")],
                     selectedOptionID: companionManager.speaksChatReplies ? "voice" : "text",
@@ -725,7 +721,7 @@ private struct PanelSectionLabel: View {
 
 /// Icon + label on the left, any control on the right.
 /// One small round preview of an orb color variant. Hover shows a faint
-/// ring; the selected variant is ringed in the accent color.
+/// ring; the selected variant gets a solid light ring.
 private struct OrbColorSwatchButton: View {
     let orbColorVariant: OrbColorVariant
     let isSelected: Bool
@@ -743,13 +739,14 @@ private struct OrbColorSwatchButton: View {
                         endPoint: .bottomTrailing
                     )
                 )
-                .frame(width: 12, height: 12)
-                .padding(2.5)
+                .frame(width: 14, height: 14)
+                .padding(2)
                 .overlay(
+                    // White-ish, not accent, so the ring shows on the blue swatches too.
                     Circle()
                         .stroke(
-                            isSelected ? DS.Colors.accent : Color.white.opacity(isHovered ? 0.45 : 0),
-                            lineWidth: isSelected ? 2 : 1.5
+                            isSelected ? DS.Colors.textPrimary : Color.white.opacity(isHovered ? 0.45 : 0),
+                            lineWidth: 1.5
                         )
                 )
                 .contentShape(Circle())
@@ -935,6 +932,8 @@ private struct PanelSegmentButton: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundColor(isSelected ? DS.Colors.textPrimary : (isHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
