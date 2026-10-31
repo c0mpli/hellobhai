@@ -64,6 +64,7 @@ final class CompanionManager: ObservableObject {
 
     /// Floating panel for Claude's animated visual explanations.
     let visualExplanationPanelManager = VisualExplanationPanelManager()
+    let model3DOverlayManager = Model3DOverlayManager()
 
     /// The in-flight visual generation, cancelled when the user asks something new.
     private var currentVisualTask: Task<Void, Never>?
@@ -339,6 +340,7 @@ final class CompanionManager: ObservableObject {
             currentVisualTask?.cancel()
             localTTSClient.stopPlayback()
             visualExplanationPanelManager.finishLiveContent()
+            model3DOverlayManager.close()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -424,6 +426,10 @@ final class CompanionManager: ObservableObject {
 
     live notes:
     when the user wants something summarized or noted down — the page, email, document, video, code, spreadsheet, or chat on their screen, or your conversation so far — or asks for notes, key points, a list, a comparison, or steps, append [NOTES:what to cover, in one line]. the app writes live notes (with tables, code, and charts when useful) on a panel next to the cursor while narrating the highlights, so your own spoken reply must be only one short intro sentence, like "ठीक है, नोट्स बना देता हूँ". prefer SHOW for how something works, NOTES for summaries, lists, and anything text-heavy, and never use both in one reply.
+    3d models:
+    when the question is about a physical thing and how it's built or works inside — a machine, engine, vehicle, aircraft, gadget, circuit board, hardware part, building, or a body part — and especially when that thing is on their screen (a product photo, a video, a diagram), append [MODEL3D:what to show, in one line:x,y:screenN] where x,y is the center of that thing in the screenshot (same coordinates and screen rules as POINT; leave out :screenN for the cursor's screen, and leave out x,y if it isn't on screen). the app builds a 3d model of it live, right on top of it, with labeled parts and a cutaway when the inside matters, narrated step by step. your own spoken reply must be only one short intro sentence, like "चलो, इसका 3D मॉडल बनाकर दिखाता हूँ". prefer MODEL3D for physical objects and "what's inside / how does this machine work", SHOW for ideas, processes, flows, and math, NOTES for summaries and lists. never use more than one of SHOW, NOTES, and MODEL3D in one reply.
+    if the user asks to close the model, append [CLOSE_DRAWING] too.
+
     if the user asks to save the notes, save them to the apple notes app with osascript, for example: osascript -e 'tell application "Notes" to make new note with properties {name:"title", body:"<h1>title</h1><ul><li>point</li></ul>"}'. the notes you wrote are in the conversation so far.
 
     doing things for the user:
@@ -535,15 +541,41 @@ final class CompanionManager: ObservableObject {
                             .trimmingCharacters(in: .whitespacesAndNewlines)
                         currentVisualTask?.cancel()
                         visualExplanationPanelManager.close()
+                        model3DOverlayManager.close()
                     }
 
                     // Pull out [SHOW:...] and [NOTES:...] requests, then parse [POINT:...] from what's left.
                     let (textWithoutVisualRequest, visualDescription) = Self.extractTaggedRequest(named: "SHOW", from: responseTextWithoutDrawingCommands)
                     let (textWithoutNotesRequest, notesDescription) = Self.extractTaggedRequest(named: "NOTES", from: textWithoutVisualRequest)
-                    let parseResult = Self.parsePointingCoordinates(from: textWithoutNotesRequest)
+                    let (textWithoutModel3DRequest, model3DRequest) = Self.extractTaggedRequest(named: "MODEL3D", from: textWithoutNotesRequest)
+                    let parseResult = Self.parsePointingCoordinates(from: textWithoutModel3DRequest)
                     let spokenText = parseResult.spokenText
 
-                    if let visualDescription {
+                    if visualDescription != nil || notesDescription != nil {
+                        model3DOverlayManager.close()
+                    }
+                    if let model3DRequest {
+                        // The model sits over the thing it shows; it needs the
+                        // screenshots to see what that thing looks like.
+                        let parsedModel3DRequest = Self.parseModel3DRequest(model3DRequest)
+                        if let targetScreenCapture = Self.screenCapture(forScreenNumber: parsedModel3DRequest.screenNumber, in: screenCaptures) {
+                            let screenshotCenter = CGPoint(
+                                x: CGFloat(targetScreenCapture.screenshotWidthInPixels) / 2,
+                                y: CGFloat(targetScreenCapture.screenshotHeightInPixels) / 2
+                            )
+                            startNarratedModel3D(
+                                modelDescription: parsedModel3DRequest.modelDescription,
+                                userRequest: transcript,
+                                spokenIntro: spokenText,
+                                screenImages: labeledImages,
+                                overlayCenter: Self.globalAppKitLocation(
+                                    forScreenshotPoint: parsedModel3DRequest.screenshotPoint ?? screenshotCenter,
+                                    in: targetScreenCapture
+                                ),
+                                overlayDisplayFrame: targetScreenCapture.displayFrame
+                            )
+                        }
+                    } else if let visualDescription {
                         startNarratedPanel(
                             liveContentKind: .drawing,
                             contentDescription: visualDescription,
@@ -727,6 +759,193 @@ final class CompanionManager: ObservableObject {
                     explainedContent += "\n(notes written:\n" + narratedDrawingQueue.plainTextOfVisibleLines() + ")"
                 }
                 conversationHistory[conversationHistory.count - 1].assistantResponse += explainedContent
+            }
+        }
+    }
+
+    // MARK: - 3D Models
+
+    /// Instructions for the separate claude -p call that builds a 3D model.
+    /// Same lockstep format as the whiteboard: a "say" sentence, then the
+    /// parts and labels it talks about.
+    private static let model3DSystemPrompt = """
+    you build a 3d model of a real physical thing, live, right on top of it on the user's screen, while explaining it out loud like a sharp, friendly engineer. the user hears each sentence while the matching parts pop in and get labeled. you can see their screen: model the exact thing they're looking at (its version, layout, and proportions).
+
+    output only json lines — one object per line, nothing else. no prose, no markdown, no code fences.
+
+    structure: first a title line, then a camera line. then 4 to 8 steps. each step is:
+    {"t":"say","text":"..."}   one spoken sentence, under about 18 words
+    followed by the commands that build exactly what that sentence talks about. the base shape comes first, then the parts in the order you explain them.
+
+    narration language: if the user spoke hindi or hinglish, natural hinglish (hindi grammar, everyday english words) written in devanagari. if they spoke english, english. labels are always english, one or two words.
+    teaching: direct and exact. name each part and what it does. use an everyday analogy only for something genuinely hard to picture.
+
+    coordinates: y is up. x runs left to right along the object's length, z points toward the viewer. use real dimensions in one consistent unit (millimeters for gadgets, meters for vehicles and buildings) so proportions are true. "pos" is a part's center; "rot" is [x,y,z] in degrees. the view fits itself to the model, so never worry about scale.
+
+    commands:
+    {"t":"title","text":"Raspberry Pi 5"}
+    {"t":"camera","azimuth":24,"elevation":32}   azimuth turns the model (positive shows its left end, 0 is straight on), elevation looks down from above. use about 15 to 35 elevation; for long side views (aircraft, cars, engines) azimuth about -15 and elevation about 15.
+    {"t":"part","id":"board","shape":"box","size":[85,1.6,56],"pos":[0,0,0],"mat":"pcb"}
+      shapes and their sizes:
+      box: "size":[w,h,d], optional "radius" for edge rounding (default slightly rounded)
+      cylinder: "r", "h", optional "rTop" for a taper, "axis":"x"|"y"|"z" (default y)
+      cone: "r", "h", "axis"
+      tube: a hollow cylinder (casings, ducts, pipes, rings): "r", "inner", "h", optional "rTop"/"innerTop" for tapered ducts, "axis"
+      sphere: "r"
+      torus: "r", "tube", "axis" (the axis it rings around)
+      capsule: "r", "h" (straight length), "axis"
+      extrude: a flat outline pushed out: "points":[[x,y],...] (at least 3, in the x-y plane), "depth", "axis" is the push direction (default z; "y" makes it lie flat: wings, plates, floors — then the second number of each point is -z)
+      lathe: a profile spun around the y axis (nozzles, fuselages, bottles, domes, bones): "points":[[radius,y],...], "axis"; add "shell":thickness to make it a hollow skin so a cutaway can show inside
+      materials ("mat"): plastic, paint, steel, aluminum, darkmetal, titanium, copper, brass, gold, pcb, chip, rubber, ceramic, glass, glow (flames, leds), tissue, bone, wood, concrete. "color":"#rrggbb" overrides the color, "opacity" makes it see-through.
+      "in":"groupid" puts the part inside a group; "outline":false hides its light outline.
+    {"t":"group","id":"fan","pos":[-3,0.4,0],"rot":[0,0,0]}   a sub-assembly; parts with "in":"fan" are placed relative to it
+    {"t":"array","id":"pins","of":{"shape":"box","size":[0.64,8.5,0.64],"pos":[-24.1,5.5,-25.7],"mat":"brass"},"count":20,"step":[2.54,0,0],"count2":2,"step2":[0,0,2.54]}   repeats one part in a line (step) or a grid (step2): pins, vents, keys, bolts, cells, teeth.
+    {"t":"array","id":"blades","of":{"shape":"box","size":[0.05,0.34,0.16],"pos":[0,0.42,0],"mat":"titanium"},"count":20,"radial":{"axis":"x"},"pos":[1.3,0,0]}   a ring of copies around an axis through the array's pos: fan and compressor blades, spokes, bolts on a flange. the part's pos is its offset from the hub.
+    {"t":"cutaway","parts":["casing","fuselage"],"remove":"+z","at":0}   slices those parts open and removes the side facing the viewer, so the inside shows; the cut faces get a hatched section. declare it right after the shell parts and before the insides.
+    {"t":"label","text":"GPIO","on":"pins","color":"yellow","side":"top"}   a callout tag with a leader line to the part ("at":[x,y,z] points at an exact spot instead). colors yellow, green, blue, pink, mixed. side top or bottom: split labels between both rows, 4 to 7 labels in total.
+    {"t":"highlight","id":"soc"}   glows a part gold for a moment: the star of that sentence
+    {"t":"focus","id":"fan"}   zooms in on a part; {"t":"focus"} zooms back out to the whole model
+    {"t":"spin","id":"blades","axis":"x","speed":1}   keeps spinning (turns per second): fans, rotors, wheels, gears
+    {"t":"fade","id":"case","opacity":0.15}   makes a cover see-through to reveal what's under it
+
+    make it great:
+    - recognisable at a glance: true proportions, the real layout, the characteristic details (pin headers, port stacks, fins, blade rings, rivet rows) using arrays. 15 to 45 commands.
+    - for "how does it work inside" use a cutaway of the shell, then build the insides.
+    - stylized but realistic colors: a pcb is green, ports are steel, chips are near black, engines are dark metal and titanium.
+    - every part a label points at must exist before the label. ids are short lowercase words.
+
+    example, a raspberry pi 5 (millimeters):
+    {"t":"title","text":"Raspberry Pi 5"}
+    {"t":"camera","azimuth":24,"elevation":32}
+    {"t":"say","text":"this is a raspberry pi 5, a full computer on one board the size of a credit card."}
+    {"t":"part","id":"board","shape":"box","size":[85,1.6,56],"pos":[0,0,0],"mat":"pcb","radius":0.7}
+    {"t":"say","text":"along the back edge are forty gpio pins, where you wire up sensors, motors, and leds."}
+    {"t":"part","id":"header","shape":"box","size":[51,2.6,5.1],"pos":[-6,2.1,-24.4],"mat":"chip"}
+    {"t":"array","id":"gpio","of":{"shape":"box","size":[0.64,8.6,0.64],"pos":[-30.1,5.5,-25.7],"mat":"brass","radius":0.1},"count":20,"step":[2.54,0,0],"count2":2,"step2":[0,0,2.54]}
+    {"t":"label","text":"GPIO","on":"gpio","color":"yellow","side":"top"}
+    {"t":"say","text":"in the middle sits the processor, four arm cores, with the ram right beside it."}
+    {"t":"part","id":"soc","shape":"box","size":[16,1.8,16],"pos":[-12,1.7,4],"mat":"aluminum"}
+    {"t":"part","id":"ram","shape":"box","size":[13,1.2,10],"pos":[-14,1.4,-13],"mat":"chip"}
+    {"t":"label","text":"Processor","on":"soc","color":"pink","side":"bottom"}
+    {"t":"label","text":"RAM","on":"ram","color":"green","side":"top"}
+    {"t":"highlight","id":"soc"}
+    {"t":"say","text":"on the right are two usb stacks and ethernet, all steel shielded."}
+    {"t":"part","id":"usb1","shape":"box","size":[17.5,15.6,14],"pos":[34.5,8.6,-19],"mat":"steel","radius":1.4}
+    {"t":"part","id":"usb2","shape":"box","size":[17.5,15.6,14],"pos":[34.5,8.6,-3],"mat":"steel","radius":1.4}
+    {"t":"part","id":"eth","shape":"box","size":[21,13.5,16],"pos":[33,7.6,15.5],"mat":"steel","radius":1.4}
+    ... then the camera connectors, the usb-c power and micro hdmi ports along the front edge, and their labels.
+
+    example, the start of a jet engine cutaway (meters):
+    {"t":"camera","azimuth":-15,"elevation":16}
+    {"t":"part","id":"casing","shape":"tube","axis":"x","r":0.66,"inner":0.6,"h":5,"pos":[0,0,0],"mat":"darkmetal"}
+    {"t":"cutaway","parts":["casing"],"remove":"+z","at":0}
+    {"t":"part","id":"shaft","shape":"cylinder","axis":"x","r":0.1,"h":4.8,"pos":[0,0,0],"mat":"steel"}
+    {"t":"array","id":"fan","of":{"shape":"box","size":[0.04,0.5,0.18],"pos":[0,0.32,0],"rot":[25,0,0],"mat":"titanium"},"count":22,"radial":{"axis":"x"},"pos":[-2.2,0,0]}
+    {"t":"spin","id":"fan","axis":"x","speed":1}
+    {"t":"part","id":"combustor","shape":"tube","axis":"x","r":0.45,"inner":0.3,"h":0.8,"pos":[0.6,0,0],"mat":"copper"}
+    {"t":"part","id":"flame","shape":"cylinder","axis":"x","r":0.25,"rTop":0.12,"h":0.7,"pos":[0.6,0,0],"mat":"glow"}
+    {"t":"part","id":"nozzle","shape":"lathe","axis":"x","shell":0.03,"points":[[0.6,2.5],[0.48,3.2]],"mat":"titanium"}
+    {"t":"label","text":"Fan","on":"fan","color":"blue","side":"top"}
+    {"t":"label","text":"Combustor","on":"combustor","color":"pink","side":"bottom"}
+    """
+
+    /// Splits a MODEL3D request, "what to show:x,y:screenN", into its parts.
+    /// The position and screen are optional; without a position the model
+    /// goes in the middle of the screen.
+    static func parseModel3DRequest(_ model3DRequest: String) -> (modelDescription: String, screenshotPoint: CGPoint?, screenNumber: Int?) {
+        let pattern = #"^(.*?)(?::\s*(\d+)\s*,\s*(\d+))?(?::\s*screen(\d+))?\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: model3DRequest, range: NSRange(model3DRequest.startIndex..., in: model3DRequest)),
+              let descriptionRange = Range(match.range(at: 1), in: model3DRequest) else {
+            return (model3DRequest, nil, nil)
+        }
+        let modelDescription = String(model3DRequest[descriptionRange]).trimmingCharacters(in: .whitespaces)
+
+        var screenshotPoint: CGPoint?
+        if let xRange = Range(match.range(at: 2), in: model3DRequest),
+           let yRange = Range(match.range(at: 3), in: model3DRequest),
+           let xCoordinate = Double(model3DRequest[xRange]),
+           let yCoordinate = Double(model3DRequest[yRange]) {
+            screenshotPoint = CGPoint(x: xCoordinate, y: yCoordinate)
+        }
+
+        var screenNumber: Int?
+        if let screenRange = Range(match.range(at: 4), in: model3DRequest) {
+            screenNumber = Int(model3DRequest[screenRange])
+        }
+        return (modelDescription.isEmpty ? model3DRequest : modelDescription, screenshotPoint, screenNumber)
+    }
+
+    /// Builds a narrated 3D model over the screen with a separate claude -p
+    /// call. Same lockstep as the whiteboard: each step's parts and labels
+    /// appear while its sentence is spoken.
+    private func startNarratedModel3D(
+        modelDescription: String,
+        userRequest: String,
+        spokenIntro: String,
+        screenImages: [(data: Data, label: String)],
+        overlayCenter: CGPoint,
+        overlayDisplayFrame: CGRect
+    ) {
+        currentVisualTask?.cancel()
+        // One visual at a time: the model replaces any whiteboard or notes.
+        visualExplanationPanelManager.close()
+        model3DOverlayManager.begin(centeredOnAppKitGlobalPoint: overlayCenter, onDisplayFrame: overlayDisplayFrame)
+        print("🧊 Building 3D model: \(modelDescription)")
+
+        currentVisualTask = Task {
+            let narratedModelQueue = NarratedStepQueue { [weak self] modelCommandLine in
+                self?.model3DOverlayManager.addCommandLine(modelCommandLine)
+            }
+            let streamedLineForwarder = StreamedLineForwarder { completeLine in
+                narratedModelQueue.receiveLine(completeLine)
+            }
+
+            async let spokenNarrations = narratedModelQueue.playSteps(
+                waitUntilVoiceIsFree: { @MainActor [weak self] in
+                    // Let the intro sentence finish before the first narrated step.
+                    while self?.isSpeakingAloud == true {
+                        try? await Task.sleep(for: .milliseconds(80))
+                    }
+                },
+                speak: { @MainActor [weak self] narration in
+                    await self?.localTTSClient.speakTextAndWaitUntilFinished(narration)
+                }
+            )
+
+            do {
+                let model3DRequestPrompt = """
+                build and explain: \(modelDescription)
+
+                the user asked: \(userRequest)
+                you already said, as an intro: \(spokenIntro)
+                """
+                let (fullModelScript, modelScriptDuration) = try await claudeCLI.analyzeImageStreaming(
+                    images: screenImages,
+                    systemPrompt: Self.model3DSystemPrompt,
+                    userPrompt: model3DRequestPrompt,
+                    // Low effort keeps the first part arriving fast.
+                    effort: "low",
+                    onTextChunk: { accumulatedModelScript in
+                        streamedLineForwarder.forwardNewCompleteLines(in: accumulatedModelScript)
+                    }
+                )
+                // The last line has no trailing newline, so it's only complete now.
+                streamedLineForwarder.forwardRemainingLine(in: fullModelScript)
+                print("🧊 3D script streamed in \(String(format: "%.1f", modelScriptDuration))s (\(streamedLineForwarder.forwardedLineCount) lines):\n\(fullModelScript)")
+            } catch is CancellationError {
+                // A newer request replaced this model
+            } catch {
+                print("⚠️ 3D model generation failed: \(error)")
+            }
+            narratedModelQueue.markStreamFinished()
+
+            let narrationsSpoken = await spokenNarrations
+            guard !Task.isCancelled else { return }
+
+            // Keep what was explained in the history for follow-up questions.
+            if !narrationsSpoken.isEmpty && !conversationHistory.isEmpty {
+                conversationHistory[conversationHistory.count - 1].assistantResponse += " " + narrationsSpoken.joined(separator: " ")
             }
         }
     }
