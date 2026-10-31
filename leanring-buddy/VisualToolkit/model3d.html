@@ -749,7 +749,9 @@ function updatePenCursor(now) {
     }
   }
   const isRecentlyActive = isProcessingCommands || now - penState.lastActiveTime < 1400;
-  penCursorElement.style.opacity = penState.hasPosition && isRecentlyActive ? '1' : '0';
+  const isPenShowing = penState.hasPosition && isRecentlyActive;
+  penCursorElement.style.opacity = isPenShowing && !isHostDrawingPen ? '1' : '0';
+  reportPenToHost(isPenShowing ? penState.x : null, isPenShowing ? penState.y : null);
   // The triangle's left edge sits on the drawing head, like a pen tip.
   penCursorElement.style.transform = `translate(${penState.x - 3}px, ${penState.y - 8}px)`;
 }
@@ -1503,6 +1505,23 @@ function postHitRegions(modelRectangle, now) {
 
 function postToHost(message) {
   try { window.webkit.messageHandlers.model3D.postMessage(message); } catch (postError) { /* no host (harness) */ }
+}
+
+// In the app, bhai's own cursor does the drawing: the page reports the pen
+// tip and keeps its own triangle hidden. The harness still shows it.
+const isHostDrawingPen = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.model3D);
+let lastReportedPen = null;
+function reportPenToHost(penX, penY) {
+  if (!isHostDrawingPen) return;
+  if (penX === null) {
+    if (lastReportedPen === null) return;
+    lastReportedPen = null;
+    postToHost({ kind: 'pen', hidden: true });
+    return;
+  }
+  if (lastReportedPen && Math.abs(lastReportedPen[0] - penX) < 0.5 && Math.abs(lastReportedPen[1] - penY) < 0.5) return;
+  lastReportedPen = [penX, penY];
+  postToHost({ kind: 'pen', x: penX, y: penY });
 }
 
 closeButtonElement.addEventListener('click', () => postToHost({ kind: 'close' }));

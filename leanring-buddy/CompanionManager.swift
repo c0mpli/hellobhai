@@ -34,6 +34,10 @@ final class CompanionManager: ObservableObject {
     /// buddy should fly to and point at. Parsed from Claude's response;
     /// observed by BlueCursorView to trigger the flight animation.
     @Published var detectedElementScreenLocation: CGPoint?
+
+    /// Where the whiteboard or 3D pen is drawing right now (AppKit global
+    /// coordinates), or nil. The buddy cursor flies there and does the drawing.
+    @Published var buddyDrawingPenScreenLocation: CGPoint?
     /// The display frame (global AppKit coords) of the screen the detected
     /// element is on, so BlueCursorView knows which screen overlay should animate.
     @Published var detectedElementDisplayFrame: CGRect?
@@ -126,6 +130,12 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        visualExplanationPanelManager.onPenScreenLocationChanged = { [weak self] penScreenLocation in
+            self?.buddyDrawingPenScreenLocation = penScreenLocation
+        }
+        model3DOverlayManager.onPenScreenLocationChanged = { [weak self] penScreenLocation in
+            self?.buddyDrawingPenScreenLocation = penScreenLocation
+        }
         refreshAllPermissions()
         print("🔑 hellobhai start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()

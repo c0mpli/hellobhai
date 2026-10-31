@@ -483,6 +483,19 @@ struct BlueCursorView: View {
 
     private func startTrackingCursor() {
         timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
+            // While the whiteboard or 3D model is drawing, the buddy itself is
+            // the pen: it sits on the drawing head and moves with it, then goes
+            // back to following the mouse when the pen rests.
+            if let drawingPenLocation = self.companionManager.buddyDrawingPenScreenLocation,
+               self.buddyNavigationMode == .followingCursor {
+                self.isCursorOnThisScreen = self.screenFrame.contains(drawingPenLocation)
+                if self.isBuddyHiddenBecauseSystemPointerIsHidden { self.isBuddyHiddenBecauseSystemPointerIsHidden = false }
+                let penPositionInSwiftUI = self.convertScreenPointToSwiftUICoordinates(drawingPenLocation)
+                // The triangle's tip sits on the drawing head.
+                self.cursorPosition = CGPoint(x: penPositionInSwiftUI.x + 6, y: penPositionInSwiftUI.y + 7)
+                return
+            }
+
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
 

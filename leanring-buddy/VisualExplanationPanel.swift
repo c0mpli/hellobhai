@@ -23,7 +23,7 @@ import AppKit
 import WebKit
 
 @MainActor
-final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
+final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     private static let panelContentSize = NSSize(width: 760, height: 580)
 
     /// Height of the warm title bar the page draws; the traffic lights sit in it.
@@ -133,6 +133,25 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         // its animation loop would otherwise silence a scratch mid-stroke.
         stopDrawing()
         panel?.orderOut(nil)
+        onPenScreenLocationChanged?(nil)
+    }
+
+    /// Where the drawing head is, in AppKit global screen coordinates, or nil
+    /// when the pen rests. Bhai's own cursor follows it, so the buddy is the
+    /// one drawing instead of a separate pen inside the page.
+    var onPenScreenLocationChanged: ((CGPoint?) -> Void)?
+
+    /// The page posts the pen tip in page coordinates (top-left origin); the
+    /// web view fills the borderless panel, so the panel frame maps it to the screen.
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "pen", let messageBody = message.body as? [String: Any] else { return }
+        guard let panel, panel.isVisible,
+              let penPageX = messageBody["x"] as? Double, let penPageY = messageBody["y"] as? Double else {
+            onPenScreenLocationChanged?(nil)
+            return
+        }
+        let panelFrame = panel.frame
+        onPenScreenLocationChanged?(CGPoint(x: panelFrame.minX + penPageX, y: panelFrame.maxY - penPageY))
     }
 
     private static let finishedDrawingMarker = "__hellobhai_done__"
@@ -213,6 +232,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         // The pencil scratch is synthesized with WebAudio and has to start
         // without a click on the page.
         webViewConfiguration.mediaTypesRequiringUserActionForPlayback = []
+        webViewConfiguration.userContentController.add(self, name: "pen")
 
         let containerView = PanelHoverTrackingView(frame: NSRect(origin: .zero, size: Self.panelContentSize))
         containerView.onHoverChanged = { [weak self, weak createdPanel] isHovering in
@@ -325,6 +345,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       filter: drop-shadow(0 1.5px 3px rgba(90,70,20,0.32)) drop-shadow(0 0 5px rgba(201,166,70,0.25)); }
     /* Shows at once when drawing starts; only resting fades it out. */
     #pen.visible { opacity: 1; transition: none; }
+    .host-draws-pen #pen { display: none; }
     #thinking { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 15;
       display: flex; align-items: center; gap: 8px; pointer-events: none;
       font: 24px "Patrick Hand", sans-serif; color: #9a9384; transition: opacity 0.3s; }
@@ -454,6 +475,24 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     /// only while the pen is actually drawing.
     private static let penAndScratchSoundScript = """
     const penElement = document.getElementById('pen');
+    // In the app, bhai's own cursor does the drawing: the page reports the
+    // pen tip and hides its own triangle. Without a host (render harness)
+    // the in-page pen shows as before.
+    const penHostChannel = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pen;
+    if (penHostChannel) { document.documentElement.classList.add('host-draws-pen'); }
+    let lastReportedPen = null;
+    function reportPenToHost(screenX, screenY) {
+      if (!penHostChannel) { return; }
+      if (screenX === null) {
+        if (lastReportedPen === null) { return; }
+        lastReportedPen = null;
+        penHostChannel.postMessage({ hidden: true });
+        return;
+      }
+      if (lastReportedPen && Math.abs(lastReportedPen[0] - screenX) < 0.5 && Math.abs(lastReportedPen[1] - screenY) < 0.5) { return; }
+      lastReportedPen = [screenX, screenY];
+      penHostChannel.postMessage({ x: screenX, y: screenY });
+    }
     function hideThinkingIndicator() {
       const thinkingElement = document.getElementById('thinking');
       if (thinkingElement && !thinkingElement.classList.contains('gone')) {
@@ -645,6 +684,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       // The triangle sits a little right of and below the drawing head, like a nib.
       penElement.style.transform = `translate(${screenX + 3}px, ${screenY - 1}px)`;
       penElement.classList.add('visible');
+      reportPenToHost(screenX, screenY);
     }
 
     function* glidePenTo(targetPointProvider) {
@@ -761,6 +801,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       currentLeafAnimation = null;
       scratchSound.stopImmediately();
       penElement.classList.remove('visible');
+      reportPenToHost(null, null);
     }
 
     function* penProgram() {
@@ -771,7 +812,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           scratchSound.silence();
           penIdleSeconds += penFrameDelta;
           // Fade out once the last element is done, so it never sits parked in empty space.
-          if (penIdleSeconds > (isPenStreamFinished ? 0.6 : 1.4)) { penElement.classList.remove('visible'); }
+          if (penIdleSeconds > (isPenStreamFinished ? 0.6 : 1.4)) { penElement.classList.remove('visible'); reportPenToHost(null, null); }
           yield;
           continue;
         }

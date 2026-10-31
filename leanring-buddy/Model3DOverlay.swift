@@ -45,6 +45,10 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
     /// Where the model and its labels are, in page coordinates (top-left
     /// origin, points). The panel only takes the mouse inside these.
     private var interactiveRegionsInPage: [CGRect] = []
+
+    /// Where the drawing head is, in AppKit global screen coordinates, or nil
+    /// when the pen rests. Bhai's own cursor follows it.
+    var onPenScreenLocationChanged: ((CGPoint?) -> Void)?
     private var isMouseOverInteractiveRegion = false
     private var mouseTrackingTimer: Timer?
     private var globalEscapeKeyMonitor: Any?
@@ -132,6 +136,7 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
     func close() {
         guard let panel, panel.isVisible else { return }
         panel.orderOut(nil)
+        onPenScreenLocationChanged?(nil)
         stopMouseTrackingAndEscapeMonitoring()
         pendingCommandLines.removeAll()
         isPageReady = false
@@ -174,6 +179,15 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
             }
         case "close":
             closeBecauseUserAskedTo()
+        case "pen":
+            // The pen tip in page coordinates (top-left origin); the web view
+            // fills the panel. Bhai's own cursor follows it.
+            guard let panel, panel.isVisible,
+                  let penPageX = messageBody["x"] as? Double, let penPageY = messageBody["y"] as? Double else {
+                onPenScreenLocationChanged?(nil)
+                return
+            }
+            onPenScreenLocationChanged?(CGPoint(x: panel.frame.minX + penPageX, y: panel.frame.maxY - penPageY))
         default:
             break
         }
