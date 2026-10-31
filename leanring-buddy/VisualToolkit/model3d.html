@@ -1254,13 +1254,20 @@ const viewState = {
 let pixelsPerContentUnit = 1;
 let screenshotSizeInPixels = null;
 let defaultFocusPagePoint = null;
+// Parts of the display hidden behind the menu bar and the Dock (page px,
+// set by hb.configure). The model and its labels stay inside the rest.
+let safeAreaInsets = { top: 0, right: 0, bottom: 0, left: 0 };
+function safeTop() { return safeAreaInsets.top; }
+function safeBottom() { return viewportHeight - safeAreaInsets.bottom; }
+function safeLeft() { return safeAreaInsets.left; }
+function safeRight() { return viewportWidth - safeAreaInsets.right; }
 
 function defaultFitRectangle() {
   const center = defaultFocusPagePoint || { x: viewportWidth / 2, y: viewportHeight / 2 };
-  const rectangleWidth = Math.min(860, viewportWidth - 40);
-  const rectangleHeight = Math.min(660, viewportHeight - 40) - 2 * LABEL_ROW_MARGIN_IN_PIXELS;
-  const left = THREE.MathUtils.clamp(center.x - rectangleWidth / 2, 20, Math.max(20, viewportWidth - 20 - rectangleWidth));
-  const top = THREE.MathUtils.clamp(center.y - rectangleHeight / 2, 20 + LABEL_ROW_MARGIN_IN_PIXELS, Math.max(20, viewportHeight - 20 - LABEL_ROW_MARGIN_IN_PIXELS - rectangleHeight));
+  const rectangleWidth = Math.min(860, safeRight() - safeLeft() - 40);
+  const rectangleHeight = Math.min(660, safeBottom() - safeTop() - 40) - 2 * LABEL_ROW_MARGIN_IN_PIXELS;
+  const left = THREE.MathUtils.clamp(center.x - rectangleWidth / 2, safeLeft() + 20, Math.max(safeLeft() + 20, safeRight() - 20 - rectangleWidth));
+  const top = THREE.MathUtils.clamp(center.y - rectangleHeight / 2, safeTop() + 20 + LABEL_ROW_MARGIN_IN_PIXELS, Math.max(safeTop() + 20, safeBottom() - 20 - LABEL_ROW_MARGIN_IN_PIXELS - rectangleHeight));
   return { left, top, right: left + rectangleWidth, bottom: top + Math.max(80, rectangleHeight) };
 }
 
@@ -1660,7 +1667,7 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
         const lastCluster = tagClusters[tagClusters.length - 1];
         const previousCluster = tagClusters[tagClusters.length - 2];
         if (!previousCluster) break;
-        const clusterLeft = (cluster) => THREE.MathUtils.clamp(cluster.desiredOffsetSum / cluster.labels.length, 6, Math.max(6, viewportWidth - 6 - cluster.width));
+        const clusterLeft = (cluster) => THREE.MathUtils.clamp(cluster.desiredOffsetSum / cluster.labels.length, safeLeft() + 6, Math.max(safeLeft() + 6, safeRight() - 6 - cluster.width));
         if (clusterLeft(previousCluster) + previousCluster.width + gapBetweenTags <= clusterLeft(lastCluster)) break;
         // Each label's desired cluster left is its own desired left minus
         // the widths of the tags before it in the cluster.
@@ -1677,7 +1684,7 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
       }
     }
     for (const tagCluster of tagClusters) {
-      let tagLeft = THREE.MathUtils.clamp(tagCluster.desiredOffsetSum / tagCluster.labels.length, 6, Math.max(6, viewportWidth - 6 - tagCluster.width));
+      let tagLeft = THREE.MathUtils.clamp(tagCluster.desiredOffsetSum / tagCluster.labels.length, safeLeft() + 6, Math.max(safeLeft() + 6, safeRight() - 6 - tagCluster.width));
       for (const clusterLabel of tagCluster.labels) {
         clusterLabel.targetLeft = tagLeft;
         tagLeft += clusterLabel.tagWidth + gapBetweenTags;
@@ -1703,7 +1710,7 @@ function layoutCalloutRows(labelsOnSide, modelRectangle, side, partRectangles) {
     }
     rowTop = rowTopClearOfAvoidedAreas(rowTop, rowLeft, rowRight, tagHeight, side);
     if (side === 'top') rowEdge = rowTop; else rowEdge = rowTop + tagHeight;
-    const clampedRowTop = THREE.MathUtils.clamp(rowTop, 4, viewportHeight - tagHeight - 4);
+    const clampedRowTop = THREE.MathUtils.clamp(rowTop, safeTop() + 4, safeBottom() - tagHeight - 4);
     rowLabels.forEach((calloutLabel) => { calloutLabel.targetTop = clampedRowTop; });
   });
 }
@@ -1719,7 +1726,7 @@ function rowTopClearOfAvoidedAreas(rowTop, rowLeft, rowRight, tagHeight, side) {
       && avoidRectangle.bottom > adjustedRowTop && avoidRectangle.top < adjustedRowTop + tagHeight);
     if (!coveredArea) break;
     const movedRowTop = side === 'top' ? coveredArea.top - tagHeight - 4 : coveredArea.bottom + 4;
-    if (movedRowTop < 4 || movedRowTop > viewportHeight - tagHeight - 4) break;
+    if (movedRowTop < safeTop() + 4 || movedRowTop > safeBottom() - tagHeight - 4) break;
     adjustedRowTop = movedRowTop;
   }
   return adjustedRowTop;
@@ -1738,12 +1745,12 @@ function layoutCalloutColumn(labelsOnSide, modelRectangle, side) {
   const gapBetweenTags = 4;
   const columnGap = 28;
   const sortedLabels = labelsOnSide.slice().sort((firstLabel, secondLabel) => firstLabel.anchorPagePoint.y - secondLabel.anchorPagePoint.y);
-  let previousBottom = 4 - gapBetweenTags;
+  let previousBottom = safeTop() + 4 - gapBetweenTags;
   for (const calloutLabel of sortedLabels) {
     calloutLabel.targetTop = Math.max(calloutLabel.anchorPagePoint.y - calloutLabel.tagHeight / 2, previousBottom + gapBetweenTags);
     previousBottom = calloutLabel.targetTop + calloutLabel.tagHeight;
   }
-  let nextTop = viewportHeight - 4 + gapBetweenTags;
+  let nextTop = safeBottom() - 4 + gapBetweenTags;
   for (let labelIndex = sortedLabels.length - 1; labelIndex >= 0; labelIndex--) {
     const calloutLabel = sortedLabels[labelIndex];
     calloutLabel.targetTop = Math.min(calloutLabel.targetTop, nextTop - gapBetweenTags - calloutLabel.tagHeight);
@@ -1751,7 +1758,7 @@ function layoutCalloutColumn(labelsOnSide, modelRectangle, side) {
   }
   for (const calloutLabel of sortedLabels) {
     const desiredLeft = side === 'left' ? modelRectangle.left - columnGap - calloutLabel.tagWidth : modelRectangle.right + columnGap;
-    calloutLabel.targetLeft = THREE.MathUtils.clamp(desiredLeft, 4, viewportWidth - calloutLabel.tagWidth - 4);
+    calloutLabel.targetLeft = THREE.MathUtils.clamp(desiredLeft, safeLeft() + 4, safeRight() - calloutLabel.tagWidth - 4);
   }
 }
 
@@ -2253,11 +2260,13 @@ function runAnchorCommand(anchorSpec) {
     if (placement === 'right') centerX += (originalWidth + rectangleWidth) / 2 + besideGap;
     if (placement === 'above') centerY -= (originalHeight + rectangleHeight) / 2 + besideGap;
     if (placement === 'below') centerY += (originalHeight + rectangleHeight) / 2 + besideGap;
-    // Kept on the page (labels need a little room around it too).
-    rectangleWidth = Math.min(rectangleWidth, viewportWidth - 24);
-    rectangleHeight = Math.min(rectangleHeight, viewportHeight - 24);
-    centerX = THREE.MathUtils.clamp(centerX, rectangleWidth / 2 + 12, viewportWidth - rectangleWidth / 2 - 12);
-    centerY = THREE.MathUtils.clamp(centerY, rectangleHeight / 2 + 12, viewportHeight - rectangleHeight / 2 - 12);
+    // Kept clear of the menu bar and the Dock. Beside a photo the label rows
+    // go above and below the model, so they need room inside that area too.
+    const labelRoom = isBesideThePhoto ? 70 : 12;
+    rectangleWidth = Math.min(rectangleWidth, safeRight() - safeLeft() - 24);
+    rectangleHeight = Math.min(rectangleHeight, safeBottom() - safeTop() - 2 * labelRoom);
+    centerX = THREE.MathUtils.clamp(centerX, safeLeft() + rectangleWidth / 2 + 12, safeRight() - rectangleWidth / 2 - 12);
+    centerY = THREE.MathUtils.clamp(centerY, safeTop() + rectangleHeight / 2 + labelRoom, safeBottom() - rectangleHeight / 2 - labelRoom);
     viewState.fitRectangle = {
       left: centerX - rectangleWidth / 2, top: centerY - rectangleHeight / 2,
       right: centerX + rectangleWidth / 2, bottom: centerY + rectangleHeight / 2,
@@ -2775,7 +2784,11 @@ window.hb = {
   // The overlay covers the whole display: the screenshot's size (so anchor
   // boxes in screenshot pixels map onto the page) and where the model goes
   // when no anchor arrives (screenshot pixels too). Numbers only.
-  configure(screenshotWidth, screenshotHeight, focusX, focusY) {
+  configure(screenshotWidth, screenshotHeight, focusX, focusY, insetTop, insetRight, insetBottom, insetLeft) {
+    safeAreaInsets = {
+      top: Math.max(0, finiteNumberOr(insetTop, 0)), right: Math.max(0, finiteNumberOr(insetRight, 0)),
+      bottom: Math.max(0, finiteNumberOr(insetBottom, 0)), left: Math.max(0, finiteNumberOr(insetLeft, 0)),
+    };
     const width = finiteNumberOr(screenshotWidth, 0), height = finiteNumberOr(screenshotHeight, 0);
     if (width > 0 && height > 0) screenshotSizeInPixels = { width, height };
     if (Number.isFinite(Number(focusX)) && Number.isFinite(Number(focusY)) && screenshotSizeInPixels) {

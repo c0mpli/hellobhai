@@ -109,10 +109,15 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
 
         // The screenshot covers the display's full frame, so the panel does too.
         panel.setFrame(displayFrame, display: false)
+        // The menu bar and Dock cover parts of the display; the page keeps the
+        // model and its labels out of them (insets in points = page px).
+        let visibleFrame = NSScreen.screens.first(where: { $0.frame == displayFrame })?.visibleFrame ?? displayFrame
         pageConfigurationScript = String(
-            format: "hb.configure(%.1f, %.1f, %.1f, %.1f)",
+            format: "hb.configure(%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f)",
             screenshotSizeInPixels.width, screenshotSizeInPixels.height,
-            focusScreenshotPoint.x, focusScreenshotPoint.y
+            focusScreenshotPoint.x, focusScreenshotPoint.y,
+            displayFrame.maxY - visibleFrame.maxY, displayFrame.maxX - visibleFrame.maxX,
+            visibleFrame.minY - displayFrame.minY, visibleFrame.minX - displayFrame.minX
         )
 
         isPageReady = false
