@@ -20,9 +20,15 @@ enum BuddyPushToTalkShortcut {
         case shiftControl
         case controlOptionSpace
         case shiftControlSpace
+        /// Any combination of two or more modifier keys the user recorded in
+        /// the panel (only modifiers: the event tap is listen-only and can't
+        /// keep a letter or Space from also reaching the frontmost app).
+        case customModifiers
 
         var displayText: String {
             switch self {
+            case .customModifiers:
+                return BuddyPushToTalkShortcut.keyLabels(for: BuddyPushToTalkShortcut.customModifierFlags).joined(separator: " + ")
             case .shiftFunction:
                 return "shift + fn"
             case .controlOption:
@@ -38,6 +44,8 @@ enum BuddyPushToTalkShortcut {
 
         var keyCapsuleLabels: [String] {
             switch self {
+            case .customModifiers:
+                return BuddyPushToTalkShortcut.keyLabels(for: BuddyPushToTalkShortcut.customModifierFlags)
             case .shiftFunction:
                 return ["shift", "fn"]
             case .controlOption:
@@ -53,6 +61,8 @@ enum BuddyPushToTalkShortcut {
 
         fileprivate var modifierOnlyFlags: NSEvent.ModifierFlags? {
             switch self {
+            case .customModifiers:
+                return BuddyPushToTalkShortcut.customModifierFlags
             case .shiftFunction:
                 return [.shift, .function]
             case .controlOption:
@@ -66,6 +76,8 @@ enum BuddyPushToTalkShortcut {
 
         fileprivate var spaceShortcutModifierFlags: NSEvent.ModifierFlags? {
             switch self {
+            case .customModifiers:
+                return nil
             case .shiftFunction:
                 return nil
             case .controlOption:
@@ -100,6 +112,46 @@ enum BuddyPushToTalkShortcut {
             .flatMap(ShortcutOption.init(rawValue:)) ?? .controlOption
     }
     static let pushToTalkKeyCode: UInt16 = 49 // Space
+
+    /// The modifier keys a recorded shortcut uses (UserDefaults raw value).
+    static let customModifierFlagsUserDefaultsKey = "customPushToTalkModifierFlags"
+    static let recordableModifierFlags: NSEvent.ModifierFlags = [.control, .option, .command, .shift, .function]
+
+    static var customModifierFlags: NSEvent.ModifierFlags {
+        let storedRawValue = UInt(UserDefaults.standard.integer(forKey: customModifierFlagsUserDefaultsKey))
+        let storedFlags = NSEvent.ModifierFlags(rawValue: storedRawValue).intersection(recordableModifierFlags)
+        return storedFlags.isEmpty ? [.control, .option] : storedFlags
+    }
+
+    /// Key names in the usual Mac order, for key caps and menu text.
+    static func keyLabels(for modifierFlags: NSEvent.ModifierFlags) -> [String] {
+        var keyLabels: [String] = []
+        if modifierFlags.contains(.control) { keyLabels.append("ctrl") }
+        if modifierFlags.contains(.option) { keyLabels.append("option") }
+        if modifierFlags.contains(.shift) { keyLabels.append("shift") }
+        if modifierFlags.contains(.command) { keyLabels.append("cmd") }
+        if modifierFlags.contains(.function) { keyLabels.append("fn") }
+        return keyLabels
+    }
+
+    /// Saves a recorded combination. A combination that matches a built-in
+    /// option is stored as that option.
+    static func saveRecordedShortcut(modifierFlags: NSEvent.ModifierFlags) {
+        let recordedFlags = modifierFlags.intersection(recordableModifierFlags)
+        let matchingBuiltInOption = ShortcutOption.allCases.first { shortcutOption in
+            shortcutOption != .customModifiers && shortcutOption.modifierOnlyFlags == recordedFlags
+        }
+        if let matchingBuiltInOption {
+            UserDefaults.standard.set(matchingBuiltInOption.rawValue, forKey: currentShortcutOptionUserDefaultsKey)
+        } else {
+            UserDefaults.standard.set(Int(recordedFlags.rawValue), forKey: customModifierFlagsUserDefaultsKey)
+            UserDefaults.standard.set(ShortcutOption.customModifiers.rawValue, forKey: currentShortcutOptionUserDefaultsKey)
+        }
+    }
+
+    /// True while the panel is recording a new shortcut, so pressing keys to
+    /// record doesn't also start listening.
+    static var isRecordingNewShortcut = false
     static var pushToTalkDisplayText: String { currentShortcutOption.displayText }
     static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
 
@@ -166,6 +218,9 @@ enum BuddyPushToTalkShortcut {
         modifierFlags: NSEvent.ModifierFlags,
         wasShortcutPreviouslyPressed: Bool
     ) -> ShortcutTransition {
+        if isRecordingNewShortcut {
+            return wasShortcutPreviouslyPressed ? .released : .none
+        }
         if let modifierOnlyFlags = currentShortcutOption.modifierOnlyFlags {
             guard shortcutEventType == .flagsChanged else { return .none }
 

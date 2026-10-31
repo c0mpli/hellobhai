@@ -199,11 +199,11 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
         ?? OrbColorVariant.defaultColorInputValue
 
-    @Published private(set) var selectedOrbSize: OrbSizeOption = OrbSizeOption.current
+    @Published private(set) var orbSideLength: CGFloat = OrbSize.currentSideLength
 
-    func setSelectedOrbSize(_ orbSizeOption: OrbSizeOption) {
-        selectedOrbSize = orbSizeOption
-        UserDefaults.standard.set(orbSizeOption.rawValue, forKey: OrbSizeOption.userDefaultsKey)
+    func setOrbSideLength(_ newOrbSideLength: CGFloat) {
+        orbSideLength = newOrbSideLength.rounded()
+        UserDefaults.standard.set(Double(orbSideLength), forKey: OrbSize.userDefaultsKey)
         overlayWindowManager.orbWindowManager.applyOrbSize()
     }
 

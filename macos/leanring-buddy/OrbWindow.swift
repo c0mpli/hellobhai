@@ -30,6 +30,7 @@ enum OrbVisualState: String {
 /// One of the orb.riv built-in color variants (its `color` number input).
 struct OrbColorVariant: Identifiable {
     let colorInputValue: Int
+    let displayName: String
     /// Two colors from the variant's swirl, for the settings swatch.
     let swatchGradientHexColors: [String]
     var id: Int { colorInputValue }
@@ -39,52 +40,37 @@ struct OrbColorVariant: Identifiable {
     /// orb.riv answers to color values 0 through 9; higher values look the
     /// same as 9. Swatch colors were picked from renders of each value.
     static let allVariants: [OrbColorVariant] = [
-        OrbColorVariant(colorInputValue: 0, swatchGradientHexColors: ["#FFE03C", "#FF3B5C"]),
-        OrbColorVariant(colorInputValue: 1, swatchGradientHexColors: ["#FF4FD8", "#3FD0F5"]),
-        OrbColorVariant(colorInputValue: 2, swatchGradientHexColors: ["#FF8A80", "#E8322E"]),
-        OrbColorVariant(colorInputValue: 3, swatchGradientHexColors: ["#FF7A8A", "#FFC93C"]),
-        OrbColorVariant(colorInputValue: 4, swatchGradientHexColors: ["#FFE14D", "#F08A24"]),
-        OrbColorVariant(colorInputValue: 5, swatchGradientHexColors: ["#7DF59A", "#1DB954"]),
-        OrbColorVariant(colorInputValue: 6, swatchGradientHexColors: ["#7FFFF2", "#12BFAE"]),
-        OrbColorVariant(colorInputValue: 7, swatchGradientHexColors: ["#4FC3F7", "#1D4ED8"]),
-        OrbColorVariant(colorInputValue: 8, swatchGradientHexColors: ["#3FD5F5", "#7A4DFF"]),
-        OrbColorVariant(colorInputValue: 9, swatchGradientHexColors: ["#E07BFF", "#6A4DFF"])
+        OrbColorVariant(colorInputValue: 0, displayName: "Rainbow", swatchGradientHexColors: ["#FFE03C", "#FF3B5C"]),
+        OrbColorVariant(colorInputValue: 1, displayName: "Candy", swatchGradientHexColors: ["#FF4FD8", "#3FD0F5"]),
+        OrbColorVariant(colorInputValue: 2, displayName: "Red", swatchGradientHexColors: ["#FF8A80", "#E8322E"]),
+        OrbColorVariant(colorInputValue: 3, displayName: "Coral", swatchGradientHexColors: ["#FF7A8A", "#FFC93C"]),
+        OrbColorVariant(colorInputValue: 4, displayName: "Sunset", swatchGradientHexColors: ["#FFE14D", "#F08A24"]),
+        OrbColorVariant(colorInputValue: 5, displayName: "Green", swatchGradientHexColors: ["#7DF59A", "#1DB954"]),
+        OrbColorVariant(colorInputValue: 6, displayName: "Teal", swatchGradientHexColors: ["#7FFFF2", "#12BFAE"]),
+        OrbColorVariant(colorInputValue: 7, displayName: "Blue", swatchGradientHexColors: ["#4FC3F7", "#1D4ED8"]),
+        OrbColorVariant(colorInputValue: 8, displayName: "Aurora", swatchGradientHexColors: ["#3FD5F5", "#7A4DFF"]),
+        OrbColorVariant(colorInputValue: 9, displayName: "Violet", swatchGradientHexColors: ["#E07BFF", "#6A4DFF"])
     ]
 }
 
-/// How big the orb is on screen, picked in the panel (UserDefaults `orbSize`).
-enum OrbSizeOption: String, CaseIterable {
-    case small
-    case medium
-    case large
+/// How big the orb is on screen, in points, set with the panel's slider
+/// (UserDefaults `orbSideLength`).
+enum OrbSize {
+    static let userDefaultsKey = "orbSideLength"
+    static let defaultSideLength: CGFloat = 88
+    static let allowedSideLengths: ClosedRange<CGFloat> = 48...160
 
-    static let userDefaultsKey = "orbSize"
-
-    var sideLengthInPoints: CGFloat {
-        switch self {
-        case .small: return 64
-        case .medium: return 88
-        case .large: return 116
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .small: return "Small"
-        case .medium: return "Medium"
-        case .large: return "Large"
-        }
-    }
-
-    static var current: OrbSizeOption {
-        OrbSizeOption(rawValue: UserDefaults.standard.string(forKey: userDefaultsKey) ?? "") ?? .medium
+    static var currentSideLength: CGFloat {
+        let storedSideLength = UserDefaults.standard.double(forKey: userDefaultsKey)
+        guard storedSideLength > 0 else { return defaultSideLength }
+        return min(max(CGFloat(storedSideLength), allowedSideLengths.lowerBound), allowedSideLengths.upperBound)
     }
 }
 
 @MainActor
 final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
     static var orbWindowSize: NSSize {
-        let sideLength = OrbSizeOption.current.sideLengthInPoints
+        let sideLength = OrbSize.currentSideLength
         return NSSize(width: sideLength, height: sideLength)
     }
     /// Gap kept between the default position and the screen's right edge.
@@ -350,7 +336,7 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
         let newSize = Self.orbWindowSize
         let currentCenter = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
         let proposedOrigin = NSPoint(x: currentCenter.x - newSize.width / 2, y: currentCenter.y - newSize.height / 2)
-        panel.setFrame(NSRect(origin: Self.originKeptOnScreen(proposedOrigin), size: newSize), display: true, animate: true)
+        panel.setFrame(NSRect(origin: Self.originKeptOnScreen(proposedOrigin), size: newSize), display: true)
         orbFrameInScreenCoordinates = panel.frame
         if UserDefaults.standard.object(forKey: Self.savedOriginXUserDefaultsKey) != nil {
             UserDefaults.standard.set(Double(panel.frame.origin.x), forKey: Self.savedOriginXUserDefaultsKey)

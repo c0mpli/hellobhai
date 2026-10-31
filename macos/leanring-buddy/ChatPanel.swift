@@ -25,6 +25,20 @@ private final class ChatKeyablePanel: NSPanel {
     }
 }
 
+/// The bhai logo (the app icon: orb sending out a pointer), used where a
+/// status dot used to be in the panel header and in the chat.
+struct BhaiLogoView: View {
+    let sideLength: CGFloat
+
+    var body: some View {
+        Image(nsImage: NSApplication.shared.applicationIconImage)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: sideLength, height: sideLength)
+            .accessibilityLabel("bhai")
+    }
+}
+
 enum ChatPanelSide: String {
     case left
     case right
@@ -293,11 +307,8 @@ struct ChatPanelView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(DS.Colors.overlayCursorColor)
-                .frame(width: 8, height: 8)
-                .shadow(color: DS.Colors.overlayCursorColor.opacity(0.6), radius: 4)
+        HStack(spacing: 6) {
+            BhaiLogoView(sideLength: 22)
             Text("bhai")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
@@ -459,9 +470,14 @@ private struct ChatMessageRow: View {
             }
         } else if chatMessage.isStreaming && chatMessage.text.isEmpty {
             // Before the first words arrive.
-            ChatThinkingDots()
+            HStack(alignment: .center, spacing: 8) {
+                BhaiLogoView(sideLength: 20)
+                ChatThinkingDots()
+            }
         } else {
             HStack(alignment: .top, spacing: 8) {
+                BhaiLogoView(sideLength: 20)
+                    .padding(.top, -2)
                 // A thin caret trails the text while it is still streaming.
                 (Text(chatMessage.text) + Text(chatMessage.isStreaming ? "\u{2009}\u{258F}" : "").foregroundColor(DS.Colors.overlayCursorColor))
                     .font(.system(size: 13))

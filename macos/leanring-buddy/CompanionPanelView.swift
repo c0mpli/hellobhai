@@ -45,12 +45,6 @@ struct CompanionPanelView: View {
         ("Haiku", "haiku"),
     ]
 
-    private static let selectableShortcutOptions: [BuddyPushToTalkShortcut.ShortcutOption] = [
-        .controlOption,
-        .shiftControl,
-        .shiftFunction,
-    ]
-
     private var selectedShortcutOption: BuddyPushToTalkShortcut.ShortcutOption {
         BuddyPushToTalkShortcut.ShortcutOption(rawValue: selectedShortcutOptionRawValue) ?? .controlOption
     }
@@ -89,10 +83,6 @@ struct CompanionPanelView: View {
                 startButton
             }
 
-            if companionManager.hasCompletedOnboarding {
-                openChatButton
-            }
-
             // Missing permissions block everything, so they stay in view
             // above the tabs until granted.
             if !companionManager.allPermissionsGranted {
@@ -110,6 +100,7 @@ struct CompanionPanelView: View {
 
             switch selectedSettingsTab {
             case .general:
+                bhaiModeSection
                 modelSection
                 listeningSection
                 if companionManager.allPermissionsGranted {
@@ -138,10 +129,7 @@ struct CompanionPanelView: View {
     private var panelHeader: some View {
         HStack {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(statusDotColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: statusDotColor.opacity(0.6), radius: 4)
+                BhaiLogoView(sideLength: 22)
 
                 Text("bhai")
                     .font(.system(size: 14, weight: .semibold))
@@ -226,35 +214,6 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// Opens the typed chat, which slides in from the side of the screen.
-    private var openChatButton: some View {
-        Button(action: {
-            NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
-            companionManager.showChatPanel()
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: "bubble.left.and.text.bubble.right")
-                    .font(.system(size: 12, weight: .semibold))
-                Text("Open chat")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text("Type instead of talking")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.7))
-            }
-            .foregroundColor(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(DS.Colors.overlayCursorColor.opacity(isOpenChatButtonHovered ? 0.85 : 1))
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isOpenChatButtonHovered = $0 }
-        .pointerCursor()
-    }
-
     private var startButton: some View {
         Button(action: {
             companionManager.triggerOnboarding()
@@ -298,27 +257,43 @@ struct CompanionPanelView: View {
             PanelSectionLabel(title: "Orb")
 
             PanelSettingsRow(iconName: "arrow.up.left.and.arrow.down.right", label: "Size") {
-                PanelSegmentedControl(
-                    options: OrbSizeOption.allCases.map { (label: $0.displayName, optionID: $0.rawValue) },
-                    selectedOptionID: companionManager.selectedOrbSize.rawValue,
-                    onSelectOption: { selectedSizeRawValue in
-                        if let selectedOrbSize = OrbSizeOption(rawValue: selectedSizeRawValue) {
-                            companionManager.setSelectedOrbSize(selectedOrbSize)
-                        }
-                    }
-                )
+                HStack(spacing: 8) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(companionManager.orbSideLength) },
+                            set: { companionManager.setOrbSideLength(CGFloat($0)) }
+                        ),
+                        in: Double(OrbSize.allowedSideLengths.lowerBound)...Double(OrbSize.allowedSideLengths.upperBound),
+                        step: 2
+                    )
+                    .controlSize(.mini)
+                    .tint(DS.Colors.overlayCursorColor)
+                    .frame(width: 120)
+                    .pointerCursor()
+                    Text("\(Int(companionManager.orbSideLength)) pt")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
             }
 
             PanelSettingsRow(iconName: "circle.circle", label: "Color") {
-                HStack(spacing: 4) {
-                    ForEach(OrbColorVariant.allVariants) { orbColorVariant in
-                        OrbColorSwatchButton(
-                            orbColorVariant: orbColorVariant,
-                            isSelected: companionManager.selectedOrbColor == orbColorVariant.colorInputValue,
-                            onSelect: {
-                                companionManager.setSelectedOrbColor(orbColorVariant.colorInputValue)
-                            }
-                        )
+                PanelMenuPicker(
+                    options: OrbColorVariant.allVariants.map { (title: $0.displayName, optionID: String($0.colorInputValue)) },
+                    onSelectOption: { selectedColorInputValue in
+                        if let colorInputValue = Int(selectedColorInputValue) {
+                            companionManager.setSelectedOrbColor(colorInputValue)
+                        }
+                    }
+                ) {
+                    let selectedVariant = OrbColorVariant.allVariants.first { $0.colorInputValue == companionManager.selectedOrbColor } ?? OrbColorVariant.allVariants[OrbColorVariant.defaultColorInputValue]
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(LinearGradient(colors: selectedVariant.swatchGradientHexColors.map { Color(hex: $0) }, startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 12, height: 12)
+                        Text(selectedVariant.displayName)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(DS.Colors.textPrimary)
                     }
                 }
             }
@@ -343,19 +318,8 @@ struct CompanionPanelView: View {
                 }
             }
 
-            PanelSettingsRow(iconName: "keyboard", label: "Shortcut") {
-                // Modifier-only shortcuts on purpose: the event tap is
-                // listen-only and can't swallow Space, so the Space variants
-                // would also switch input source (ctrl+option+space) and
-                // auto-repeat into the frontmost app.
-                PanelMenuPicker(
-                    options: Self.selectableShortcutOptions.map { shortcutOption in
-                        (title: shortcutOption.displayText, optionID: shortcutOption.rawValue)
-                    },
-                    onSelectOption: { selectedShortcutOptionRawValue = $0 }
-                ) {
-                    PanelKeyCapsules(keyLabels: selectedShortcutOption.keyCapsuleLabels)
-                }
+            PanelSettingsRow(iconName: "keyboard", label: "Shortcut", subtitle: "Click, then press 2+ modifier keys") {
+                PanelShortcutRecorder()
             }
         }
     }
@@ -464,14 +428,15 @@ struct CompanionPanelView: View {
         )
     }
 
-    // MARK: - Chat
+    // MARK: - Mode
 
-    /// Speaking always gets a spoken reply; typing gets text, optionally voiced too.
-    private var chatSection: some View {
+    /// Voice (hold the shortcut and talk) or chat (the shortcut and the orb
+    /// open the typed chat).
+    private var bhaiModeSection: some View {
         VStack(alignment: .leading, spacing: 2) {
-            PanelSectionLabel(title: "Chat")
+            PanelSectionLabel(title: "bhai mode")
 
-            PanelSettingsRow(iconName: "command", label: "Mode", subtitle: companionManager.isChatInputMode ? "Shortcut opens the chat" : "Hold shortcut and talk") {
+            PanelSettingsRow(iconName: "command", label: companionManager.isChatInputMode ? "Chat" : "Voice", subtitle: companionManager.isChatInputMode ? "Shortcut and orb open the chat" : "Hold the shortcut and talk") {
                 PanelSegmentedControl(
                     options: [(label: "Voice", optionID: "voice"), (label: "Chat", optionID: "chat")],
                     selectedOptionID: companionManager.isChatInputMode ? "chat" : "voice",
@@ -480,6 +445,16 @@ struct CompanionPanelView: View {
                     }
                 )
             }
+
+        }
+    }
+
+    // MARK: - Chat
+
+    /// Speaking always gets a spoken reply; typing gets text, optionally voiced too.
+    private var chatSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Chat")
 
             PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "Spoken questions always get voice") {
                 PanelSegmentedControl(
@@ -592,20 +567,6 @@ struct CompanionPanelView: View {
             .fill(DS.Colors.background)
             .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 10)
             .shadow(color: Color.black.opacity(0.3), radius: 4, x: 0, y: 2)
-    }
-
-    private var statusDotColor: Color {
-        if !companionManager.isOverlayVisible {
-            return DS.Colors.textTertiary
-        }
-        switch companionManager.voiceState {
-        case .idle:
-            return DS.Colors.success
-        case .listening:
-            return DS.Colors.blue400
-        case .processing, .responding:
-            return DS.Colors.blue400
-        }
     }
 
     private var statusText: String {
@@ -1104,5 +1065,121 @@ private struct PanelRowHoverHighlight: ViewModifier {
 private extension View {
     func panelRowHoverHighlight() -> some View {
         modifier(PanelRowHoverHighlight())
+    }
+}
+
+/// Click to record a new push-to-talk shortcut: hold any two or more
+/// modifier keys (ctrl, option, shift, cmd, fn) and let go. Esc cancels.
+/// Shows a reset button when it isn't the default ctrl + option.
+private struct PanelShortcutRecorder: View {
+    @AppStorage(BuddyPushToTalkShortcut.currentShortcutOptionUserDefaultsKey)
+    private var selectedShortcutOptionRawValue = BuddyPushToTalkShortcut.ShortcutOption.controlOption.rawValue
+    @AppStorage(BuddyPushToTalkShortcut.customModifierFlagsUserDefaultsKey)
+    private var customModifierFlagsRawValue = 0
+
+    @State private var isRecording = false
+    @State private var modifierFlagsHeldWhileRecording: NSEvent.ModifierFlags = []
+    @State private var recordingHint: String?
+    @State private var keyEventMonitor: Any?
+    @State private var isHovered = false
+
+    private var currentKeyLabels: [String] {
+        _ = customModifierFlagsRawValue
+        let currentOption = BuddyPushToTalkShortcut.ShortcutOption(rawValue: selectedShortcutOptionRawValue) ?? .controlOption
+        return currentOption.keyCapsuleLabels
+    }
+
+    private var isDefaultShortcut: Bool {
+        selectedShortcutOptionRawValue == BuddyPushToTalkShortcut.ShortcutOption.controlOption.rawValue
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if !isDefaultShortcut && !isRecording {
+                Button(action: resetToDefault) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .help("Back to ctrl + option")
+                .pointerCursor()
+            }
+            Button(action: { isRecording ? stopRecording() : startRecording() }) {
+                Group {
+                    if isRecording {
+                        let heldKeyLabels = BuddyPushToTalkShortcut.keyLabels(for: modifierFlagsHeldWhileRecording)
+                        if heldKeyLabels.isEmpty {
+                            Text(recordingHint ?? "Press keys...")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(DS.Colors.textPrimary)
+                        } else {
+                            PanelKeyCapsules(keyLabels: heldKeyLabels)
+                        }
+                    } else {
+                        PanelKeyCapsules(keyLabels: currentKeyLabels)
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(isRecording ? 0.12 : (isHovered ? 0.08 : 0)))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(isRecording ? DS.Colors.overlayCursorColor : Color.clear, lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .help("Click to record a new shortcut")
+            .pointerCursor()
+        }
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        recordingHint = nil
+        modifierFlagsHeldWhileRecording = []
+        BuddyPushToTalkShortcut.isRecordingNewShortcut = true
+        // The panel is key while open, so a local monitor sees the keys.
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { keyEvent in
+            if keyEvent.type == .keyDown {
+                if keyEvent.keyCode == 53 { stopRecording() } // Esc cancels
+                return nil
+            }
+            let heldModifierFlags = keyEvent.modifierFlags.intersection(BuddyPushToTalkShortcut.recordableModifierFlags)
+            if heldModifierFlags.isEmpty {
+                // All keys released: the combination is what was held at most.
+                let recordedFlags = modifierFlagsHeldWhileRecording
+                if BuddyPushToTalkShortcut.keyLabels(for: recordedFlags).count >= 2 {
+                    BuddyPushToTalkShortcut.saveRecordedShortcut(modifierFlags: recordedFlags)
+                    customModifierFlagsRawValue = UserDefaults.standard.integer(forKey: BuddyPushToTalkShortcut.customModifierFlagsUserDefaultsKey)
+                    selectedShortcutOptionRawValue = UserDefaults.standard.string(forKey: BuddyPushToTalkShortcut.currentShortcutOptionUserDefaultsKey) ?? selectedShortcutOptionRawValue
+                    stopRecording()
+                } else if !recordedFlags.isEmpty {
+                    modifierFlagsHeldWhileRecording = []
+                    recordingHint = "Use 2+ keys"
+                }
+            } else {
+                modifierFlagsHeldWhileRecording.formUnion(heldModifierFlags)
+            }
+            return keyEvent
+        }
+    }
+
+    private func stopRecording() {
+        if let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+        }
+        keyEventMonitor = nil
+        isRecording = false
+        BuddyPushToTalkShortcut.isRecordingNewShortcut = false
+    }
+
+    private func resetToDefault() {
+        selectedShortcutOptionRawValue = BuddyPushToTalkShortcut.ShortcutOption.controlOption.rawValue
     }
 }
