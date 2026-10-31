@@ -68,6 +68,11 @@ final class ChatPanelManager: ObservableObject {
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
+    var isOpenAndFocused: Bool {
+        guard let panel else { return false }
+        return panel.isVisible && panel.isKeyWindow && !isMinimized
+    }
+
     /// Slides the panel in on the screen the mouse is on and focuses the text field.
     func show() {
         if panel == nil {

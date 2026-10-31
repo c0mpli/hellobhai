@@ -112,6 +112,12 @@ final class CompanionManager: ObservableObject {
         didSet { UserDefaults.standard.set(speaksChatReplies, forKey: "speaksChatReplies") }
     }
 
+    /// What the push-to-talk hotkey does: talk (voice mode) or open the
+    /// typed chat (chat mode). Persisted.
+    @Published var isChatInputMode: Bool = UserDefaults.standard.bool(forKey: "isChatInputMode") {
+        didSet { UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode") }
+    }
+
     /// Which screen edge the chat panel slides in from. Persisted.
     @Published var chatPanelSide: ChatPanelSide = ChatPanelSide(rawValue: UserDefaults.standard.string(forKey: "chatPanelSide") ?? "") ?? .right {
         didSet { UserDefaults.standard.set(chatPanelSide.rawValue, forKey: "chatPanelSide") }
@@ -125,6 +131,16 @@ final class CompanionManager: ObservableObject {
             chatPanelManager = ChatPanelManager(companionManager: self)
         }
         chatPanelManager?.show()
+    }
+
+    /// Chat mode's hotkey: open the chat, or tuck it into its edge tab if it
+    /// is already open and focused.
+    private func toggleChatPanelFromHotkey() {
+        if let chatPanelManager, chatPanelManager.isOpenAndFocused {
+            chatPanelManager.minimize()
+        } else {
+            showChatPanel()
+        }
     }
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -383,6 +399,13 @@ final class CompanionManager: ObservableObject {
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        if isChatInputMode {
+            if case .pressed = transition {
+                NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
+                toggleChatPanelFromHotkey()
+            }
+            return
+        }
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }

@@ -149,16 +149,16 @@ struct CompanionPanelView: View {
     private var introSection: some View {
         if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
             HStack(spacing: 5) {
-                Text("Hold")
+                Text(companionManager.isChatInputMode ? "Press" : "Hold")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
                 PanelKeyCapsules(keyLabels: selectedShortcutOption.keyCapsuleLabels)
-                Text("to talk.")
+                Text(companionManager.isChatInputMode ? "to chat." : "to talk.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(DS.Colors.textSecondary)
             }
         } else if companionManager.allPermissionsGranted {
-            Text("You're all set. Hit Start to meet hellobhai.")
+            Text("You're all set. Hit Start to meet bhai.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -406,6 +406,16 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: 2) {
             PanelSectionLabel(title: "Chat")
 
+            PanelSettingsRow(iconName: "command", label: "Mode", subtitle: companionManager.isChatInputMode ? "Shortcut opens the chat" : "Hold shortcut and talk") {
+                PanelSegmentedControl(
+                    options: [(label: "Voice", optionID: "voice"), (label: "Chat", optionID: "chat")],
+                    selectedOptionID: companionManager.isChatInputMode ? "chat" : "voice",
+                    onSelectOption: { selectedOptionID in
+                        companionManager.isChatInputMode = selectedOptionID == "chat"
+                    }
+                )
+            }
+
             PanelSettingsRow(iconName: "mic", label: "When you speak", subtitle: "Always replies out loud") {
                 PanelStatusLabel(statusText: "Voice", statusColor: DS.Colors.success)
             }
@@ -564,8 +574,8 @@ struct CompanionPanelView: View {
 private struct PanelVoiceSection: View {
     @ObservedObject var localTTSClient: LocalTTSClient
 
-    private static let englishPreviewSentence = "Hi, I'm hellobhai. Hold the shortcut and ask me anything."
-    private static let hindiPreviewSentence = "नमस्ते, मैं hellobhai हूँ। शॉर्टकट दबाकर कुछ भी पूछो।"
+    private static let englishPreviewSentence = "Hi, I'm bhai. Hold the shortcut and ask me anything."
+    private static let hindiPreviewSentence = "नमस्ते, मैं भाई हूँ। शॉर्टकट दबाकर कुछ भी पूछो।"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
