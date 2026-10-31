@@ -133,6 +133,34 @@ struct BuddyPointerView: View {
     }
 }
 
+/// The original pointer from before the orb: a plain equilateral triangle
+/// in the overlay blue with a blue glow. Used by the cursor voice style so
+/// it looks the way that style always did.
+struct ClassicTrianglePointerShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var trianglePath = Path()
+        let sideLength = min(rect.width, rect.height)
+        let triangleHeight = sideLength * sqrt(3.0) / 2.0
+        trianglePath.move(to: CGPoint(x: rect.midX, y: rect.midY - triangleHeight / 1.5))
+        trianglePath.addLine(to: CGPoint(x: rect.midX - sideLength / 2, y: rect.midY + triangleHeight / 3))
+        trianglePath.addLine(to: CGPoint(x: rect.midX + sideLength / 2, y: rect.midY + triangleHeight / 3))
+        trianglePath.closeSubpath()
+        return trianglePath
+    }
+}
+
+struct ClassicTrianglePointerView: View {
+    /// Extra glow while flying (0 at rest).
+    let extraGlowRadius: CGFloat
+
+    var body: some View {
+        ClassicTrianglePointerShape()
+            .fill(DS.Colors.overlayCursorColor)
+            .frame(width: 16, height: 16)
+            .shadow(color: DS.Colors.overlayCursorColor, radius: 8 + extraGlowRadius, x: 0, y: 0)
+    }
+}
+
 // PreferenceKey for tracking bubble size
 struct SizePreferenceKey: PreferenceKey {
     static var defaultValue: CGSize = .zero
@@ -390,7 +418,13 @@ struct BlueCursorView: View {
             // follows the pen or the mouse a fast spring smooths the jumps;
             // while flying there is NO implicit animation — the frame-by-frame
             // bezier timer moves it directly at 60fps for a smooth arc.
-            BuddyPointerView(extraGlowRadius: max(0, buddyFlightScale - 1.0) * 20)
+            Group {
+                if isCursorStyle {
+                    ClassicTrianglePointerView(extraGlowRadius: max(0, buddyFlightScale - 1.0) * 20)
+                } else {
+                    BuddyPointerView(extraGlowRadius: max(0, buddyFlightScale - 1.0) * 20)
+                }
+            }
                 .rotationEffect(.degrees(pointerRotationDegrees))
                 .scaleEffect(buddyFlightScale)
                 .opacity(pointerDisplayOpacity)
