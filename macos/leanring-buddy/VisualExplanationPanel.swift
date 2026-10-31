@@ -208,7 +208,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
             backing: .buffered,
             defer: false
         )
-        createdPanel.title = "hellobhai"
+        createdPanel.title = "bhai"
         // The page draws its own title bar with the topic; only the red close
         // and green zoom lights are kept, and they show on hover.
         createdPanel.titlebarAppearsTransparent = true

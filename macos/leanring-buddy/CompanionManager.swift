@@ -17,7 +17,9 @@ import SwiftUI
 struct CompanionChatMessage: Identifiable, Equatable {
     let id = UUID()
     let isFromUser: Bool
-    let text: String
+    var text: String
+    /// True while Claude's reply is still streaming in.
+    var isStreaming = false
 }
 
 enum CompanionVoiceState {
@@ -110,6 +112,17 @@ final class CompanionManager: ObservableObject {
         didSet { UserDefaults.standard.set(speaksChatReplies, forKey: "speaksChatReplies") }
     }
 
+    /// What the push-to-talk hotkey does: talk (voice mode) or open the
+    /// typed chat (chat mode). Persisted.
+    @Published var isChatInputMode: Bool = UserDefaults.standard.bool(forKey: "isChatInputMode") {
+        didSet { UserDefaults.standard.set(isChatInputMode, forKey: "isChatInputMode") }
+    }
+
+    /// Which screen edge the chat panel slides in from. Persisted.
+    @Published var chatPanelSide: ChatPanelSide = ChatPanelSide(rawValue: UserDefaults.standard.string(forKey: "chatPanelSide") ?? "") ?? .right {
+        didSet { UserDefaults.standard.set(chatPanelSide.rawValue, forKey: "chatPanelSide") }
+    }
+
     /// The slide-in chat panel, created the first time it opens.
     private var chatPanelManager: ChatPanelManager?
 
@@ -118,6 +131,16 @@ final class CompanionManager: ObservableObject {
             chatPanelManager = ChatPanelManager(companionManager: self)
         }
         chatPanelManager?.show()
+    }
+
+    /// Chat mode's hotkey: open the chat, or tuck it into its edge tab if it
+    /// is already open and focused.
+    private func toggleChatPanelFromHotkey() {
+        if let chatPanelManager, chatPanelManager.isOpenAndFocused {
+            chatPanelManager.minimize()
+        } else {
+            showChatPanel()
+        }
     }
 
     /// The currently running AI response task, if any. Cancelled when the user
@@ -452,6 +475,13 @@ final class CompanionManager: ObservableObject {
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
+        if isChatInputMode {
+            if case .pressed = transition {
+                NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
+                toggleChatPanelFromHotkey()
+            }
+            return
+        }
         switch transition {
         case .pressed:
             guard !buddyDictationManager.isDictationInProgress else { return }
@@ -519,7 +549,7 @@ final class CompanionManager: ObservableObject {
     // MARK: - Companion Prompt
 
     private static let companionVoiceResponseSystemPrompt = """
-    you're hellobhai, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
+    you're bhai (users call you by saying "hello bhai"), a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
 
     rules:
     - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
@@ -631,7 +661,18 @@ final class CompanionManager: ObservableObject {
         let hinglishScript = repliesAreSpoken
             ? "natural hinglish written in devanagari, because the reply is read aloud"
             : "natural hinglish in the same script the user typed in"
-        return "(the user typed this turn instead of speaking. reply in english if they wrote english; if they wrote hindi or hinglish in any script, reply in \(hinglishScript). the reply is shown in a chat panel.)"
+        return "(the user typed this turn instead of speaking. reply in english if they wrote english; if they wrote hindi or hinglish in any script, reply in \(hinglishScript). the reply is shown in a chat panel, so when something needs the user's yes, ask in the reply and wait for their next message. they cannot circle things on screen while typing.)"
+    }
+
+    /// What a reply looks like in the chat while it streams: finished tags
+    /// removed, and a tag that has only half arrived hidden so "[POI" never
+    /// flashes on screen.
+    static func chatDisplayText(forPartialReply partialReply: String) -> String {
+        var displayText = partialReply.replacingOccurrences(of: "\\[[A-Z0-9_]+(:[^\\]]*)?\\]", with: "", options: .regularExpression)
+        if let unfinishedTagRange = displayText.range(of: "\\[[A-Z0-9_]*(:[^\\]]*)?$", options: .regularExpression) {
+            displayText.removeSubrange(unfinishedTagRange)
+        }
+        return displayText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func replyLanguageNote(forTranscript transcript: String) -> String {
@@ -640,6 +681,19 @@ final class CompanionManager: ObservableObject {
             return "(the user spoke hindi or hinglish this turn: reply and narrate in natural hinglish written in devanagari.)"
         }
         return "(the user spoke english this turn: reply and narrate in english only, even if earlier turns were in hindi.)"
+    }
+
+    private func updateChatMessage(id chatMessageID: UUID, text: String, isStreaming: Bool) {
+        guard let messageIndex = chatMessages.firstIndex(where: { $0.id == chatMessageID }) else { return }
+        chatMessages[messageIndex].text = text
+        chatMessages[messageIndex].isStreaming = isStreaming
+    }
+
+    private func markAllChatMessagesFinishedStreaming() {
+        chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
+        for messageIndex in chatMessages.indices where chatMessages[messageIndex].isStreaming {
+            chatMessages[messageIndex].isStreaming = false
+        }
     }
 
     /// Sends a message typed in the chat panel through the same pipeline as
@@ -722,14 +776,17 @@ final class CompanionManager: ObservableObject {
                         }
                     }
 
+                    // The reply streams into the chat as it arrives, like a chat app.
+                    let streamingReplyMessage = CompanionChatMessage(isFromUser: false, text: "", isStreaming: true)
+                    chatMessages.append(streamingReplyMessage)
                     let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
                         images: imagesForThisStep,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
                         conversationHistory: historyForAPI,
                         userPrompt: userPromptForThisStep,
                         allowsMacTools: true,
-                        onTextChunk: { _ in
-                            // No streaming text display — spinner stays until TTS plays
+                        onTextChunk: { [weak self] accumulatedReplyText in
+                            self?.updateChatMessage(id: streamingReplyMessage.id, text: Self.chatDisplayText(forPartialReply: accumulatedReplyText), isStreaming: true)
                         }
                     )
 
@@ -827,8 +884,13 @@ final class CompanionManager: ObservableObject {
 
                     print("🧠 Step \(agentStepNumber): \(computerActions.count) on-screen action(s), history \(conversationHistory.count)")
 
-                    if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        chatMessages.append(CompanionChatMessage(isFromUser: false, text: spokenText))
+                    let finalReplyText = spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if finalReplyText.isEmpty {
+                        chatMessages.removeAll { $0.id == streamingReplyMessage.id }
+                    } else {
+                        updateChatMessage(id: streamingReplyMessage.id, text: finalReplyText, isStreaming: false)
+                    }
+                    if !finalReplyText.isEmpty {
                         if repliesAreSpoken {
                             // Let the previous round's narration finish rather than cutting it off.
                             while isSpeakingAloud {
@@ -867,9 +929,13 @@ final class CompanionManager: ObservableObject {
                     try await Task.sleep(for: .milliseconds(800))
                 }
             } catch is CancellationError {
-                // User spoke again — response was interrupted
+                // User spoke again — response was interrupted. Keep whatever
+                // streamed in, but stop showing it as still typing.
+                markAllChatMessagesFinishedStreaming()
             } catch {
                 print("⚠️ Companion response error: \(error)")
+                chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
+                markAllChatMessagesFinishedStreaming()
                 chatMessages.append(CompanionChatMessage(isFromUser: false, text: "couldn't reach claude. make sure claude code is installed and logged in."))
                 if repliesAreSpoken {
                     speakErrorFallback()
@@ -1616,7 +1682,7 @@ final class CompanionManager: ObservableObject {
     """
 
     private static let onboardingDemoSystemPrompt = """
-    you're hellobhai, a small blue cursor buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
+    you're bhai, a small buddy living on the user's screen. you're showing off during onboarding — look at their screen and find ONE specific, concrete thing to point at. pick something with a clear name or identity: a specific app icon (say its name), a specific word or phrase of text you can read, a specific filename, a specific button label, a specific tab title, a specific image you can describe. do NOT point at vague things like "a window" or "some text" — be specific about exactly what you see.
 
     make a short quirky 3-6 word observation about the specific thing you picked — something fun, playful, or curious that shows you actually read/recognized it. no emojis ever. NEVER quote or repeat text you see on screen — just react to it. keep it to 6 words max, no exceptions.
 
