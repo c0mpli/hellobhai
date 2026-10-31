@@ -138,10 +138,10 @@ enum DS {
 
         // ── Overlay Cursor ───────────────────────────────────────────
 
-        /// The purple cursor/bubble color used in OverlayWindow (matches the notch indicator).
+        /// The blue cursor/bubble color used in OverlayWindow (matches the notch indicator).
         /// Kept distinct from the accent since it serves a different purpose
         /// (screen overlay vs in-app UI).
-        static let overlayCursorColor = Color(hex: "#a855f7")
+        static let overlayCursorColor = Color(hex: "#3380FF")
 
         // ── Floating Button Gradient ─────────────────────────────────
 

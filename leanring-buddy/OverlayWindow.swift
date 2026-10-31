@@ -694,8 +694,8 @@ struct BlueCursorView: View {
 // MARK: - Notch Speaking Indicator
 
 /// A black pill hugging the MacBook notch while hellobhai speaks, like the
-/// iPhone's Dynamic Island: a pulsing purple orb in the left "ear" and
-/// animated purple voice bars in the right one. On displays without a notch
+/// iPhone's Dynamic Island: a pulsing blue orb in the left "ear" and
+/// animated blue voice bars in the right one. On displays without a notch
 /// the same pill hangs from the top center of the screen.
 private struct NotchSpeakingIndicatorView: View {
     let screenFrame: CGRect
@@ -703,8 +703,8 @@ private struct NotchSpeakingIndicatorView: View {
     /// Width of each side section that sticks out past the notch.
     private static let earWidth: CGFloat = 58
     private static let voiceBarCount = 5
-    private static let purpleGradient = LinearGradient(
-        colors: [Color(hex: "#c084fc"), Color(hex: "#7c3aed")],
+    private static let blueGradient = LinearGradient(
+        colors: [Color(hex: "#7AB0FF"), Color(hex: "#2563EB")],
         startPoint: .top,
         endPoint: .bottom
     )
@@ -745,19 +745,19 @@ private struct NotchSpeakingIndicatorView: View {
                     style: .continuous
                 )
                 .fill(Color.black)
-                .shadow(color: Color(hex: "#a855f7").opacity(0.55), radius: 12, y: 2)
+                .shadow(color: Color(hex: "#3380FF").opacity(0.55), radius: 12, y: 2)
             )
         }
     }
 
-    /// A small purple orb that gently breathes, like Siri's listening orb.
+    /// A small blue orb that gently breathes, like Siri's listening orb.
     private func pulsingOrb(elapsedSeconds: TimeInterval) -> some View {
         let breathingScale = 0.85 + 0.15 * sin(elapsedSeconds * 4)
         return Circle()
-            .fill(Self.purpleGradient)
+            .fill(Self.blueGradient)
             .frame(width: 13, height: 13)
             .scaleEffect(breathingScale)
-            .shadow(color: Color(hex: "#a855f7"), radius: 5)
+            .shadow(color: Color(hex: "#3380FF"), radius: 5)
     }
 
     /// Bars that bob at slightly different speeds so they read as speech.
@@ -768,7 +768,7 @@ private struct NotchSpeakingIndicatorView: View {
                 let barSpeed = 7.0 + Double(barIndex % 3) * 1.7
                 let barHeightFraction = 0.35 + 0.65 * abs(sin(elapsedSeconds * barSpeed + barPhase))
                 Capsule()
-                    .fill(Self.purpleGradient)
+                    .fill(Self.blueGradient)
                     .frame(width: 3, height: 16 * barHeightFraction)
             }
         }
