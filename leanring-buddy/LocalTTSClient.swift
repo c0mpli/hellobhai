@@ -66,6 +66,8 @@ final class LocalTTSClient: ObservableObject {
     @Published private(set) var selectedSupertonicVoice: Supertonic3Voice
     @Published private(set) var kokoroLoadState: NeuralVoiceLoadState = .notLoaded
     @Published private(set) var supertonicLoadState: NeuralVoiceLoadState = .notLoaded
+    /// Lets the panel's preview buttons show a stop state while audio plays.
+    @Published private(set) var isSpeaking = false
 
     private var kokoroManager: KokoroAneManager?
     private var supertonicManager: Supertonic3Manager?
@@ -74,6 +76,10 @@ final class LocalTTSClient: ObservableObject {
     private let systemSpeechSynthesizer = AVSpeechSynthesizer()
     private var audioPlayer: AVAudioPlayer?
     private var playbackTask: Task<Void, Never>?
+    /// The clip being synthesized ahead of playback. Unstructured, so
+    /// cancelling playbackTask does not reach it; stopPlayback and
+    /// unloadKokoro cancel it so a dropped sentence stops using Kokoro.
+    private var pendingClipSynthesisTask: Task<Data, Error>?
     /// Bumped on every speakText so a cancelled playback finishing late
     /// can't clear the speaking flag for the playback that replaced it.
     private var playbackGeneration = 0
@@ -183,6 +189,9 @@ final class LocalTTSClient: ObservableObject {
         guard let kokoroManagerToUnload = kokoroManager else { return }
         kokoroManager = nil
         kokoroLoadState = .notLoaded
+        // A cancelled Kokoro clip retries on Supertonic-3 instead of
+        // reloading the model chain we are about to free.
+        pendingClipSynthesisTask?.cancel()
         Task { await kokoroManagerToUnload.cleanup() }
     }
 
@@ -196,11 +205,11 @@ final class LocalTTSClient: ObservableObject {
         playbackGeneration += 1
         let thisPlaybackGeneration = playbackGeneration
 
-        onSpeakingStateChanged(true)
+        setSpeaking(true)
         playbackTask = Task {
             await speakSentences(Self.splitIntoSentences(text), fullText: text)
             if playbackGeneration == thisPlaybackGeneration {
-                onSpeakingStateChanged(false)
+                setSpeaking(false)
             }
         }
     }
@@ -223,6 +232,7 @@ final class LocalTTSClient: ObservableObject {
         }
 
         var nextClipSynthesisTask: Task<Data, Error>? = makeClipSynthesisTask(for: sentences[0])
+        pendingClipSynthesisTask = nextClipSynthesisTask
 
         for sentenceIndex in sentences.indices {
             guard let clipSynthesisTask = nextClipSynthesisTask else { break }
@@ -242,6 +252,7 @@ final class LocalTTSClient: ObservableObject {
             nextClipSynthesisTask = nextSentenceIndex < sentences.count
                 ? makeClipSynthesisTask(for: sentences[nextSentenceIndex])
                 : nil
+            pendingClipSynthesisTask = nextClipSynthesisTask
 
             // Each clip is its own WAV (24 kHz from Kokoro, 44.1 kHz from
             // Supertonic), so AVAudioPlayer handles the rate per clip.
@@ -258,10 +269,17 @@ final class LocalTTSClient: ObservableObject {
     func stopPlayback() {
         playbackTask?.cancel()
         playbackTask = nil
+        pendingClipSynthesisTask?.cancel()
+        pendingClipSynthesisTask = nil
         audioPlayer?.stop()
         audioPlayer = nil
         systemSpeechSynthesizer.stopSpeaking(at: .immediate)
-        onSpeakingStateChanged(false)
+        setSpeaking(false)
+    }
+
+    private func setSpeaking(_ isSpeakingNow: Bool) {
+        isSpeaking = isSpeakingNow
+        onSpeakingStateChanged(isSpeakingNow)
     }
 
     private enum NeuralSynthesisError: Error {
@@ -270,8 +288,8 @@ final class LocalTTSClient: ObservableObject {
 
     /// Routes one sentence: Devanagari always goes to Supertonic-3 ("hi"),
     /// since Kokoro has no Hindi. Other sentences go to Kokoro when it is the
-    /// selected engine and loaded; if Kokoro throws, that sentence is retried
-    /// on Supertonic-3 ("en").
+    /// selected engine and loaded; if Kokoro throws (including when cancelled
+    /// by unloadKokoro), that sentence is retried on Supertonic-3 ("en").
     private func makeClipSynthesisTask(for sentence: String) -> Task<Data, Error> {
         let sentenceContainsDevanagari = Self.containsDevanagari(sentence)
         let kokoroManagerForSentence = (selectedEngine == .kokoro && !sentenceContainsDevanagari) ? kokoroManager : nil
@@ -285,7 +303,6 @@ final class LocalTTSClient: ObservableObject {
                 do {
                     return try await kokoroManagerForSentence.synthesize(text: sentence, voice: kokoroVoiceForSentence)
                 } catch {
-                    try Task.checkCancellation()
                     print("⚠️ Kokoro failed on a sentence, retrying with Supertonic-3: \(error)")
                 }
             }

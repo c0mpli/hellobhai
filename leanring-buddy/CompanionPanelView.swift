@@ -23,6 +23,8 @@ struct CompanionPanelView: View {
 
     @State private var isPermissionListExpanded = false
     @State private var isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
+    @State private var isCloseButtonHovered = false
+    @State private var isQuitButtonHovered = false
 
     private static let panelWidth: CGFloat = 340
 
@@ -33,6 +35,12 @@ struct CompanionPanelView: View {
         ("Opus", "opus"),
         ("Sonnet", "sonnet"),
         ("Haiku", "haiku"),
+    ]
+
+    private static let selectableShortcutOptions: [BuddyPushToTalkShortcut.ShortcutOption] = [
+        .controlOption,
+        .shiftControl,
+        .shiftFunction,
     ]
 
     private var selectedShortcutOption: BuddyPushToTalkShortcut.ShortcutOption {
@@ -118,10 +126,11 @@ struct CompanionPanelView: View {
                     .frame(width: 20, height: 20)
                     .background(
                         Circle()
-                            .fill(Color.white.opacity(0.08))
+                            .fill(Color.white.opacity(isCloseButtonHovered ? 0.14 : 0.08))
                     )
             }
             .buttonStyle(.plain)
+            .onHover { isCloseButtonHovered = $0 }
             .pointerCursor()
         }
         .padding(.horizontal, 16)
@@ -154,7 +163,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(DS.Colors.textSecondary)
 
-                Text("Some permissions were revoked. Grant all four below to keep using hellobhai.")
+                Text("Some permissions were revoked. Grant them below to keep using hellobhai.")
                     .font(.system(size: 11))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -173,7 +182,7 @@ struct CompanionPanelView: View {
 
                 Text("Nothing runs in the background. hellobhai only takes a screenshot when you hold the hotkey, and speech is transcribed on-device.")
                     .font(.system(size: 11))
-                    .foregroundColor(Color(red: 0.9, green: 0.4, blue: 0.4))
+                    .foregroundColor(DS.Colors.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -227,7 +236,7 @@ struct CompanionPanelView: View {
                 // state, so poll it while the panel is open.
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
                     if WhisperTranscriptionProvider.isWhisperModelLoaded {
-                        PanelStatusLabel(statusText: "Whisper large-v3", statusColor: DS.Colors.accentText)
+                        PanelStatusLabel(statusText: "Whisper large-v3", statusColor: DS.Colors.success)
                     } else {
                         PanelStatusLabel(statusText: "Loading Whisper", statusColor: DS.Colors.warning)
                     }
@@ -235,38 +244,23 @@ struct CompanionPanelView: View {
             }
 
             PanelSettingsRow(iconName: "keyboard", label: "Shortcut") {
-                Menu {
-                    ForEach(BuddyPushToTalkShortcut.ShortcutOption.allCases, id: \.rawValue) { shortcutOption in
-                        Button(shortcutOption.displayText) {
-                            selectedShortcutOptionRawValue = shortcutOption.rawValue
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        PanelKeyCapsules(keyLabels: selectedShortcutOption.keyCapsuleLabels)
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundColor(DS.Colors.textTertiary)
-                    }
+                // Modifier-only shortcuts on purpose: the event tap is
+                // listen-only and can't swallow Space, so the Space variants
+                // would also switch input source (ctrl+option+space) and
+                // auto-repeat into the frontmost app.
+                PanelMenuPicker(
+                    options: Self.selectableShortcutOptions.map { shortcutOption in
+                        (title: shortcutOption.displayText, optionID: shortcutOption.rawValue)
+                    },
+                    onSelectOption: { selectedShortcutOptionRawValue = $0 }
+                ) {
+                    PanelKeyCapsules(keyLabels: selectedShortcutOption.keyCapsuleLabels)
                 }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .fixedSize()
-                .pointerCursor()
             }
         }
     }
 
     // MARK: - Permissions
-
-    private var numberOfPermissionsGranted: Int {
-        [
-            companionManager.hasMicrophonePermission,
-            companionManager.hasAccessibilityPermission,
-            companionManager.hasScreenRecordingPermission,
-            companionManager.hasScreenContentPermission,
-        ].filter { $0 }.count
-    }
 
     private var permissionsSection: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -384,8 +378,8 @@ struct CompanionPanelView: View {
                     }
                 ))
                 .toggleStyle(.switch)
-                .tint(DS.Colors.accent)
-                .scaleEffect(0.8)
+                .tint(DS.Colors.overlayCursorColor)
+                .controlSize(.mini)
                 .labelsHidden()
                 .pointerCursor()
             }
@@ -399,9 +393,7 @@ struct CompanionPanelView: View {
                     companionManager.replayOnboarding()
                 }) {
                     PanelSettingsRow(iconName: "play.circle", label: "Replay onboarding") {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(DS.Colors.textTertiary)
+                        EmptyView()
                     }
                     .contentShape(Rectangle())
                 }
@@ -438,9 +430,10 @@ struct CompanionPanelView: View {
                     Text("Quit hellobhai")
                         .font(.system(size: 12, weight: .medium))
                 }
-                .foregroundColor(DS.Colors.textTertiary)
+                .foregroundColor(isQuitButtonHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary)
             }
             .buttonStyle(.plain)
+            .onHover { isQuitButtonHovered = $0 }
             .pointerCursor()
 
             Spacer()
@@ -468,7 +461,7 @@ struct CompanionPanelView: View {
         }
         switch companionManager.voiceState {
         case .idle:
-            return DS.Colors.accentText
+            return DS.Colors.success
         case .listening:
             return DS.Colors.blue400
         case .processing, .responding:
@@ -534,7 +527,7 @@ private struct PanelVoiceSection: View {
                                 localTTSClient.setSelectedKokoroVoice(selectedKokoroVoice)
                             }
                         )
-                        PanelPreviewButton {
+                        PanelPreviewButton(localTTSClient: localTTSClient) {
                             localTTSClient.speakText(Self.englishPreviewSentence)
                         }
                     }
@@ -549,9 +542,9 @@ private struct PanelVoiceSection: View {
             ) {
                 HStack(spacing: 6) {
                     PanelMenuPicker(
-                        selectedTitle: localTTSClient.selectedSupertonicVoice.rawValue,
+                        selectedTitle: Self.supertonicVoiceDisplayName(localTTSClient.selectedSupertonicVoice),
                         options: Supertonic3Voice.allCases.map { supertonicVoice in
-                            (title: supertonicVoice.rawValue, optionID: supertonicVoice.rawValue)
+                            (title: Self.supertonicVoiceDisplayName(supertonicVoice), optionID: supertonicVoice.rawValue)
                         },
                         onSelectOption: { selectedSupertonicVoiceRawValue in
                             if let selectedSupertonicVoice = Supertonic3Voice(rawValue: selectedSupertonicVoiceRawValue) {
@@ -559,7 +552,7 @@ private struct PanelVoiceSection: View {
                             }
                         }
                     )
-                    PanelPreviewButton {
+                    PanelPreviewButton(localTTSClient: localTTSClient) {
                         localTTSClient.speakText(
                             localTTSClient.selectedEngine == .kokoro ? Self.hindiPreviewSentence : Self.englishPreviewSentence
                         )
@@ -567,7 +560,7 @@ private struct PanelVoiceSection: View {
                 }
             }
 
-            PanelSettingsRow(iconName: "cpu", label: "Status") {
+            PanelSettingsRow(iconName: "cpu", label: "Speaking with") {
                 PanelStatusLabel(statusText: engineStatus.text, statusColor: engineStatus.color)
             }
         }
@@ -578,7 +571,7 @@ private struct PanelVoiceSection: View {
         let supertonicStatus: (text: String, color: Color)
         switch localTTSClient.supertonicLoadState {
         case .ready:
-            supertonicStatus = ("Supertonic-3", DS.Colors.accentText)
+            supertonicStatus = ("Supertonic-3", DS.Colors.success)
         case .failed:
             supertonicStatus = ("System voice", DS.Colors.warning)
         case .loading, .notLoaded:
@@ -589,12 +582,18 @@ private struct PanelVoiceSection: View {
 
         switch localTTSClient.kokoroLoadState {
         case .ready:
-            return ("Kokoro-82M", DS.Colors.accentText)
+            return ("Kokoro-82M", DS.Colors.success)
         case .loading, .notLoaded:
-            return ("Loading Kokoro, using \(supertonicStatus.text)", DS.Colors.warning)
+            return ("\(supertonicStatus.text) (Kokoro loading)", DS.Colors.warning)
         case .failed:
-            return ("Kokoro failed, using \(supertonicStatus.text)", DS.Colors.warning)
+            return ("\(supertonicStatus.text) (Kokoro failed)", DS.Colors.warning)
         }
+    }
+
+    /// "F1" -> "Female 1", "M3" -> "Male 3".
+    private static func supertonicVoiceDisplayName(_ supertonicVoice: Supertonic3Voice) -> String {
+        let genderLabel = supertonicVoice.rawValue.hasPrefix("M") ? "Male" : "Female"
+        return "\(genderLabel) \(supertonicVoice.rawValue.dropFirst())"
     }
 
     /// "af_heart" -> "Heart (US, F)". The prefix encodes accent (a = US,
@@ -668,6 +667,9 @@ private struct PanelPermissionRow: View {
     let grantAction: () -> Void
     var findAppAction: (() -> Void)? = nil
 
+    @State private var isGrantButtonHovered = false
+    @State private var isFindAppButtonHovered = false
+
     var body: some View {
         PanelSettingsRow(
             iconName: iconName,
@@ -676,7 +678,7 @@ private struct PanelPermissionRow: View {
             iconColor: isGranted ? DS.Colors.textTertiary : DS.Colors.warning
         ) {
             if isGranted {
-                PanelStatusLabel(statusText: "Granted", statusColor: DS.Colors.accentText, textColor: DS.Colors.accentText)
+                PanelStatusLabel(statusText: "Granted", statusColor: DS.Colors.success)
             } else {
                 HStack(spacing: 6) {
                     Button(action: grantAction) {
@@ -685,9 +687,10 @@ private struct PanelPermissionRow: View {
                             .foregroundColor(DS.Colors.textOnAccent)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Capsule().fill(DS.Colors.accent))
+                            .background(Capsule().fill(DS.Colors.accent.opacity(isGrantButtonHovered ? 0.85 : 1)))
                     }
                     .buttonStyle(.plain)
+                    .onHover { isGrantButtonHovered = $0 }
                     .pointerCursor()
 
                     if let findAppAction {
@@ -697,9 +700,14 @@ private struct PanelPermissionRow: View {
                                 .foregroundColor(DS.Colors.textSecondary)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
-                                .background(Capsule().stroke(DS.Colors.borderSubtle, lineWidth: 0.8))
+                                .background(
+                                    Capsule()
+                                        .fill(Color.white.opacity(isFindAppButtonHovered ? 0.06 : 0))
+                                        .overlay(Capsule().strokeBorder(DS.Colors.borderSubtle, lineWidth: 0.8))
+                                )
                         }
                         .buttonStyle(.plain)
+                        .onHover { isFindAppButtonHovered = $0 }
                         .pointerCursor()
                     }
                 }
@@ -722,7 +730,11 @@ private struct PanelStatusLabel: View {
             Text(statusText)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(textColor)
-                .lineLimit(1)
+                // Two lines so the longer fallback text, e.g.
+                // "Supertonic-3 (Kokoro loading)", isn't cut off.
+                .lineLimit(2)
+                .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -790,7 +802,7 @@ private struct PanelSegmentButton: View {
                 .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(isSelected ? DS.Colors.accent : Color.clear)
+                        .fill(isSelected ? DS.Colors.overlayCursorColor : Color.clear)
                 )
                 .contentShape(Rectangle())
         }
@@ -801,10 +813,10 @@ private struct PanelSegmentButton: View {
 }
 
 /// A compact dropdown: current value + chevron, native menu on click.
-private struct PanelMenuPicker: View {
-    let selectedTitle: String
+private struct PanelMenuPicker<SelectedValueLabel: View>: View {
     let options: [(title: String, optionID: String)]
     let onSelectOption: (String) -> Void
+    @ViewBuilder let selectedValueLabel: () -> SelectedValueLabel
 
     @State private var isHovered = false
 
@@ -815,9 +827,7 @@ private struct PanelMenuPicker: View {
             }
         } label: {
             HStack(spacing: 4) {
-                Text(selectedTitle)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.textPrimary)
+                selectedValueLabel()
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundColor(DS.Colors.textTertiary)
@@ -841,14 +851,32 @@ private struct PanelMenuPicker: View {
     }
 }
 
+extension PanelMenuPicker where SelectedValueLabel == Text {
+    init(selectedTitle: String, options: [(title: String, optionID: String)], onSelectOption: @escaping (String) -> Void) {
+        self.init(options: options, onSelectOption: onSelectOption) {
+            Text(selectedTitle)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(DS.Colors.textPrimary)
+        }
+    }
+}
+
+/// Plays a voice sample; shows stop while anything is speaking and stops it.
 private struct PanelPreviewButton: View {
+    @ObservedObject var localTTSClient: LocalTTSClient
     let action: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "play.fill")
+        Button(action: {
+            if localTTSClient.isSpeaking {
+                localTTSClient.stopPlayback()
+            } else {
+                action()
+            }
+        }) {
+            Image(systemName: localTTSClient.isSpeaking ? "stop.fill" : "play.fill")
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundColor(isHovered ? DS.Colors.textPrimary : DS.Colors.textSecondary)
                 .frame(width: 22, height: 22)
@@ -859,7 +887,7 @@ private struct PanelPreviewButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("Preview voice")
+        .help(localTTSClient.isSpeaking ? "Stop" : "Preview voice")
         .pointerCursor()
     }
 }
