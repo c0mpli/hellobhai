@@ -4,12 +4,15 @@
 //
 //  A floating panel near the cursor where Claude explains things live while
 //  narrating: either a whiteboard it sketches on (drawings) or a notes page
-//  it writes on (summaries, lists, key points). The whiteboard is
-//  Excalidraw-style. Claude streams one JSON drawing
-//  command per line (zones, boxes, icons, arrows, notes, step badges, flows,
-//  charts…); each command is drawn as it's handed over, in hand-drawn
-//  rough.js strokes and Excalidraw's Virgil handwriting font, animating in as
-//  if drawn by a pen. Icons are real vector drawings (Lucide), never emoji.
+//  it writes on (summaries, lists, key points). Both look like Clicky's
+//  real-time graphics: cream grid paper, a warm title bar with the topic,
+//  flat pastel shapes with one clean hand-drawn stroke, and the Patrick Hand
+//  marker font. Claude streams one JSON command per line (headings, rows of
+//  token boxes, boxes, arrows, force arrows, math shapes, notes…). Everything
+//  is drawn live: strokes trace along their path, fills fade in after the
+//  outline, and text writes left to right, while a small gold triangle pen
+//  travels with the drawing head and a soft synthesized pencil scratch
+//  plays. Icons are real vector drawings (Lucide), never emoji.
 //
 //  The web view is locked down: a CSP blocks all network loads, navigation
 //  away from the page is refused, storage is non-persistent, and commands are
@@ -21,7 +24,10 @@ import WebKit
 
 @MainActor
 final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
-    private static let panelContentSize = NSSize(width: 720, height: 490)
+    private static let panelContentSize = NSSize(width: 760, height: 580)
+
+    /// Height of the warm title bar the page draws; the traffic lights sit in it.
+    private static let titleBarHeight: CGFloat = 28
 
     private var panel: NSPanel?
     private var webView: WKWebView?
@@ -65,7 +71,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     private static let iconShapesJSON: String = bundledResourceData(named: "icons", withExtension: "json")
         .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
-    private static let virgilFontBase64: String = bundledResourceData(named: "Virgil", withExtension: "woff2")?
+    /// Patrick Hand: the upright marker-style handwriting used on the board and notes.
+    private static let handwritingFontBase64: String = bundledResourceData(named: "PatrickHand", withExtension: "woff2")?
         .base64EncodedString() ?? ""
 
     /// Icon names Claude may use, listed in its drawing instructions.
@@ -168,12 +175,17 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     private func createPanel() {
         let createdPanel = NSPanel(
             contentRect: NSRect(origin: .zero, size: Self.panelContentSize),
-            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .fullSizeContentView, .utilityWindow],
+            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         createdPanel.title = "hellobhai"
+        // The page draws its own title bar with the topic; only the red close
+        // and green zoom lights are kept, and they show on hover.
         createdPanel.titlebarAppearsTransparent = true
+        createdPanel.titleVisibility = .hidden
+        createdPanel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        setTrafficLightsVisible(false, in: createdPanel)
         createdPanel.isFloatingPanel = true
         createdPanel.level = .floating
         createdPanel.hidesOnDeactivate = false
@@ -182,19 +194,49 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         // Resize freely; the canvas refits to any shape, but keep it usable.
         createdPanel.minSize = NSSize(width: 360, height: 260)
         createdPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        createdPanel.backgroundColor = NSColor(red: 0.071, green: 0.071, blue: 0.086, alpha: 1)
+        // Cream paper, so resizing never flashes a different color.
+        createdPanel.backgroundColor = NSColor(red: 0.973, green: 0.961, blue: 0.925, alpha: 1)
 
         let webViewConfiguration = WKWebViewConfiguration()
         // Nothing drawn here should ever be persisted to disk.
         webViewConfiguration.websiteDataStore = .nonPersistent()
-        let createdWebView = WKWebView(frame: createdPanel.contentLayoutRect, configuration: webViewConfiguration)
+        // The pencil scratch is synthesized with WebAudio and has to start
+        // without a click on the page.
+        webViewConfiguration.mediaTypesRequiringUserActionForPlayback = []
+
+        let containerView = PanelHoverTrackingView(frame: NSRect(origin: .zero, size: Self.panelContentSize))
+        containerView.onHoverChanged = { [weak self, weak createdPanel] isHovering in
+            guard let self, let createdPanel else { return }
+            self.setTrafficLightsVisible(isHovering, in: createdPanel)
+        }
+
+        let createdWebView = WKWebView(frame: containerView.bounds, configuration: webViewConfiguration)
         createdWebView.autoresizingMask = [.width, .height]
         createdWebView.navigationDelegate = self
         createdWebView.setValue(false, forKey: "drawsBackground")
-        createdPanel.contentView = createdWebView
+        containerView.addSubview(createdWebView)
+
+        // The web view would swallow clicks on the page-drawn title bar, so a
+        // transparent strip on top of it hands them to the window for dragging.
+        let windowDragStrip = WindowDragStripView(frame: NSRect(
+            x: 0,
+            y: containerView.bounds.height - Self.titleBarHeight,
+            width: containerView.bounds.width,
+            height: Self.titleBarHeight
+        ))
+        windowDragStrip.autoresizingMask = [.width, .minYMargin]
+        containerView.addSubview(windowDragStrip)
+
+        createdPanel.contentView = containerView
 
         panel = createdPanel
         webView = createdWebView
+    }
+
+    private func setTrafficLightsVisible(_ isVisible: Bool, in targetPanel: NSPanel) {
+        for windowButtonType in [NSWindow.ButtonType.closeButton, .zoomButton] {
+            targetPanel.standardWindowButton(windowButtonType)?.animator().alphaValue = isVisible ? 1 : 0
+        }
     }
 
     /// To the right of the cursor and vertically centered on it, flipping to
@@ -225,7 +267,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:">
         <style>
-        @font-face { font-family: Virgil; src: url(data:font/woff2;base64,\(virgilFontBase64)) format("woff2"); }
+        @font-face { font-family: "Patrick Hand"; src: url(data:font/woff2;base64,\(handwritingFontBase64)) format("woff2"); }
+        \(sharedPaperStylesheet)
         \(boardStylesheet)
         \(katexCSSSource)
         </style>
@@ -235,6 +278,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <script>const ICON_SHAPES = \(iconShapesJSON);</script>
         </head>
         <body>
+        <div id="titlebar"><span id="topic"></span></div>
         <svg id="board" viewBox="0 0 800 500" preserveAspectRatio="xMidYMid meet">
           <g id="zone-layer"></g>
           <g id="edge-layer"></g>
@@ -244,38 +288,336 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         </svg>
         <div id="drawing-indicator">drawing…</div>
         <div id="navigation-hint">scroll or drag to move · pinch to zoom · double-click to fit</div>
+        \(penElementHTML)
+        <script>\(penAndScratchSoundScript)</script>
         <script>\(boardRendererScript)</script>
         </body>
         </html>
         """
     }
 
+    /// Cream grid paper, the warm title bar with the centered lowercase topic,
+    /// the gold pen, and the drawing indicator: shared by the board and notes.
+    private static let sharedPaperStylesheet = """
+    html, body { margin: 0; height: 100%; overflow: hidden; background-color: #f8f5ec;
+      background-image: linear-gradient(rgba(84,72,40,0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(84,72,40,0.07) 1px, transparent 1px);
+      background-size: 22px 22px; background-position: -1px 5px; }
+    #titlebar { position: absolute; top: 0; left: 0; right: 0; height: 28px; z-index: 5;
+      background: linear-gradient(#e9e6dc, #e1ded3); border-bottom: 1px solid #d6d2c5;
+      display: flex; align-items: center; justify-content: center;
+      font: 13px -apple-system, "SF Pro Text", system-ui, sans-serif; color: #8a8578; letter-spacing: 0.1px;
+      -webkit-user-select: none; cursor: default; }
+    #topic { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #pen { position: fixed; left: 0; top: 0; width: 17px; height: 17px; z-index: 20; pointer-events: none;
+      opacity: 0; transition: opacity 0.35s; will-change: transform;
+      filter: drop-shadow(0 1px 1.5px rgba(110,80,0,0.35)) drop-shadow(0 0 3px rgba(217,176,46,0.35)); }
+    /* Shows at once when drawing starts; only resting fades it out. */
+    #pen.visible { opacity: 1; transition: none; }
+    #drawing-indicator { position: absolute; right: 16px; bottom: 8px; z-index: 5; color: #a39d8f; font: 17px "Patrick Hand", sans-serif;
+      animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; pointer-events: none; }
+    #drawing-indicator.finished { animation: none; opacity: 0; }
+    @keyframes hb-blink { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+    """
+
+    /// The gold rounded "play" triangle that travels with the drawing head.
+    private static let penElementHTML = """
+    <svg id="pen" viewBox="0 0 16 16"><path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#d9b02e"/></svg>
+    """
+
     private static let boardStylesheet = """
-    html, body { margin: 0; height: 100%; background: #121216; overflow: hidden; }
-    #board { position: absolute; inset: 26px 0 0 0; width: 100%; height: calc(100% - 26px); cursor: grab; touch-action: none; }
+    #board { position: absolute; inset: 28px 0 0 0; width: 100%; height: calc(100% - 28px); cursor: grab; touch-action: none; }
     #board.panning { cursor: grabbing; }
-    #navigation-hint { position: absolute; left: 14px; bottom: 8px; color: #6f6a7d; font: 13px Virgil, sans-serif;
+    #navigation-hint { position: absolute; left: 16px; bottom: 8px; color: #a39d8f; font: 15px "Patrick Hand", sans-serif;
       opacity: 0; transition: opacity 0.6s; pointer-events: none; }
     #navigation-hint.visible { opacity: 1; }
-    #drawing-indicator { position: absolute; right: 14px; bottom: 8px; color: #8b8598; font: 15px Virgil, sans-serif;
-      animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; }
-    #drawing-indicator.finished { animation: none; opacity: 0; }
-    /* A dark outline behind every label keeps it readable over strokes. */
-    text { stroke: #121216; stroke-width: 4px; stroke-linejoin: round; paint-order: stroke; }
-    /* Text sitting on a filled shape (sticky notes, step badges) needs no outline. */
-    text.on-fill { stroke: none; }
-    .hb-appear { animation: hb-appear 0.45s ease-out both; }
-    .hb-pop { transform-box: fill-box; transform-origin: center; animation: hb-pop 0.45s ease-out both; }
+    /* Free labels get a paper-colored halo so they stay readable over lines. */
+    text.halo { stroke: #f8f5ec; stroke-width: 5px; stroke-linejoin: round; paint-order: stroke; }
+    /* The heading is bold marker: Patrick Hand has one weight, so the ink is
+       thickened with a same-colored outline. */
+    text.heading { stroke: #2a2a2a; stroke-width: 1.4px; stroke-linejoin: round; paint-order: normal; }
     .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s 3 ease-in-out; }
     .hb-shake { animation: hb-shake 0.6s ease-in-out 2; }
-    .hb-glow { filter: drop-shadow(0 0 6px #facc15) drop-shadow(0 0 2px #facc15); }
-    .hb-grow { transform-box: fill-box; transform-origin: bottom; animation: hb-grow 0.8s ease-out both; }
-    @keyframes hb-appear { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    @keyframes hb-pop { from { opacity: 0; transform: scale(0.3); } 70% { transform: scale(1.12); } to { opacity: 1; transform: scale(1); } }
-    @keyframes hb-pulse { 0%,100% { transform: scale(1); filter: none; } 50% { transform: scale(1.05); filter: drop-shadow(0 0 10px #a855f7); } }
+    .hb-glow { filter: drop-shadow(0 0 5px #e9c84a) drop-shadow(0 0 2px #e9c84a); }
+    @keyframes hb-pulse { 0%,100% { transform: scale(1); filter: none; } 50% { transform: scale(1.05); filter: drop-shadow(0 0 8px #e3c35a); } }
     @keyframes hb-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
-    @keyframes hb-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-    @keyframes hb-blink { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+    """
+
+    /// The live-drawing engine shared by the board and notes. Elements handed
+    /// to queuePenLeaves start hidden and are revealed one at a time, in
+    /// order: strokes trace along their path (duration proportional to their
+    /// length), fills fade in after their outline, and text writes left to
+    /// right with a clip reveal. The gold triangle pen follows the drawing
+    /// head and glides between elements, and a WebAudio pencil scratch plays
+    /// only while the pen is actually drawing.
+    private static let penAndScratchSoundScript = """
+    const penElement = document.getElementById('pen');
+    const pendingPenLeaves = [];
+    const penPosition = { x: 0, y: 0, hasBeenPlaced: false };
+    // Seconds since the previous animation frame; the pen program reads it.
+    let penFrameDelta = 0;
+    let penIdleSeconds = 0;
+    // Set by the page once its stream has ended, so the pen can rest out of view.
+    let isPenStreamFinished = false;
+
+    // Soft pencil-on-paper scratch: looping white noise through a band-pass
+    // filter, with its loudness jittered every frame while a stroke draws and
+    // short ticks while text writes. Silent while the pen glides or idles.
+    const scratchSound = (() => {
+      let audioContext = null, noiseGain = null, noiseFilter = null;
+      function ensureAudio() {
+        if (audioContext) { return true; }
+        try {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 2, audioContext.sampleRate);
+          const noiseSamples = noiseBuffer.getChannelData(0);
+          for (let sampleIndex = 0; sampleIndex < noiseSamples.length; sampleIndex += 1) { noiseSamples[sampleIndex] = Math.random() * 2 - 1; }
+          const noiseSource = audioContext.createBufferSource();
+          noiseSource.buffer = noiseBuffer;
+          noiseSource.loop = true;
+          noiseFilter = audioContext.createBiquadFilter();
+          noiseFilter.type = 'bandpass';
+          noiseFilter.frequency.value = 2600;
+          noiseFilter.Q.value = 0.9;
+          noiseGain = audioContext.createGain();
+          noiseGain.gain.value = 0;
+          noiseSource.connect(noiseFilter);
+          noiseFilter.connect(noiseGain);
+          noiseGain.connect(audioContext.destination);
+          noiseSource.start();
+          return true;
+        } catch (audioError) { audioContext = null; return false; }
+      }
+      function wakeAudio() {
+        if (!ensureAudio()) { return false; }
+        if (audioContext.state === 'suspended') { audioContext.resume().catch(() => {}); }
+        return true;
+      }
+      return {
+        scratchWhileStroking() {
+          if (!wakeAudio()) { return; }
+          const now = audioContext.currentTime;
+          noiseGain.gain.setTargetAtTime(0.05 * (0.5 + Math.random() * 0.5), now, 0.015);
+          noiseFilter.frequency.setTargetAtTime(1900 + Math.random() * 1500, now, 0.03);
+        },
+        tickWhileWriting() {
+          if (!wakeAudio()) { return; }
+          const now = audioContext.currentTime;
+          noiseGain.gain.cancelScheduledValues(now);
+          noiseGain.gain.setValueAtTime(noiseGain.gain.value, now);
+          noiseGain.gain.linearRampToValueAtTime(0.03 + Math.random() * 0.025, now + 0.008);
+          noiseGain.gain.setTargetAtTime(0, now + 0.014, 0.012);
+          noiseFilter.frequency.setTargetAtTime(2600 + Math.random() * 1400, now, 0.01);
+        },
+        silence() {
+          if (!audioContext) { return; }
+          noiseGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.03);
+        }
+      };
+    })();
+
+    // How a leaf is revealed: 'stroke' traces along its outline, 'fill'
+    // fades in, 'write' unclips left to right.
+    function penLeafKind(leafElement) {
+      const tagName = leafElement.tagName.toLowerCase();
+      if (['path', 'line', 'polyline', 'polygon', 'circle', 'ellipse', 'rect'].includes(tagName)) {
+        const fillValue = leafElement.getAttribute('fill');
+        const strokeValue = leafElement.getAttribute('stroke');
+        const hasStroke = strokeValue && strokeValue !== 'none' && strokeValue !== 'transparent';
+        const hasFill = fillValue && fillValue !== 'none' && fillValue !== 'transparent';
+        if (hasStroke && !hasFill && typeof leafElement.getTotalLength === 'function') { return 'stroke'; }
+        return 'fill';
+      }
+      return 'write';
+    }
+
+    function setWriteClip(leafElement, revealedFraction) {
+      const hiddenPercent = (1 - revealedFraction) * 100;
+      const clipValue = revealedFraction >= 1 ? '' : `inset(-30% ${hiddenPercent}% -30% -4%)`;
+      leafElement.style.clipPath = clipValue;
+      leafElement.style.webkitClipPath = clipValue;
+    }
+
+    // Hides the leaves right away and queues them for the pen. Within each
+    // shape (leaves sharing a parent) fills wait until its outline is drawn.
+    function queuePenLeaves(leafElements) {
+      const orderedLeaves = [];
+      let currentRun = [];
+      const flushRun = () => {
+        orderedLeaves.push(...currentRun.filter((leaf) => leaf.penKind !== 'fill'), ...currentRun.filter((leaf) => leaf.penKind === 'fill'));
+        currentRun = [];
+      };
+      for (const leafElement of leafElements) {
+        leafElement.setAttribute('data-pen', 'queued');
+        leafElement.penKind = penLeafKind(leafElement);
+        if (leafElement.penKind === 'stroke') {
+          const strokeLength = leafElement.getTotalLength() || 1;
+          leafElement.penStrokeLength = strokeLength;
+          leafElement.style.strokeDasharray = `${strokeLength} ${strokeLength + 10}`;
+          leafElement.style.strokeDashoffset = strokeLength;
+        } else if (leafElement.penKind === 'fill') {
+          leafElement.style.opacity = 0;
+        } else {
+          setWriteClip(leafElement, 0);
+        }
+        if (currentRun.length && currentRun[0].parentNode !== leafElement.parentNode) { flushRun(); }
+        currentRun.push(leafElement);
+      }
+      flushRun();
+      pendingPenLeaves.push(...orderedLeaves);
+    }
+
+    function revealLeafInstantly(leafElement) {
+      leafElement.style.strokeDasharray = '';
+      leafElement.style.strokeDashoffset = '';
+      leafElement.style.opacity = '';
+      setWriteClip(leafElement, 1);
+      leafElement.setAttribute('data-pen', 'done');
+    }
+
+    // When a step falls behind its narration, the pen speeds up to catch up.
+    function penSpeedMultiplier() {
+      return Math.min(1 + Math.max(0, pendingPenLeaves.length - 8) * 0.07, 4);
+    }
+
+    function screenPointOnStroke(leafElement, lengthAlongStroke) {
+      const localPoint = leafElement.getPointAtLength(lengthAlongStroke);
+      const screenMatrix = leafElement.getScreenCTM();
+      if (!screenMatrix) { return [penPosition.x, penPosition.y]; }
+      return [screenMatrix.a * localPoint.x + screenMatrix.c * localPoint.y + screenMatrix.e,
+        screenMatrix.b * localPoint.x + screenMatrix.d * localPoint.y + screenMatrix.f];
+    }
+
+    // The right edge of the part of a text that's written so far.
+    function screenPointOfWritingHead(leafElement, revealedFraction) {
+      const leafRect = leafElement.getBoundingClientRect();
+      const lineHeight = Math.min(leafRect.height, 30);
+      return [leafRect.left + leafRect.width * revealedFraction, leafRect.top + lineHeight * 0.62];
+    }
+
+    function placePen(screenX, screenY) {
+      penPosition.x = screenX; penPosition.y = screenY; penPosition.hasBeenPlaced = true;
+      // The triangle sits just right of and below the drawing head, like a nib.
+      penElement.style.transform = `translate(${screenX + 4}px, ${screenY - 4}px)`;
+      penElement.classList.add('visible');
+    }
+
+    function* glidePenTo(targetPointProvider) {
+      const [targetX, targetY] = targetPointProvider();
+      if (!penPosition.hasBeenPlaced) { placePen(targetX, targetY); return; }
+      const startX = penPosition.x, startY = penPosition.y;
+      const glideDistance = Math.hypot(targetX - startX, targetY - startY);
+      if (glideDistance < 3) { return; }
+      const glideSeconds = Math.min(Math.max(glideDistance / 1500, 0.08), 0.32);
+      scratchSound.silence();
+      let elapsedSeconds = 0;
+      while (elapsedSeconds < glideSeconds) {
+        elapsedSeconds += penFrameDelta * penSpeedMultiplier();
+        const progress = Math.min(elapsedSeconds / glideSeconds, 1);
+        const easedProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        // Re-read the target every frame: the camera or layout may be moving.
+        const [currentTargetX, currentTargetY] = targetPointProvider();
+        placePen(startX + (currentTargetX - startX) * easedProgress, startY + (currentTargetY - startY) * easedProgress);
+        yield;
+      }
+    }
+
+    // Fills fading in after their outline. They fade on the pen's own clock
+    // (not a CSS transition) while the pen moves on to the next stroke.
+    const fadingFills = [];
+    function advanceFadingFills() {
+      for (let fadeIndex = fadingFills.length - 1; fadeIndex >= 0; fadeIndex -= 1) {
+        const fade = fadingFills[fadeIndex];
+        fade.elapsedSeconds += penFrameDelta;
+        const fadeProgress = Math.min(fade.elapsedSeconds / 0.35, 1);
+        fade.leafElement.style.opacity = fadeProgress;
+        if (fadeProgress >= 1) { revealLeafInstantly(fade.leafElement); fadingFills.splice(fadeIndex, 1); }
+      }
+    }
+
+    function* drawLeafWithPen(leafElement) {
+      if (leafElement.penKind === 'fill') {
+        fadingFills.push({ leafElement, elapsedSeconds: 0 });
+        return;
+      }
+      if (leafElement.penKind === 'stroke') {
+        const strokeLength = leafElement.penStrokeLength;
+        yield* glidePenTo(() => screenPointOnStroke(leafElement, 0));
+        const screenMatrix = leafElement.getScreenCTM();
+        const screenScale = screenMatrix ? Math.hypot(screenMatrix.a, screenMatrix.b) : 1;
+        const strokeSeconds = Math.min(Math.max(strokeLength * screenScale / 620, 0.12), 1.3);
+        let elapsedSeconds = 0;
+        while (elapsedSeconds < strokeSeconds) {
+          if (!leafElement.isConnected) { return; }
+          elapsedSeconds += penFrameDelta * penSpeedMultiplier();
+          const progress = Math.min(elapsedSeconds / strokeSeconds, 1);
+          leafElement.style.strokeDashoffset = strokeLength * (1 - progress);
+          placePen(...screenPointOnStroke(leafElement, strokeLength * progress));
+          scratchSound.scratchWhileStroking();
+          yield;
+        }
+        revealLeafInstantly(leafElement);
+        return;
+      }
+      yield* glidePenTo(() => screenPointOfWritingHead(leafElement, 0));
+      const characterCount = Math.max(String(leafElement.textContent || '').trim().length, 1);
+      const writeSeconds = Math.min(Math.max(characterCount * 0.05, 0.25), 1.8);
+      let elapsedSeconds = 0, lastTickedCharacter = -1;
+      scratchSound.silence();
+      while (elapsedSeconds < writeSeconds) {
+        if (!leafElement.isConnected) { return; }
+        elapsedSeconds += penFrameDelta * penSpeedMultiplier();
+        const progress = Math.min(elapsedSeconds / writeSeconds, 1);
+        setWriteClip(leafElement, progress);
+        placePen(...screenPointOfWritingHead(leafElement, progress));
+        // One soft tick every couple of letters.
+        const currentCharacter = Math.floor(progress * characterCount / 2);
+        if (currentCharacter !== lastTickedCharacter) { lastTickedCharacter = currentCharacter; scratchSound.tickWhileWriting(); }
+        yield;
+      }
+      revealLeafInstantly(leafElement);
+    }
+
+    function* penProgram() {
+      while (true) {
+        if (!pendingPenLeaves.length) {
+          advanceFadingFills();
+          scratchSound.silence();
+          penIdleSeconds += penFrameDelta;
+          if (isPenStreamFinished && penIdleSeconds > 1.2) { penElement.classList.remove('visible'); }
+          yield;
+          continue;
+        }
+        penIdleSeconds = 0;
+        const nextLeaf = pendingPenLeaves.shift();
+        // Shapes redrawn by a relayout replace their old elements.
+        if (!nextLeaf.isConnected) { continue; }
+        const leafAnimation = drawLeafWithPen(nextLeaf);
+        while (true) {
+          advanceFadingFills();
+          let animationStep;
+          try { animationStep = leafAnimation.next(); } catch (leafError) { console.log(leafError); revealLeafInstantly(nextLeaf); break; }
+          if (animationStep.done) { break; }
+          yield;
+        }
+      }
+    }
+
+    function isPenBusy() { return pendingPenLeaves.length > 0 || penIdleSeconds === 0; }
+
+    const penAnimation = penProgram();
+    let previousPenFrameTime = null;
+    function runPenFrame(frameTime) {
+      penFrameDelta = previousPenFrameTime === null ? 0 : Math.min((frameTime - previousPenFrameTime) / 1000, 0.1);
+      previousPenFrameTime = frameTime;
+      try { penAnimation.next(); } catch (penError) { console.log(penError); }
+      requestAnimationFrame(runPenFrame);
+    }
+    requestAnimationFrame(runPenFrame);
+
+    function setPanelTopic(topicText) {
+      document.getElementById('topic').textContent = String(topicText || '').toLowerCase();
+    }
     """
 
     /// Draws handed-over commands one at a time with a short gap, so even a
@@ -292,10 +634,30 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     const motionLayer = document.getElementById('motion-layer');
     // Title and captions sit here, positioned from the bounds of everything else.
     const titleLayer = document.getElementById('title-layer');
-    const roughCanvas = rough.svg(board);
-    const HAND_FONT = 'Virgil, "SF Pro Rounded", system-ui, sans-serif';
-    const COLORS = { purple: '#a855f7', blue: '#60a5fa', green: '#4ade80', orange: '#fb923c', pink: '#f472b6',
-      cyan: '#22d3ee', yellow: '#facc15', red: '#f87171', fg: '#f4f2f7', muted: '#a59fb3' };
+    const roughCanvas = rough.svg(board, { options: { roughness: 0.45, bowing: 0.5, disableMultiStroke: true, disableMultiStrokeFill: true, preserveVertices: true } });
+    const HAND_FONT = '"Patrick Hand", "Chalkboard SE", system-ui, sans-serif';
+    const INK = '#2a2a2a';
+    const MUTED_INK = '#8a8578';
+    const PAPER = '#f8f5ec';
+    // Clicky's flat pastels: a light fill, a mid outline for filled shapes,
+    // and a strong ink for lines, curves, force arrows, and colored text.
+    const PALETTE = {
+      blue:   { fill: '#d6e4f5', outline: '#6fa0e3', ink: '#2f5fc4' },
+      pink:   { fill: '#f6d5d0', outline: '#e39a90', ink: '#c9604f' },
+      green:  { fill: '#d5efd5', outline: '#8fcf8f', ink: '#3f9a4a' },
+      gray:   { fill: '#dcdcd8', outline: '#8d8d8d', ink: '#888888' },
+      steel:  { fill: '#b4b4b1', outline: '#858583', ink: '#6a6a68' },
+      purple: { fill: '#b9a6f5', outline: '#7c5ce6', ink: '#6a4bd8' },
+      yellow: { fill: '#f8ecc0', outline: '#e3c35a', ink: '#c99a1e' },
+      orange: { fill: '#fbe2c2', outline: '#e9a23b', ink: '#e9a23b' },
+      red:    { fill: '#f6d0cf', outline: '#e07a7a', ink: '#d14b4b' },
+      cyan:   { fill: '#d2eef0', outline: '#6cc4cc', ink: '#2a9aa6' }
+    };
+    const COLORS = { fg: INK, muted: MUTED_INK, gold: '#d4a72c' };
+    for (const [paletteName, paletteEntry] of Object.entries(PALETTE)) { COLORS[paletteName] = paletteEntry.ink; }
+    // One clean, very slightly wobbly stroke (no rough.js multi-stroke sketchiness).
+    const CLEAN_STROKE = { roughness: 0.45, bowing: 0.5, disableMultiStroke: true, disableMultiStrokeFill: true, preserveVertices: true };
+    const ARROW_INK = '#3a3a3a';
     const GLIDE_SECONDS = 0.45;
 
     const layoutGraph = new dagre.graphlib.Graph({ compound: true, multigraph: true });
@@ -314,7 +676,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     let isDrawingCommand = false;
     let isStreamFinished = false;
 
-    function colorOf(colorName, fallbackName) { return COLORS[colorName] || COLORS[fallbackName] || COLORS.purple; }
+    function colorOf(colorName, fallbackName) { return COLORS[colorName] || COLORS[fallbackName] || COLORS.fg; }
+    function fillOf(colorName, fallbackName) { return (PALETTE[colorName] || PALETTE[fallbackName] || PALETTE.gray).fill; }
+    function outlineOf(colorName, fallbackName) { return (PALETTE[colorName] || PALETTE[fallbackName] || PALETTE.gray).outline; }
     function translucent(hexColor, alpha) {
       const red = parseInt(hexColor.slice(1, 3), 16), green = parseInt(hexColor.slice(3, 5), 16), blue = parseInt(hexColor.slice(5, 7), 16);
       return `rgba(${red},${green},${blue},${alpha})`;
@@ -331,15 +695,21 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return (Math.abs(hash) % 2147483000) + 1;
     }
 
-    function drawStrokesIn(groupElement, durationSeconds) {
-      groupElement.querySelectorAll('path').forEach((pathElement) => {
-        const strokeLength = pathElement.getTotalLength();
-        pathElement.style.strokeDasharray = strokeLength;
-        pathElement.style.strokeDashoffset = strokeLength;
-        pathElement.getBoundingClientRect();
-        pathElement.style.transition = `stroke-dashoffset ${durationSeconds || 0.55}s ease-out`;
-        pathElement.style.strokeDashoffset = 0;
-      });
+    // Hands everything drawn since the last call to the pen, in drawing
+    // order. Elements inside a container marked data-pen="done" (arrows and
+    // groups redrawn by a relayout) appear instantly instead.
+    const PEN_LEAF_SELECTOR = 'path, line, polyline, polygon, circle, ellipse, rect, text, foreignObject';
+    function queueUnrevealedBoardElements() {
+      const newLeaves = [];
+      for (const layer of [zoneLayer, edgeLayer, mainLayer, titleLayer]) {
+        layer.querySelectorAll(PEN_LEAF_SELECTOR).forEach((leafElement) => {
+          if (leafElement.closest('[data-pen]')) { return; }
+          const enclosingFormula = leafElement.parentElement && leafElement.parentElement.closest('foreignObject');
+          if (enclosingFormula) { return; }
+          newLeaves.push(leafElement);
+        });
+      }
+      if (newLeaves.length) { queuePenLeaves(newLeaves); }
     }
 
     function wrapIntoLines(text, maxCharactersPerLine) {
@@ -355,10 +725,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     }
 
     function addText(parentElement, x, centerY, text, options) {
-      const { size = 17, color = 'fg', anchor = 'middle', maxCharacters = 0, fill, animate = true } = options || {};
+      const { size = 22, color = 'fg', anchor = 'middle', maxCharacters = 0, fill } = options || {};
       const lines = maxCharacters ? wrapIntoLines(text, maxCharacters) : [String(text)];
       const lineHeight = size * 1.15;
-      const textElement = svgElement('text', { x, y: centerY - (lines.length - 1) * lineHeight / 2,
+      const textElement = svgElement('text', { x, y: centerY - (lines.length - 1) * lineHeight / 2 + size * 0.15,
         'text-anchor': anchor, 'dominant-baseline': 'middle', 'font-size': size, 'font-family': HAND_FONT,
         fill: fill || colorOf(color, 'fg') });
       lines.forEach((lineText, lineIndex) => {
@@ -366,8 +736,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         lineElement.textContent = lineText;
         textElement.appendChild(lineElement);
       });
-      if (animate) { textElement.classList.add('hb-appear'); }
-      if (fill) { textElement.classList.add('on-fill'); }
+      // Labels floating on the board (not inside a shape) get a paper halo.
+      if (parentElement === mainLayer || parentElement === edgeLayer) { textElement.classList.add('halo'); }
       parentElement.appendChild(textElement);
       // Free-standing labels on the board never land on top of each other.
       if (parentElement === mainLayer) { moveLabelToFreeSpot(textElement); }
@@ -427,7 +797,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (!iconShapes) { return null; }
       const scale = size / 24;
       const groupElement = svgElement('g', { transform: `translate(${centerX - size / 2},${centerY - size / 2}) scale(${scale})` });
-      const strokeOptions = { stroke: colorOf(colorName, 'fg'), strokeWidth: 2.3 / scale, roughness: 0.45, bowing: 0.4, seed: stableSeed(iconName) };
+      const strokeOptions = { ...CLEAN_STROKE, roughness: 0.3, stroke: colorOf(colorName, 'fg'), strokeWidth: 2 / scale, seed: stableSeed(iconName) };
       for (const shape of iconShapes) {
         let roughNode = null;
         if (shape[0] === 'p') { roughNode = roughCanvas.path(shape[1], strokeOptions); }
@@ -440,14 +810,57 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         if (roughNode) { groupElement.appendChild(roughNode); }
       }
       parentElement.appendChild(groupElement);
-      drawStrokesIn(groupElement, 0.7);
       return groupElement;
     }
 
+    // A flat pastel fill with one clean outline, like Clicky's boxes.
     function shapeOptions(colorName, seedText) {
-      const strokeColor = colorOf(colorName, 'purple');
-      return { stroke: strokeColor, strokeWidth: 2.4, roughness: 1.4, bowing: 1.2, seed: stableSeed(seedText),
-        fill: translucent(strokeColor, 0.2), fillStyle: 'hachure', hachureGap: 7, fillWeight: 1.1, hachureAngle: -41 };
+      return { ...CLEAN_STROKE, stroke: outlineOf(colorName, 'blue'), strokeWidth: 2.1, seed: stableSeed(seedText),
+        fill: fillOf(colorName, 'blue'), fillStyle: 'solid' };
+    }
+
+    // A straight arrow with a small open chevron head, drawn as two strokes
+    // (shaft, then head) so the pen traces the shaft first.
+    function drawStraightArrow(parentElement, fromX, fromY, toX, toY, options) {
+      const { color = ARROW_INK, width = 1.5, headLength = 11, seedText = '' } = options || {};
+      const arrowGroup = svgElement('g');
+      const strokeOptions = { ...CLEAN_STROKE, roughness: 0.3, stroke: color, strokeWidth: width, seed: stableSeed('arrow' + seedText + fromX + fromY + toX + toY) };
+      arrowGroup.appendChild(roughCanvas.line(fromX, fromY, toX, toY, strokeOptions));
+      const headAngle = Math.atan2(toY - fromY, toX - fromX);
+      arrowGroup.appendChild(roughCanvas.linearPath([
+        [toX - headLength * Math.cos(headAngle - 0.5), toY - headLength * Math.sin(headAngle - 0.5)],
+        [toX, toY],
+        [toX - headLength * Math.cos(headAngle + 0.5), toY - headLength * Math.sin(headAngle + 0.5)]], { ...strokeOptions, roughness: 0.15 }));
+      parentElement.appendChild(arrowGroup);
+      return arrowGroup;
+    }
+
+    // Numbered step badge: a small pale-yellow circle with a thin dark ring.
+    function drawStepBadge(parentElement, centerX, centerY, stepNumber) {
+      const badgeGroup = svgElement('g');
+      badgeGroup.appendChild(roughCanvas.circle(centerX, centerY, 20, { ...CLEAN_STROKE, roughness: 0.25, stroke: '#3a3a3a', strokeWidth: 1.3,
+        fill: '#f7edc4', fillStyle: 'solid', seed: stableSeed('step' + stepNumber) }));
+      addText(badgeGroup, centerX, centerY - 1, stepNumber, { size: 14 });
+      parentElement.appendChild(badgeGroup);
+      return badgeGroup;
+    }
+
+    // Gold check mark, centered at the given point.
+    function drawCheckMark(parentElement, centerX, centerY, size) {
+      const checkSize = size || 22;
+      const checkElement = roughCanvas.linearPath([[centerX - checkSize * 0.45, centerY - checkSize * 0.02],
+        [centerX - checkSize * 0.12, centerY + checkSize * 0.3], [centerX + checkSize * 0.48, centerY - checkSize * 0.38]],
+        { ...CLEAN_STROKE, roughness: 0.3, stroke: COLORS.gold, strokeWidth: 3.4, seed: stableSeed('check' + centerX + centerY) });
+      checkElement.querySelectorAll('path').forEach((pathElement) => { pathElement.setAttribute('stroke-linecap', 'round'); pathElement.setAttribute('stroke-linejoin', 'round'); });
+      parentElement.appendChild(checkElement);
+      return checkElement;
+    }
+
+    // Text width in board units, measured with the handwriting font.
+    const measuringContext = document.createElement('canvas').getContext('2d');
+    function measureTextWidth(text, size) {
+      measuringContext.font = `${size}px ${HAND_FONT}`;
+      return measuringContext.measureText(String(text)).width;
     }
 
     // MARK: node sizes and drawing (all in local coordinates centered on 0,0)
@@ -457,45 +870,44 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (command.t === 'circle') { const diameter = (command.r || 54) * 2; return [diameter, diameter]; }
       if (command.t === 'icon') { return [Math.min(Math.max(labelLength * 9 + 24, 96), 180), 104]; }
       if (command.t === 'note') {
-        const noteWidth = command.w || 200;
-        return [noteWidth, 30 + wrapIntoLines(command.text, Math.floor(noteWidth / 9)).length * 19];
+        const noteWidth = command.w || 210;
+        return [noteWidth, 30 + wrapIntoLines(command.text, Math.floor(noteWidth / 9)).length * 23];
       }
       if (command.t === 'bars') { return [command.w || 270, command.h || 180]; }
-      const boxWidth = Math.min(Math.max(labelLength * 9.5 + 50, 140), 240);
-      const labelLineCount = wrapIntoLines(command.label || '', Math.floor(boxWidth / 9.5)).length;
-      return [boxWidth, (command.icon ? 96 : 66) + (labelLineCount - 1) * 19];
+      const boxWidth = Math.min(Math.max(labelLength * 9.6 + 44, 110), 240);
+      const labelLineCount = wrapIntoLines(command.label || '', Math.floor(boxWidth / 9.6)).length;
+      return [boxWidth, (command.icon ? 92 : 50) + (labelLineCount - 1) * 24];
     }
 
     function drawIconAndLabel(parentElement, width, height, command) {
       const hasIcon = command.icon && ICON_SHAPES[command.icon];
-      const maxCharacters = Math.max(8, Math.floor(width / 9.5));
+      const maxCharacters = Math.max(8, Math.floor(width / 9.6));
+      // Icons inside a pastel shape use the shape's strong ink.
+      const iconColorName = PALETTE[command.color] ? command.color : 'fg';
       if (hasIcon && command.label) {
-        const iconSize = Math.min(36, height * 0.4);
-        drawIcon(parentElement, command.icon, 0, -height / 2 + 12 + iconSize / 2, iconSize, command.color);
-        addText(parentElement, 0, height / 2 - 12 - (wrapIntoLines(command.label, maxCharacters).length - 1) * 9.5 - 10, command.label,
-          { size: 17, maxCharacters });
+        const iconSize = Math.min(32, height * 0.4);
+        drawIcon(parentElement, command.icon, 0, -height / 2 + 10 + iconSize / 2, iconSize, iconColorName);
+        addText(parentElement, 0, height / 2 - 12 - (wrapIntoLines(command.label, maxCharacters).length - 1) * 12 - 8, command.label,
+          { size: 21, maxCharacters });
       } else if (hasIcon) {
-        drawIcon(parentElement, command.icon, 0, 0, Math.min(46, height * 0.6), command.color);
+        drawIcon(parentElement, command.icon, 0, 0, Math.min(44, height * 0.6), iconColorName);
       } else if (command.label) {
-        addText(parentElement, 0, 0, command.label, { size: 18, maxCharacters });
+        addText(parentElement, 0, 1, command.label, { size: 22, maxCharacters });
       }
     }
 
     function drawNodeContents(innerElement, command, width, height) {
       if (command.t === 'circle') {
         innerElement.appendChild(roughCanvas.circle(0, 0, width, shapeOptions(command.color, command.id)));
-        drawStrokesIn(innerElement);
         drawIconAndLabel(innerElement, width * 0.78, height * 0.82, command);
       } else if (command.t === 'icon') {
-        drawIcon(innerElement, command.name || command.icon, 0, -14, 54, command.color || 'fg');
-        if (command.label) { addText(innerElement, 0, 34, command.label, { size: 16, maxCharacters: 16 }); }
+        drawIcon(innerElement, command.name || command.icon, 0, -14, 50, command.color || 'fg');
+        if (command.label) { addText(innerElement, 0, 34, command.label, { size: 20, maxCharacters: 16 }); }
       } else if (command.t === 'note') {
-        const noteColor = colorOf(command.color, 'yellow');
-        const noteGroup = svgElement('g', { transform: 'rotate(-2)' });
+        const noteGroup = svgElement('g', { transform: 'rotate(-1.5)' });
         noteGroup.appendChild(roughCanvas.rectangle(-width / 2, -height / 2, width, height,
-          { stroke: noteColor, strokeWidth: 1.6, roughness: 1.3, fill: noteColor, fillStyle: 'solid', seed: stableSeed(command.text) }));
-        addText(noteGroup, 0, 0, command.text, { size: 16, fill: '#1c1917', maxCharacters: Math.floor(width / 9) });
-        noteGroup.classList.add('hb-pop');
+          { ...CLEAN_STROKE, stroke: outlineOf(command.color, 'yellow'), strokeWidth: 1.6, fill: fillOf(command.color, 'yellow'), fillStyle: 'solid', seed: stableSeed(command.text) }));
+        addText(noteGroup, 0, 0, command.text, { size: 20, maxCharacters: Math.floor(width / 9) });
         innerElement.appendChild(noteGroup);
       } else if (command.t === 'bars') {
         const values = command.values || [];
@@ -509,17 +921,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           const barColorName = (command.colors && command.colors[barIndex]) || command.color || 'purple';
           const barGroup = svgElement('g');
           barGroup.appendChild(roughCanvas.rectangle(barX, barY, barWidth, barHeight, shapeOptions(barColorName, (command.id || 'bars') + barIndex)));
-          barGroup.classList.add('hb-grow');
-          barGroup.style.animationDelay = `${barIndex * 0.18}s`;
           innerElement.appendChild(barGroup);
-          addText(innerElement, barX + barWidth / 2, barY - 12, (command.prefix || '') + value + (command.suffix || ''), { size: 15, color: barColorName });
+          addText(innerElement, barX + barWidth / 2, barY - 13, (command.prefix || '') + value + (command.suffix || ''), { size: 19 });
           if (command.labels && command.labels[barIndex]) {
-            addText(innerElement, barX + barWidth / 2, height / 2 - 6, command.labels[barIndex], { size: 14, color: 'muted' });
+            addText(innerElement, barX + barWidth / 2, height / 2 - 6, command.labels[barIndex], { size: 18, color: 'muted' });
           }
         });
       } else {
-        innerElement.appendChild(roughCanvas.path(roundedRectanglePath(-width / 2, -height / 2, width, height, 14), shapeOptions(command.color, command.id)));
-        drawStrokesIn(innerElement);
+        innerElement.appendChild(roughCanvas.path(roundedRectanglePath(-width / 2, -height / 2, width, height, 4), shapeOptions(command.color, command.id)));
         drawIconAndLabel(innerElement, width, height, command);
       }
     }
@@ -702,20 +1111,25 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       if (edge.element) { edge.element.remove(); }
       if (edge.labelElement) { edge.labelElement.remove(); }
       const isConnector = edge.edgeStyle === 'connector';
-      const strokeOptions = { stroke: isConnector ? colorOf('yellow') : colorOf(edge.command.color, 'muted'),
-        strokeWidth: isConnector ? 1.6 : 2.3, roughness: 1.1, bowing: 0.8, seed: stableSeed(edgeId),
-        strokeLineDash: (isConnector || edge.command.style === 'dashed') ? [8, 7] : undefined };
+      // Thin dark-gray arrows like Clicky's; a color name tints them.
+      const arrowColor = PALETTE[edge.command.color] ? colorOf(edge.command.color) : ARROW_INK;
+      const strokeOptions = { ...CLEAN_STROKE, roughness: 0.35, stroke: isConnector ? outlineOf('yellow') : arrowColor,
+        strokeWidth: isConnector ? 1.4 : 1.5, seed: stableSeed(edgeId),
+        strokeLineDash: (isConnector || edge.command.style === 'dashed') ? [7, 6] : undefined };
       const groupElement = svgElement('g');
+      // An arrow that already existed is only being moved by a relayout, so
+      // it appears at once instead of being traced again.
+      if (!edge.isNew) { groupElement.setAttribute('data-pen', 'done'); }
       const pointPairs = points.map((point) => [point.x, point.y]);
       groupElement.appendChild(pointPairs.length > 2 ? roughCanvas.curve(pointPairs, strokeOptions) : roughCanvas.line(...pointPairs[0], ...pointPairs[1], strokeOptions));
       if (!isConnector) {
         const lastPoint = points[points.length - 1], previousPoint = points[points.length - 2];
         const headAngle = Math.atan2(lastPoint.y - previousPoint.y, lastPoint.x - previousPoint.x);
-        const headOptions = { ...strokeOptions, strokeLineDash: undefined };
-        for (const headSide of [-0.45, 0.45]) {
-          groupElement.appendChild(roughCanvas.line(lastPoint.x, lastPoint.y,
-            lastPoint.x - 13 * Math.cos(headAngle + headSide), lastPoint.y - 13 * Math.sin(headAngle + headSide), headOptions));
-        }
+        groupElement.appendChild(roughCanvas.linearPath([
+          [lastPoint.x - 11 * Math.cos(headAngle - 0.5), lastPoint.y - 11 * Math.sin(headAngle - 0.5)],
+          [lastPoint.x, lastPoint.y],
+          [lastPoint.x - 11 * Math.cos(headAngle + 0.5), lastPoint.y - 11 * Math.sin(headAngle + 0.5)]],
+          { ...strokeOptions, roughness: 0.15, strokeLineDash: undefined }));
       }
       edgeLayer.appendChild(groupElement);
       edge.element = groupElement;
@@ -725,10 +1139,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const [middleX, middleY] = edge.geometry.pointAt(0.5);
         const [perpendicularX, perpendicularY] = edge.geometry.perpendicularAt(0.5);
         const offsetSide = perpendicularY > 0 ? -1 : 1;
-        edge.labelElement = addText(edgeLayer, middleX + perpendicularX * 15 * offsetSide, middleY + perpendicularY * 15 * offsetSide,
-          edge.command.label, { size: 15, color: edge.command.color || 'muted', maxCharacters: 18, animate: edge.isNew });
+        edge.labelElement = addText(edgeLayer, middleX + perpendicularX * 16 * offsetSide, middleY + perpendicularY * 16 * offsetSide,
+          edge.command.label, { size: 18, color: 'muted', maxCharacters: 18 });
+        if (!edge.isNew) { edge.labelElement.setAttribute('data-pen', 'done'); }
       }
-      if (edge.isNew) { drawStrokesIn(groupElement, 0.6); edge.isNew = false; }
+      edge.isNew = false;
     }
 
     function redrawGroup(groupId) {
@@ -736,19 +1151,19 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       const layoutGroup = layoutGraph.node(groupId);
       if (!layoutGroup || layoutGroup.width === undefined) { return; }
       if (group.element) { group.element.remove(); }
-      const zoneColor = colorOf(group.command.color, 'blue');
       const zoneX = layoutGroup.x - layoutGroup.width / 2 - 14, zoneY = layoutGroup.y - layoutGroup.height / 2 - 34;
       const zoneWidth = layoutGroup.width + 28, zoneHeight = layoutGroup.height + 48;
       const groupElement = svgElement('g');
-      groupElement.appendChild(roughCanvas.path(roundedRectanglePath(zoneX, zoneY, zoneWidth, zoneHeight, 18),
-        { stroke: zoneColor, strokeWidth: 1.8, roughness: 1.1, strokeLineDash: [9, 7], fill: translucent(zoneColor, 0.06),
-          fillStyle: 'solid', seed: stableSeed(groupId) }));
+      if (!group.isNew) { groupElement.setAttribute('data-pen', 'done'); }
+      groupElement.appendChild(roughCanvas.path(roundedRectanglePath(zoneX, zoneY, zoneWidth, zoneHeight, 10),
+        { ...CLEAN_STROKE, stroke: outlineOf(group.command.color, 'gray'), strokeWidth: 1.4, strokeLineDash: [8, 6],
+          fill: translucent(fillOf(group.command.color, 'gray'), 0.35), fillStyle: 'solid', seed: stableSeed(groupId) }));
       if (group.command.label) {
-        addText(groupElement, zoneX + 14, zoneY + 18, group.command.label, { size: 16, color: group.command.color || 'blue', anchor: 'start', animate: group.isNew });
+        addText(groupElement, zoneX + 14, zoneY + 18, group.command.label, { size: 19, color: 'muted', anchor: 'start' });
       }
       zoneLayer.appendChild(groupElement);
       group.element = groupElement;
-      if (group.isNew) { drawStrokesIn(groupElement, 0.8); group.isNew = false; }
+      group.isNew = false;
     }
 
     function positionStepBadges() {
@@ -764,9 +1179,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       }
     }
 
-    // Title centered above everything drawn (flowchart or geometry, including
-    // arrows that arc over the top), captions centered below it.
-    // Bounds of everything drawn except the title and captions.
+    // Bounds of everything drawn except the title and captions. The heading
+    // sits top-left above them (like Clicky's), captions left-aligned below.
     function drawingBounds() {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const layer of [zoneLayer, edgeLayer, mainLayer]) {
@@ -776,16 +1190,23 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         minX = Math.min(minX, layerBounds.x); minY = Math.min(minY, layerBounds.y);
         maxX = Math.max(maxX, layerBounds.x + layerBounds.width); maxY = Math.max(maxY, layerBounds.y + layerBounds.height);
       }
-      if (minX === Infinity) { return { minX: 0, maxX: 800, minY: 60, maxY: 440 }; }
+      if (minX === Infinity) { return { minX: 0, maxX: 700, minY: 0, maxY: 0 }; }
       return { minX, maxX, minY, maxY };
     }
 
+    // A transform attribute (not a CSS transition), so the bounds the camera
+    // reads are always the final position.
+    function moveTitleLayerElement(element, x, y) {
+      element.setAttribute('transform', `translate(${x},${y})`);
+    }
+
     function positionTitleAndCaptions() {
-      const { minX, maxX, minY, maxY } = drawingBounds();
-      const centerX = (minX + maxX) / 2;
-      if (titleElement) { titleElement.setAttribute('transform', `translate(${centerX},${minY - 40})`); }
+      const { minX, minY, maxY } = drawingBounds();
+      // Left-aligned with the board origin (where rows and captions start),
+      // or further left if the drawing extends past it.
+      if (titleElement) { moveTitleLayerElement(titleElement, Math.min(minX, 0), minY - (titleElement.hasSubtitle ? 98 : 70)); }
       captionElements.forEach((captionElement, captionIndex) => {
-        captionElement.setAttribute('transform', `translate(${centerX},${maxY + 34 + captionIndex * 28})`);
+        moveTitleLayerElement(captionElement, minX, maxY + 40 + captionIndex * 32);
       });
     }
 
@@ -826,7 +1247,141 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         Object.keys(edgesById).forEach(redrawEdge);
         positionStepBadges();
         positionTitleAndCaptions();
+        queueUnrevealedBoardElements();
       }, GLIDE_SECONDS * 1000);
+    }
+
+    // MARK: rows and captions (left-aligned flow, like Clicky's numbered boards)
+    // Rows stack top to bottom from the board origin: an optional step badge,
+    // then items left to right. The last arrow in a row stretches so the item
+    // after it starts in the shared result column, so results line up.
+    const ROW_RESULT_COLUMN_X = 440;
+    const ROW_ITEMS_START_WITH_BADGE_X = 41;
+    const ROW_MINIMUM_SLOT_HEIGHT = 70;
+    const ROW_VERTICAL_GAP = 40;
+    let flowCursorY = 0;
+    let previousFlowCaption = null;
+
+    function rowItemSize(item) {
+      if (item.box !== undefined) {
+        return [item.w || Math.max(measureTextWidth(item.box, 24) + 44, 86), item.h || 42];
+      }
+      if (item.text !== undefined) { return [measureTextWidth(item.text, item.size || 24), 30]; }
+      if (item.check) { return [26, 24]; }
+      if (item.stack) { return [104, 70]; }
+      if (item.network) { return [92, 64]; }
+      if (item.dot) { return [26, 26]; }
+      if (item.icon) { return [40, 40]; }
+      return [0, 0];
+    }
+
+    function drawRowItem(parentElement, item, leftX, centerY, width, height) {
+      if (item.box !== undefined) {
+        const boxColorName = item.color || 'blue';
+        parentElement.appendChild(roughCanvas.rectangle(leftX, centerY - height / 2, width, height, shapeOptions(boxColorName, 'rowbox' + item.box + leftX + centerY)));
+        addText(parentElement, leftX + width / 2, centerY + 1, item.box, { size: item.size || 24 });
+      } else if (item.text !== undefined) {
+        addText(parentElement, leftX, centerY, item.text, { size: item.size || 24, color: item.color || 'fg', anchor: 'start' });
+      } else if (item.check) {
+        drawCheckMark(parentElement, leftX + width / 2, centerY, 24);
+      } else if (item.stack) {
+        // Three offset cards, front one filled: a pile of documents or data.
+        const cardWidth = 79, cardHeight = 54;
+        for (let cardIndex = 0; cardIndex < 3; cardIndex += 1) {
+          const isFrontCard = cardIndex === 2;
+          parentElement.appendChild(roughCanvas.rectangle(leftX + cardIndex * 12, centerY - height / 2 + cardIndex * 8, cardWidth, cardHeight,
+            { stroke: outlineOf(item.stack === true ? 'gray' : item.stack, 'gray'), strokeWidth: 1.8,
+              fill: isFrontCard ? fillOf(item.stack === true ? 'gray' : item.stack, 'gray') : '#eeebe3', fillStyle: 'solid', seed: stableSeed('card' + cardIndex + leftX + centerY) }));
+        }
+      } else if (item.network) {
+        drawNetworkIcon(parentElement, leftX + width / 2, centerY);
+      } else if (item.dot) {
+        parentElement.appendChild(roughCanvas.circle(leftX + width / 2, centerY, 24,
+          { roughness: 0.3, stroke: outlineOf(item.dot === true ? 'purple' : item.dot, 'purple'), strokeWidth: 2,
+            fill: fillOf(item.dot === true ? 'purple' : item.dot, 'purple'), fillStyle: 'solid', seed: stableSeed('dot' + leftX + centerY) }));
+      } else if (item.icon) {
+        drawIcon(parentElement, item.icon, leftX + width / 2, centerY, 36, item.color || 'fg');
+      }
+    }
+
+    // A tiny neural network: four purple nodes (two layers of two), fully
+    // connected, with a loop bracket under it (training repeats).
+    function drawNetworkIcon(parentElement, centerX, centerY) {
+      const nodeOffsetX = 33, nodeOffsetY = 22, nodeRadius = 10;
+      const nodeCenters = [[-nodeOffsetX, -nodeOffsetY], [nodeOffsetX, -nodeOffsetY], [-nodeOffsetX, nodeOffsetY], [nodeOffsetX, nodeOffsetY]]
+        .map(([offsetX, offsetY]) => [centerX + offsetX, centerY + offsetY]);
+      const connectionOptions = { roughness: 0.25, stroke: '#8d8d8d', strokeWidth: 1.4 };
+      for (const [firstIndex, secondIndex] of [[0, 1], [2, 3], [0, 3], [2, 1]]) {
+        const [firstX, firstY] = nodeCenters[firstIndex], [secondX, secondY] = nodeCenters[secondIndex];
+        const connectionLength = Math.hypot(secondX - firstX, secondY - firstY);
+        const insetX = (secondX - firstX) / connectionLength * nodeRadius, insetY = (secondY - firstY) / connectionLength * nodeRadius;
+        parentElement.appendChild(roughCanvas.line(firstX + insetX, firstY + insetY, secondX - insetX, secondY - insetY,
+          { ...connectionOptions, seed: stableSeed('connection' + firstIndex + secondIndex + centerX) }));
+      }
+      nodeCenters.forEach(([nodeX, nodeY], nodeIndex) => {
+        parentElement.appendChild(roughCanvas.circle(nodeX, nodeY, nodeRadius * 2,
+          { roughness: 0.25, stroke: outlineOf('purple'), strokeWidth: 2, fill: fillOf('purple'), fillStyle: 'solid', seed: stableSeed('node' + nodeIndex + centerX) }));
+      });
+      parentElement.appendChild(roughCanvas.path(
+        `M${centerX - 46},${centerY + 38} Q${centerX - 41},${centerY + 39} ${centerX - 42},${centerY + 46} Q${centerX - 42},${centerY + 56} ${centerX - 30},${centerY + 56} ` +
+        `L${centerX + 30},${centerY + 56} Q${centerX + 42},${centerY + 56} ${centerX + 42},${centerY + 46} Q${centerX + 41},${centerY + 39} ${centerX + 46},${centerY + 38}`,
+        { roughness: 0.3, stroke: '#3a3a3a', strokeWidth: 1.5, seed: stableSeed('loop' + centerX) }));
+    }
+
+    function drawRow(command) {
+      const rowItems = Array.isArray(command.items) ? command.items : [];
+      const itemSizes = rowItems.map(rowItemSize);
+      const rowHeight = Math.max(42, ...itemSizes.map((itemSize) => itemSize[1]));
+      const slotHeight = Math.max(rowHeight, ROW_MINIMUM_SLOT_HEIGHT);
+      const rowCenterY = flowCursorY + slotHeight / 2;
+      const rowGroup = svgElement('g');
+      mainLayer.appendChild(rowGroup);
+      let cursorX = 0;
+      if (command.n !== undefined) {
+        drawStepBadge(rowGroup, 11, rowCenterY, command.n);
+        cursorX = ROW_ITEMS_START_WITH_BADGE_X;
+      }
+      const lastArrowIndex = rowItems.map((item) => Boolean(item && item.arrow)).lastIndexOf(true);
+      let previousItemWasBox = false;
+      rowItems.forEach((item, itemIndex) => {
+        if (!item || typeof item !== 'object') { return; }
+        if (item.arrow) {
+          const arrowStartX = cursorX + (itemIndex === 0 ? 0 : 26);
+          const arrowEndX = itemIndex === lastArrowIndex ? Math.max(arrowStartX + 70, ROW_RESULT_COLUMN_X - 22) : arrowStartX + 70;
+          drawStraightArrow(rowGroup, arrowStartX, rowCenterY, arrowEndX, rowCenterY, { seedText: 'row' + itemIndex });
+          if (typeof item.arrow === 'string') {
+            addText(rowGroup, (arrowStartX + arrowEndX) / 2, rowCenterY - 18, item.arrow, { size: 18, color: 'muted' });
+          }
+          cursorX = arrowEndX + 22;
+          previousItemWasBox = false;
+          return;
+        }
+        const [itemWidth, itemHeight] = itemSizes[itemIndex];
+        const isBox = item.box !== undefined;
+        if (cursorX > 0 && itemIndex > 0) { cursorX += (isBox && previousItemWasBox) ? 10 : 22; }
+        drawRowItem(rowGroup, item, cursorX, rowCenterY, itemWidth, itemHeight);
+        cursorX += itemWidth;
+        previousItemWasBox = isBox;
+      });
+      flowCursorY += slotHeight + ROW_VERTICAL_GAP;
+      previousFlowCaption = null;
+      positionTitleAndCaptions();
+    }
+
+    // A gray section caption in the flow ("Input tensor"). With
+    // "column":"result" it sits in the result column on the same line as
+    // the caption just before it.
+    function drawFlowCaption(command) {
+      const isResultColumn = command.column === 'result';
+      if (isResultColumn && previousFlowCaption) {
+        addText(mainLayer, ROW_RESULT_COLUMN_X, previousFlowCaption.centerY, command.text, { size: command.size || 22, color: command.color || 'muted', anchor: 'start' });
+        return;
+      }
+      const captionCenterY = flowCursorY + 12;
+      addText(mainLayer, isResultColumn ? ROW_RESULT_COLUMN_X : 0, captionCenterY, command.text, { size: command.size || 22, color: command.color || 'muted', anchor: 'start' });
+      previousFlowCaption = { centerY: captionCenterY };
+      flowCursorY += 46;
+      positionTitleAndCaptions();
     }
 
     // MARK: commands
@@ -835,10 +1390,48 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       const commandType = command.t;
 
       if (commandType === 'title') {
+        // Big bold handwritten heading top-left, an optional gray subtitle
+        // under it, and the short lowercase topic in the panel's title bar.
+        if (titleElement) { titleElement.remove(); }
         titleElement = svgElement('g');
-        addText(titleElement, 0, 0, command.text, { size: 30, color: command.color || 'fg' });
+        const headingElement = addText(titleElement, 0, 0, command.text, { size: 28, anchor: 'start' });
+        headingElement.classList.add('heading');
+        if (command.sub) {
+          addText(titleElement, 0, 42, command.sub, { size: 22, color: 'muted', anchor: 'start' });
+          titleElement.hasSubtitle = true;
+        }
         titleLayer.appendChild(titleElement);
+        setPanelTopic(command.topic || command.text);
         positionTitleAndCaptions();
+
+      } else if (commandType === 'row') {
+        drawRow(command);
+
+      } else if (commandType === 'caption') {
+        drawFlowCaption(command);
+
+      } else if (commandType === 'force') {
+        // A thick colored force arrow in board coordinates (lift, weight,
+        // thrust), with its label beside the middle or past the end.
+        const [fromX, fromY] = command.from, [toX, toY] = command.to;
+        const forceColor = colorOf(command.color, 'blue');
+        const groupElement = svgElement('g');
+        drawStraightArrow(groupElement, fromX, fromY, toX, toY, { color: forceColor, width: command.width || 3.2, headLength: 17, seedText: 'force' });
+        mainLayer.appendChild(groupElement);
+        if (command.label) {
+          const forceLength = Math.hypot(toX - fromX, toY - fromY) || 1;
+          const directionX = (toX - fromX) / forceLength, directionY = (toY - fromY) / forceLength;
+          const labelColorName = command.labelColor || (command.color === 'gray' ? 'muted' : 'fg');
+          if (command.labelAt === 'end') {
+            addText(mainLayer, toX + directionX * 40, toY + directionY * 40, command.label, { size: command.size || 24, color: labelColorName });
+          } else {
+            // Beside the arrow: to its right for vertical arrows, above for horizontal ones.
+            const isMostlyVertical = Math.abs(directionY) > Math.abs(directionX);
+            const labelX = isMostlyVertical ? (fromX + toX) / 2 + 16 : (fromX + toX) / 2;
+            const labelY = isMostlyVertical ? (fromY + toY) / 2 : (fromY + toY) / 2 - 22;
+            addText(mainLayer, labelX, labelY, command.label, { size: command.size || 24, color: labelColorName, anchor: isMostlyVertical ? 'start' : 'middle' });
+          }
+        }
 
       } else if (commandType === 'layout') {
         layoutGraph.graph().rankdir = command.direction === 'TB' ? 'TB' : 'LR';
@@ -862,19 +1455,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
       } else if (commandType === 'text') {
         const captionElement = svgElement('g');
-        addText(captionElement, 0, 0, command.text, { size: command.size || 17, color: command.color || 'muted', maxCharacters: 60 });
+        addText(captionElement, 0, 0, command.text, { size: command.size || 22, color: command.color || 'muted', maxCharacters: 60, anchor: 'start' });
         titleLayer.appendChild(captionElement);
         captionElements.push(captionElement);
         positionTitleAndCaptions();
 
       } else if (commandType === 'step') {
-        const badgeColor = colorOf(command.color, 'orange');
-        const badgeElement = svgElement('g');
-        badgeElement.appendChild(roughCanvas.circle(0, 0, 28, { stroke: badgeColor, strokeWidth: 2, roughness: 1, fill: badgeColor, fillStyle: 'solid', seed: stableSeed('step' + command.n) }));
-        addText(badgeElement, 0, 1, command.n, { size: 17, fill: '#1c1917' });
         const badgeContainer = svgElement('g');
-        badgeContainer.appendChild(badgeElement);
-        badgeElement.classList.add('hb-pop');
+        drawStepBadge(badgeContainer, 0, 0, command.n);
         const targetNode = nodesById[command.on];
         if (targetNode) {
           badgeContainer.setAttribute('transform', `translate(${-targetNode.width / 2 - 2},${-targetNode.height / 2 - 2})`);
@@ -895,18 +1483,16 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const markGroup = svgElement('g');
         const halfWidth = targetNode.width / 2, halfHeight = targetNode.height / 2;
         if (commandType === 'highlight') {
-          markGroup.appendChild(roughCanvas.ellipse(0, 0, targetNode.width + 46, targetNode.height + 40,
-            { stroke: colorOf(command.color, 'yellow'), strokeWidth: 3, roughness: 2.2, bowing: 2 }));
+          markGroup.appendChild(roughCanvas.ellipse(0, 0, targetNode.width + 40, targetNode.height + 34,
+            { ...CLEAN_STROKE, roughness: 1.1, bowing: 1.5, stroke: outlineOf(command.color, 'yellow'), strokeWidth: 2.6 }));
         } else if (commandType === 'cross') {
-          const crossOptions = { stroke: colorOf(command.color, 'red'), strokeWidth: 4, roughness: 1.6 };
+          const crossOptions = { ...CLEAN_STROKE, stroke: colorOf(command.color, 'red'), strokeWidth: 3.2 };
           markGroup.appendChild(roughCanvas.line(-halfWidth, -halfHeight, halfWidth, halfHeight, crossOptions));
           markGroup.appendChild(roughCanvas.line(halfWidth, -halfHeight, -halfWidth, halfHeight, crossOptions));
         } else {
-          markGroup.appendChild(roughCanvas.linearPath([[halfWidth - 18, -halfHeight + 4], [halfWidth - 8, -halfHeight + 15], [halfWidth + 12, -halfHeight - 10]],
-            { stroke: colorOf(command.color, 'green'), strokeWidth: 4.5, roughness: 1.2 }));
+          drawCheckMark(markGroup, halfWidth + 22, 0, 24);
         }
         targetNode.innerElement.appendChild(markGroup);
-        drawStrokesIn(markGroup, 0.8);
 
       } else if (commandType === 'flow') {
         // Something travelling along an arrow on a loop. It reads the arrow's
@@ -949,13 +1535,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'polygon') {
         const polygonPoints = command.points || [];
         if (polygonPoints.length < 2) { return; }
-        const polygonColor = colorOf(command.color, 'purple');
+        const isOutlineOnly = command.fill === false;
         const groupElement = svgElement('g');
         groupElement.appendChild(roughCanvas.polygon(polygonPoints, {
-          stroke: polygonColor, strokeWidth: 2.6, roughness: 0.6, bowing: 0.4, seed: stableSeed(JSON.stringify(polygonPoints)),
-          fill: command.fill === false ? undefined : translucent(polygonColor, 0.18), fillStyle: 'hachure', hachureGap: 8 }));
+          ...CLEAN_STROKE, stroke: isOutlineOnly ? colorOf(command.color, 'fg') : outlineOf(command.color, 'blue'), strokeWidth: command.width || 2,
+          seed: stableSeed(JSON.stringify(polygonPoints)), fill: isOutlineOnly ? undefined : fillOf(command.color, 'blue'), fillStyle: 'solid' }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.8);
         registerGeometryShape(command.id, polygonPoints, groupElement);
 
       } else if (commandType === 'square_on') {
@@ -969,10 +1554,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           if ((command.away[0] - middleX) * normalX + (command.away[1] - middleY) * normalY > 0) { normalX = -normalX; normalY = -normalY; }
         }
         const squarePoints = [[fromX, fromY], [toX, toY], [toX + normalX, toY + normalY], [fromX + normalX, fromY + normalY]];
-        const squareColor = colorOf(command.color, 'blue');
+        const squareColor = outlineOf(command.color, 'blue');
         const groupElement = svgElement('g');
-        groupElement.appendChild(roughCanvas.polygon(squarePoints, { stroke: squareColor, strokeWidth: 2.4, roughness: 0.6, bowing: 0.3,
-          seed: stableSeed(JSON.stringify(squarePoints)), fill: translucent(squareColor, 0.16), fillStyle: 'solid' }));
+        groupElement.appendChild(roughCanvas.polygon(squarePoints, { ...CLEAN_STROKE, stroke: squareColor, strokeWidth: 2,
+          seed: stableSeed(JSON.stringify(squarePoints)), fill: fillOf(command.color, 'blue'), fillStyle: 'solid' }));
         // Optional unit grid (grid: 3 → 3×3 cells) so areas can be counted.
         const gridCount = command.grid || 0;
         for (let gridIndex = 1; gridIndex < gridCount; gridIndex += 1) {
@@ -984,7 +1569,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
             toX + normalX * fraction, toY + normalY * fraction, gridOptions));
         }
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.9);
         if (command.label) {
           addText(mainLayer, (fromX + toX) / 2 + normalX / 2, (fromY + toY) / 2 + normalY / 2, command.label,
             { size: command.size || 22, color: command.color || 'blue' });
@@ -994,10 +1578,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'line') {
         const [fromX, fromY] = command.from, [toX, toY] = command.to;
         const groupElement = svgElement('g');
-        groupElement.appendChild(roughCanvas.line(fromX, fromY, toX, toY, { stroke: colorOf(command.color, 'fg'), strokeWidth: command.width || 2.4,
+        groupElement.appendChild(roughCanvas.line(fromX, fromY, toX, toY, { stroke: colorOf(command.color, 'fg'), strokeWidth: command.width || 2,
           roughness: 0.5, seed: stableSeed(JSON.stringify([command.from, command.to])), strokeLineDash: command.style === 'dashed' ? [8, 7] : undefined }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.6);
         if (command.label) {
           // Beside the middle of the line, on the side given by labelSide (default: outward from the line's left).
           const lineLength = Math.hypot(toX - fromX, toY - fromY) || 1;
@@ -1009,16 +1592,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'point') {
         const groupElement = svgElement('g');
         groupElement.appendChild(svgElement('circle', { cx: command.x, cy: command.y, r: 4.5, fill: colorOf(command.color, 'fg') }));
-        groupElement.classList.add('hb-appear');
         mainLayer.appendChild(groupElement);
         if (command.label) { addText(mainLayer, command.x + (command.dx ?? 14), command.y + (command.dy ?? -14), command.label, { size: 18, color: command.color || 'fg' }); }
 
       } else if (commandType === 'ring') {
         const groupElement = svgElement('g');
         groupElement.appendChild(roughCanvas.circle(command.x, command.y, command.r * 2, { stroke: colorOf(command.color, 'purple'), strokeWidth: 2.4,
-          roughness: 0.5, seed: stableSeed('ring' + command.x + command.y + command.r), fill: command.fill ? translucent(colorOf(command.color, 'purple'), 0.15) : undefined, fillStyle: 'solid' }));
+          roughness: 0.5, seed: stableSeed('ring' + command.x + command.y + command.r), fill: command.fill ? fillOf(command.color, 'purple') : undefined, fillStyle: 'solid' }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.8);
 
       } else if (commandType === 'angle') {
         // Angle mark at a vertex between the rays to "from" and "to": a small
@@ -1050,7 +1631,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           }
         }
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.5);
 
       } else if (commandType === 'axes') {
         currentAxes = axesFrame(command);
@@ -1065,7 +1645,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         if (command.grid) {
           // Light grid lines every gridStep units (default 1).
           const gridStep = command.gridStep || 1;
-          const gridOptions = { stroke: 'rgba(165,159,179,0.18)', strokeWidth: 1, roughness: 0.2, seed: 11 };
+          const gridOptions = { stroke: 'rgba(84,72,40,0.13)', strokeWidth: 1, roughness: 0.2, seed: 11 };
           for (let gridX = Math.ceil(frame.xMin / gridStep) * gridStep; gridX <= frame.xMax + 1e-9; gridX += gridStep) {
             const [gridBoardX] = frameToBoard(frame, gridX, 0);
             groupElement.appendChild(roughCanvas.line(gridBoardX, frame.top, gridBoardX, frame.top + frame.height, gridOptions));
@@ -1080,16 +1660,15 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         groupElement.appendChild(roughCanvas.linearPath([[frame.left + frame.width + 4, xAxisBoardY - 6], [frame.left + frame.width + 12, xAxisBoardY], [frame.left + frame.width + 4, xAxisBoardY + 6]], axisOptions));
         groupElement.appendChild(roughCanvas.linearPath([[yAxisBoardX - 6, frame.top - 4], [yAxisBoardX, frame.top - 12], [yAxisBoardX + 6, frame.top - 4]], axisOptions));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.6);
         if (command.xLabel) { addText(mainLayer, frame.left + frame.width + 26, xAxisBoardY, command.xLabel, { size: 17, color: 'muted' }); }
         if (command.yLabel) { addText(mainLayer, yAxisBoardX, frame.top - 26, command.yLabel, { size: 17, color: 'muted' }); }
         (command.xTicks || []).forEach((tick) => {
           const [tickX] = frameToBoard(frame, tick[0], xAxisMathY);
-          addText(mainLayer, tickX, xAxisBoardY + 18, tick[1], { size: 14, color: 'muted' });
+          addText(mainLayer, tickX, xAxisBoardY + 18, tick[1], { size: 17, color: 'muted' });
         });
         (command.yTicks || []).forEach((tick) => {
           const [, tickY] = frameToBoard(frame, yAxisMathX, tick[0]);
-          addText(mainLayer, yAxisBoardX - 14, tickY, tick[1], { size: 14, color: 'muted', anchor: 'end' });
+          addText(mainLayer, yAxisBoardX - 14, tickY, tick[1], { size: 17, color: 'muted', anchor: 'end' });
         });
 
       } else if (commandType === 'plot') {
@@ -1120,7 +1699,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
             roughness: 0.25, bowing: 0, seed: stableSeed(command.expr + segmentIndex), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
         });
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 1.1);
         const allCurvePoints = curveSegments.flat();
         if (command.label) {
           // Curve labels go in a stacked legend at the axes' top-right corner,
@@ -1130,20 +1708,21 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           const legendGroup = svgElement('g');
           legendGroup.appendChild(roughCanvas.line(legendX, legendY, legendX + 22, legendY, { stroke: curveColor, strokeWidth: 3, roughness: 0.3,
             strokeLineDash: command.style === 'dashed' ? [6, 5] : undefined, seed: stableSeed('legend' + command.expr) }));
-          addText(legendGroup, legendX + 30, legendY, command.label, { size: 16, color: command.color || 'purple', anchor: 'start' });
+          addText(legendGroup, legendX + 30, legendY, command.label, { size: 20, color: command.color || 'purple', anchor: 'start' });
           mainLayer.appendChild(legendGroup);
         }
         registerGeometryShape(command.id, allCurvePoints, groupElement);
 
       } else if (commandType === 'path') {
-        // An open curve through points in board coordinates (polygon closes, path doesn't).
+        // An open curve through points in board coordinates (polygon closes,
+        // path doesn't); "smooth":false joins the points with straight lines.
         const pathPoints = command.points || [];
         if (pathPoints.length < 2) { return; }
         const groupElement = svgElement('g');
-        groupElement.appendChild(roughCanvas.curve(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2.6,
+        const drawOpenPath = command.smooth === false ? roughCanvas.linearPath.bind(roughCanvas) : roughCanvas.curve.bind(roughCanvas);
+        groupElement.appendChild(drawOpenPath(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2,
           roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.9);
         registerGeometryShape(command.id, pathPoints, groupElement);
 
       } else if (commandType === 'parametric') {
@@ -1163,7 +1742,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         groupElement.appendChild(roughCanvas.linearPath(curvePoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2.8,
           roughness: 0.25, bowing: 0, seed: stableSeed(command.x + command.y) }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 1.2);
         if (command.label) {
           const [labelAnchorX, labelAnchorY] = curvePoints[Math.floor(curvePoints.length * 0.15)];
           addText(mainLayer, labelAnchorX + 12, labelAnchorY - 16, command.label, { size: 17, color: command.color || 'purple', anchor: 'start' });
@@ -1192,9 +1770,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const areaColor = colorOf(command.color, 'yellow');
         const regionPoints = upperPoints.concat(lowerPoints.reverse());
         const groupElement = svgElement('g');
-        groupElement.appendChild(roughCanvas.polygon(regionPoints, { stroke: 'none', fill: translucent(areaColor, 0.35), fillStyle: 'hachure',
+        groupElement.appendChild(roughCanvas.polygon(regionPoints, { stroke: 'none', fill: translucent(fillOf(command.color, 'yellow'), 0.85), fillStyle: 'solid',
           hachureGap: 6, fillWeight: 1.4, roughness: 0.6, seed: stableSeed('area' + command.expr + areaFrom + areaTo) }));
-        groupElement.classList.add('hb-appear');
         mainLayer.insertBefore(groupElement, mainLayer.firstChild);
         if (command.label) {
           const [labelX, labelY] = frameToBoard(frame, (areaFrom + areaTo) / 2, (upperFunction((areaFrom + areaTo) / 2) + lowerFunction((areaFrom + areaTo) / 2)) / 2);
@@ -1220,7 +1797,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           strokeWidth: 2.4, roughness: 0.3, seed: stableSeed('tangent' + command.expr + touchX) }));
         groupElement.appendChild(svgElement('circle', { cx: touchBoardX, cy: touchBoardY, r: 5.5, fill: colorOf(command.color, 'orange') }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.7);
         const slopeText = command.label ?? ('slope = ' + (Math.round(slope * 100) / 100));
         if (slopeText) { addText(mainLayer, lineEndX + 10, lineEndY - 14, slopeText, { size: 16, color: command.color || 'orange', anchor: 'start' }); }
 
@@ -1238,7 +1814,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           groupElement.appendChild(roughCanvas.line(markX, markY, axisBoardX, markY, guideOptions));
         }
         groupElement.appendChild(svgElement('circle', { cx: markX, cy: markY, r: 5.5, fill: markColor }));
-        groupElement.classList.add('hb-appear');
         mainLayer.appendChild(groupElement);
         if (command.label) { addText(mainLayer, markX + (command.dx ?? 12), markY + (command.dy ?? -16), command.label, { size: 17, color: command.color || 'fg', anchor: 'start' }); }
 
@@ -1255,7 +1830,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         groupElement.appendChild(roughCanvas.polygon([[endX, endY], [endX - 15 * Math.cos(headAngle - 0.4), endY - 15 * Math.sin(headAngle - 0.4)],
           [endX - 15 * Math.cos(headAngle + 0.4), endY - 15 * Math.sin(headAngle + 0.4)]], { ...vectorOptions, fill: vectorColor, fillStyle: 'solid' }));
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.6);
         if (command.label) {
           const vectorLength = Math.hypot(endX - startX, endY - startY) || 1;
           addText(mainLayer, (startX + endX) / 2 - (endY - startY) / vectorLength * 18, (startY + endY) / 2 + (endX - startX) / vectorLength * 18,
@@ -1288,7 +1862,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           if (markEntry[1]) { addText(groupElement, toBoardX(markEntry[0]), lineY - 24, markEntry[1], { size: 17, color: markEntry[2] || 'pink' }); }
         });
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.7);
 
       } else if (commandType === 'pie') {
         // Sectors for fractions, probabilities, and shares.
@@ -1300,14 +1873,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         let startAngle = -Math.PI / 2;
         values.forEach((value, sectorIndex) => {
           const sweepAngle = value / valueTotal * Math.PI * 2;
-          const sectorColor = colorOf((command.colors && command.colors[sectorIndex]) || pieColors[sectorIndex % pieColors.length]);
+          const sectorColor = outlineOf((command.colors && command.colors[sectorIndex]) || pieColors[sectorIndex % pieColors.length]);
           const sectorPoints = [[pieX, pieY]];
           for (let stepIndex = 0; stepIndex <= 40; stepIndex += 1) {
             const stepAngle = startAngle + sweepAngle * stepIndex / 40;
             sectorPoints.push([pieX + Math.cos(stepAngle) * pieRadius, pieY + Math.sin(stepAngle) * pieRadius]);
           }
           groupElement.appendChild(roughCanvas.polygon(sectorPoints, { stroke: sectorColor, strokeWidth: 2.2, roughness: 0.6,
-            fill: translucent(sectorColor, 0.3), fillStyle: 'hachure', hachureGap: 7, seed: stableSeed('pie' + sectorIndex + value) }));
+            fill: fillOf((command.colors && command.colors[sectorIndex]) || pieColors[sectorIndex % pieColors.length]), fillStyle: 'solid', seed: stableSeed('pie' + sectorIndex + value) }));
           if (command.labels && command.labels[sectorIndex]) {
             const middleAngle = startAngle + sweepAngle / 2;
             addText(groupElement, pieX + Math.cos(middleAngle) * pieRadius * 1.25, pieY + Math.sin(middleAngle) * pieRadius * 1.25,
@@ -1316,7 +1889,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           startAngle += sweepAngle;
         });
         mainLayer.appendChild(groupElement);
-        drawStrokesIn(groupElement, 0.9);
         registerGeometryShape(command.id, [[pieX - pieRadius, pieY - pieRadius], [pieX + pieRadius, pieY + pieRadius]], groupElement);
 
       } else if (commandType === 'latex') {
@@ -1331,7 +1903,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           katex.render(String(command.tex || ''), formulaElement, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
         } catch (formulaError) { console.log(formulaError); return; }
         foreignElement.appendChild(formulaElement);
-        foreignElement.classList.add('hb-appear');
         // Measure it in the motion layer first, so its own placeholder size
         // doesn't count toward the bounds used to place it.
         motionLayer.appendChild(foreignElement);
@@ -1347,7 +1918,15 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         mainLayer.appendChild(foreignElement);
 
       } else if (commandType === 'label') {
-        addText(mainLayer, command.x, command.y, command.text, { size: command.size || 20, color: command.color || 'fg', maxCharacters: command.wrap || 0 });
+        const labelElement = addText(mainLayer, command.x, command.y, command.text,
+          { size: command.size || 24, color: command.color || 'fg', maxCharacters: command.wrap || 0, anchor: command.anchor === 'start' ? 'start' : 'middle' });
+        if (command.pill) {
+          // A faint gray highlight pill behind the label, drawn first.
+          labelElement.classList.remove('halo');
+          const labelBox = labelElement.getBBox();
+          labelElement.before(svgElement('rect', { x: labelBox.x - 9, y: labelBox.y - 3, width: labelBox.width + 18, height: labelBox.height + 6,
+            rx: (labelBox.height + 6) / 2, fill: '#e7e3d8' }));
+        }
 
       } else if (commandType === 'formula') {
         // A big centered equation; x,y default to under the drawing.
@@ -1363,7 +1942,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         if (!targetNode) { return; }
         const captionMaxCharacters = Math.max(16, Math.floor(targetNode.width / 8));
         addText(targetNode.innerElement, 0, targetNode.height / 2 + 20, '≈ ' + command.text,
-          { size: 15, color: 'yellow', maxCharacters: captionMaxCharacters });
+          { size: 19, color: 'muted', maxCharacters: captionMaxCharacters });
         // Reserve room for the caption (above and below, so the shape itself
         // stays centered) and let the layout push neighbours away from it.
         const captionHeight = 22 * wrapIntoLines('≈ ' + command.text, captionMaxCharacters).length + 10;
@@ -1377,9 +1956,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     // it eases toward a frame that fits everything drawn so far (never closer
     // than an 800x500 frame). Panning or zooming by hand stops following
     // until a double-click fits everything again.
-    const MINIMUM_FRAME = { width: 800, height: 500 };
-    const FRAME_PADDING = 36;
-    const camera = { x: 0, y: -60, width: 800, height: 500 };
+    const MINIMUM_FRAME = { width: 760, height: 550 };
+    const FRAME_PADDING_LEFT = 22, FRAME_PADDING_TOP = 30, FRAME_PADDING_RIGHT = 30, FRAME_PADDING_BOTTOM = 34;
+    const camera = { x: -22, y: -110, width: 760, height: 550 };
     let isFollowingDrawing = true;
 
     function viewportAspectRatio() {
@@ -1400,18 +1979,20 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
     }
 
-    // The smallest frame with the viewport's shape that contains everything.
+    // The frame with the viewport's shape, anchored at the drawing's top-left
+    // corner (where the heading is), at 1 board unit per screen point until
+    // the drawing outgrows the panel and has to zoom out to fit.
     function frameFittingDrawing() {
       const contentBounds = drawnContentBounds();
+      const boardRect = board.getBoundingClientRect();
       const aspectRatio = viewportAspectRatio();
-      let frameWidth = Math.max(contentBounds.width + FRAME_PADDING * 2, MINIMUM_FRAME.width);
+      let frameWidth = Math.max(contentBounds.width + FRAME_PADDING_LEFT + FRAME_PADDING_RIGHT, boardRect.width || MINIMUM_FRAME.width);
       let frameHeight = frameWidth * aspectRatio;
-      if (frameHeight < Math.max(contentBounds.height + FRAME_PADDING * 2, MINIMUM_FRAME.height * 0.8)) {
-        frameHeight = Math.max(contentBounds.height + FRAME_PADDING * 2, MINIMUM_FRAME.height * 0.8);
+      if (frameHeight < contentBounds.height + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM) {
+        frameHeight = contentBounds.height + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM;
         frameWidth = frameHeight / aspectRatio;
       }
-      return { x: contentBounds.x + contentBounds.width / 2 - frameWidth / 2,
-        y: contentBounds.y + contentBounds.height / 2 - frameHeight / 2, width: frameWidth, height: frameHeight };
+      return { x: contentBounds.x - FRAME_PADDING_LEFT, y: contentBounds.y - FRAME_PADDING_TOP, width: frameWidth, height: frameHeight };
     }
 
     function applyCamera() {
@@ -1507,21 +2088,29 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     document.getElementById('navigation-hint').classList.add('visible');
     setTimeout(() => document.getElementById('navigation-hint').classList.remove('visible'), 5000);
 
-    // Hide "drawing…" once the stream has ended and every queued shape is drawn.
+    // Hide "drawing…" once the stream has ended and the pen has drawn everything.
     function hideDrawingIndicatorIfComplete() {
-      if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0) {
+      if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0 && !pendingPenLeaves.length) {
         document.getElementById('drawing-indicator').classList.add('finished');
+        isPenStreamFinished = true;
+        return true;
       }
+      return false;
     }
 
+    // Commands are built as soon as they arrive (hidden), and the pen then
+    // reveals them in order, so the pacing comes from the pen, not a timer.
+    // Text is measured, so nothing is built until the handwriting font loads.
+    let isHandwritingFontReady = false;
     function drawNextQueuedCommand() {
-      if (isDrawingCommand) { return; }
+      if (isDrawingCommand || !isHandwritingFontReady) { return; }
       if (commandQueue.length === 0) { hideDrawingIndicatorIfComplete(); return; }
       isDrawingCommand = true;
       const nextCommand = commandQueue.shift();
-      try { drawCommand(nextCommand); positionTitleAndCaptions(); } catch (drawError) { console.log(drawError); }
-      setTimeout(() => { isDrawingCommand = false; drawNextQueuedCommand(); }, 300);
+      try { drawCommand(nextCommand); positionTitleAndCaptions(); queueUnrevealedBoardElements(); } catch (drawError) { console.log(drawError); }
+      setTimeout(() => { isDrawingCommand = false; drawNextQueuedCommand(); }, 120);
     }
+    document.fonts.load('24px "Patrick Hand"').catch(() => {}).finally(() => { isHandwritingFontReady = true; drawNextQueuedCommand(); });
 
     window.hb = {
       add(commandLine) {
@@ -1532,7 +2121,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       },
       done() {
         isStreamFinished = true;
-        hideDrawingIndicatorIfComplete();
+        // The pen may still be drawing; check until it has finished.
+        const completionCheckTimer = setInterval(() => { if (hideDrawingIndicatorIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
       }
     };
     """
@@ -1547,7 +2137,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <meta charset="utf-8">
         <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:">
         <style>
-        @font-face { font-family: Virgil; src: url(data:font/woff2;base64,\(virgilFontBase64)) format("woff2"); }
+        @font-face { font-family: "Patrick Hand"; src: url(data:font/woff2;base64,\(handwritingFontBase64)) format("woff2"); }
+        \(sharedPaperStylesheet)
         \(notesStylesheet)
         \(katexCSSSource)
         </style>
@@ -1557,8 +2148,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <script>\(prismJSSource)</script>
         </head>
         <body>
+        <div id="titlebar"><span id="topic"></span></div>
         <main id="notes"></main>
         <div id="drawing-indicator">writing…</div>
+        \(penElementHTML)
+        <script>\(penAndScratchSoundScript)</script>
         <script>\(notesRendererScript)</script>
         </body>
         </html>
@@ -1566,54 +2160,45 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     }
 
     private static let notesStylesheet = """
-    html, body { margin: 0; height: 100%; background: #121216; color: #ece9f2; overflow: hidden;
-      font: 15.5px/1.5 -apple-system, "SF Pro Rounded", system-ui, sans-serif; }
-    #notes { position: absolute; inset: 30px 0 0 0; overflow-y: auto; padding: 6px 30px 48px; scroll-behavior: smooth; }
+    body { color: #2a2a2a; font: 21px/1.4 "Patrick Hand", "Chalkboard SE", system-ui, sans-serif; }
+    #notes { position: absolute; inset: 28px 0 0 0; overflow-y: auto; padding: 18px 30px 52px; scroll-behavior: smooth; }
     #notes::-webkit-scrollbar { width: 0; }
-    #drawing-indicator { position: absolute; right: 14px; bottom: 8px; color: #8b8598; font: 15px Virgil, sans-serif;
-      animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; }
-    #drawing-indicator.finished { animation: none; opacity: 0; }
-    h1 { font: 30px/1.2 Virgil, sans-serif; margin: 6px 0 14px; color: #f4f2f7; }
-    h2 { font: 21px/1.25 Virgil, sans-serif; margin: 20px 0 8px; color: #c084fc; }
-    .bullet { position: relative; padding-left: 20px; margin: 6px 0; }
-    .bullet::before { content: ""; position: absolute; left: 4px; top: 0.62em; width: 7px; height: 7px; border-radius: 50%; background: #a855f7; }
-    .bullet.level-2 { margin-left: 22px; color: #c9c4d4; }
-    .bullet.level-2::before { background: transparent; border: 1.5px solid #a855f7; width: 5px; height: 5px; }
-    mark { background: rgba(250,204,21,0.22); color: #fde68a; border-radius: 4px; padding: 0 3px; }
-    .remember { margin: 14px 0; padding: 12px 14px; border-radius: 12px; background: rgba(250,204,21,0.12);
-      border: 1.5px solid rgba(250,204,21,0.55); color: #fef3c7; }
-    .remember-label { display: block; font: 15px Virgil, sans-serif; color: #facc15; margin-bottom: 2px; }
-    .analogy { margin: 12px 0 16px; padding: 12px 14px; border-radius: 12px; background: rgba(96,165,250,0.1);
-      border: 1.5px dashed rgba(96,165,250,0.6); color: #dbeafe; }
-    .analogy-label { display: block; font: 16px Virgil, sans-serif; color: #60a5fa; margin-bottom: 2px; }
-    .todo { display: flex; gap: 10px; align-items: flex-start; margin: 7px 0; }
-    .todo input { margin-top: 4px; accent-color: #a855f7; }
-    .quote { margin: 10px 0; padding: 4px 0 4px 14px; border-left: 3px solid #60a5fa; color: #bfdbfe; font-style: italic; }
-    .code-block { position: relative; margin: 12px 0; padding: 14px 16px 12px; border-radius: 12px; background: #1a1922;
-      border: 1px solid #2c2a38; overflow-x: auto; font: 13px/1.55 "SF Mono", Menlo, monospace; color: #e4e1ec; white-space: pre; }
-    .code-language { position: absolute; top: 6px; right: 10px; font: 12px Virgil, sans-serif; color: #8b8598; }
-    .token.comment, .token.prolog { color: #6f6a7d; font-style: italic; }
-    .token.keyword, .token.boolean, .token.important { color: #c084fc; }
-    .token.string, .token.char, .token.attr-value, .token.template-string { color: #86efac; }
-    .token.number, .token.constant { color: #fdba74; }
-    .token.function, .token.class-name { color: #60a5fa; }
-    .token.operator, .token.punctuation { color: #a59fb3; }
-    .token.tag, .token.property, .token.builtin { color: #f472b6; }
-    .table-wrapper { margin: 12px 0; overflow-x: auto; border-radius: 12px; border: 1px solid #2c2a38; }
-    table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
-    th { text-align: left; font: 16px Virgil, sans-serif; color: #c084fc; background: #1a1922; padding: 9px 12px; border-bottom: 1px solid #2c2a38; }
-    td { padding: 8px 12px; border-bottom: 1px solid #22212c; }
+    h1 { font: 33px/1.15 "Patrick Hand", sans-serif; margin: 4px 0 14px; color: #2a2a2a;
+      -webkit-text-stroke: 1.1px #2a2a2a; }
+    h2 { font: 24px/1.2 "Patrick Hand", sans-serif; margin: 20px 0 6px; color: #8a8578; }
+    .bullet { position: relative; padding-left: 24px; margin: 5px 0; }
+    .bullet::before { content: ""; position: absolute; left: 5px; top: 0.6em; width: 8px; height: 8px; border-radius: 50%;
+      background: #f7edc4; border: 1.3px solid #3a3a3a; box-sizing: border-box; }
+    .bullet.level-2 { margin-left: 24px; color: #57534a; }
+    .bullet.level-2::before { background: transparent; border-color: #8a8578; }
+    mark { background: #f8ecc0; color: inherit; border-radius: 5px; padding: 0 4px; }
+    .remember, .analogy { margin: 14px 0; padding: 10px 14px 10px 16px; border-radius: 6px; border-left: 6px solid; }
+    .remember { background: #f8ecc0; border-left-color: #e3c35a; }
+    .analogy { background: #d6e4f5; border-left-color: #6fa0e3; }
+    .remember-label, .analogy-label { display: block; font-size: 17px; color: #8a8578; margin-bottom: 1px; }
+    .todo { display: flex; gap: 10px; align-items: flex-start; margin: 6px 0; }
+    .todo input { margin-top: 7px; accent-color: #d4a72c; }
+    .quote { margin: 10px 0; padding: 2px 0 2px 14px; border-left: 3px solid #dcdcd8; color: #6d685d; }
+    .code-block { position: relative; margin: 12px 0; padding: 14px 16px 12px; border-radius: 8px; background: #efebdf;
+      border: 1.5px solid #dcd7c9; overflow-x: auto; font: 13px/1.55 "SF Mono", Menlo, monospace; color: #2a2a2a; white-space: pre; }
+    .code-language { position: absolute; top: 4px; right: 10px; font: 15px "Patrick Hand", sans-serif; color: #8a8578; }
+    .token.comment, .token.prolog { color: #9a9486; font-style: italic; }
+    .token.keyword, .token.boolean, .token.important { color: #6a4bd8; }
+    .token.string, .token.char, .token.attr-value, .token.template-string { color: #3f8a47; }
+    .token.number, .token.constant { color: #c9702a; }
+    .token.function, .token.class-name { color: #2f5fc4; }
+    .token.operator, .token.punctuation { color: #7a7568; }
+    .token.tag, .token.property, .token.builtin { color: #c9604f; }
+    .table-wrapper { margin: 12px 0; overflow-x: auto; border-radius: 6px; border: 1.5px solid #8d8d8d; background: #fbf9f3; }
+    table { border-collapse: collapse; width: 100%; font-size: 19px; }
+    th { text-align: left; font-weight: normal; color: #2a2a2a; background: #d6e4f5; padding: 6px 12px; border-bottom: 1.5px solid #6fa0e3; }
+    td { padding: 5px 12px; border-bottom: 1px solid #e4e0d4; }
     tr:last-child td { border-bottom: none; }
-    .math-block { margin: 10px 0; font-size: 1.15em; overflow-x: auto; }
+    .math-block { margin: 10px 0; font-size: 0.95em; overflow-x: auto; }
     .chart { margin: 12px 0 6px; }
-    .chart-title { font: 16px Virgil, sans-serif; color: #c9c4d4; margin-bottom: 2px; }
+    .chart-title { color: #8a8578; margin-bottom: 2px; }
     .chart svg { width: 100%; height: 190px; overflow: visible; }
-    .chart text { font-family: Virgil, sans-serif; }
-    .writing-in { animation: hb-write 0.7s ease-out both; }
-    @keyframes hb-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
-    @keyframes hb-write { from { opacity: 0.2; clip-path: inset(0 100% 0 0); transform: translateY(4px); }
-      to { opacity: 1; clip-path: inset(0 0 0 0); transform: none; } }
-    @keyframes hb-blink { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
+    .chart text { font-family: "Patrick Hand", sans-serif; }
     """
 
     /// Writes streamed note lines one at a time. All text is inserted as text
@@ -1652,40 +2237,39 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       const chartSvg = document.createElementNS(svgNamespace, 'svg');
       chartSvg.setAttribute('viewBox', '0 0 600 190');
       chartElement.appendChild(chartSvg);
-      const roughChart = rough.svg(chartSvg);
+      const roughChart = rough.svg(chartSvg, { options: { roughness: 0.45, bowing: 0.5, disableMultiStroke: true, disableMultiStrokeFill: true, preserveVertices: true } });
       const values = (command.values || []).map(Number);
       const labels = command.labels || [];
       const maximumValue = Math.max(...values, 1);
       const plotTop = 22, plotBottom = 160, plotLeft = 20, plotRight = 580;
       const slotWidth = (plotRight - plotLeft) / Math.max(values.length, 1);
-      const chartColors = ['#a855f7', '#60a5fa', '#4ade80', '#fb923c', '#f472b6', '#22d3ee', '#facc15'];
+      // The board's pastels: [fill, outline].
+      const chartColors = [['#d6e4f5', '#6fa0e3'], ['#f6d5d0', '#e39a90'], ['#d5efd5', '#8fcf8f'], ['#f8ecc0', '#e3c35a'],
+        ['#b9a6f5', '#7c5ce6'], ['#dcdcd8', '#8d8d8d']];
       function addChartText(x, y, text, color) {
         const textElement = document.createElementNS(svgNamespace, 'text');
         textElement.setAttribute('x', x); textElement.setAttribute('y', y);
-        textElement.setAttribute('text-anchor', 'middle'); textElement.setAttribute('font-size', 15);
+        textElement.setAttribute('text-anchor', 'middle'); textElement.setAttribute('font-size', 19);
         textElement.setAttribute('fill', color);
         textElement.textContent = text;
         chartSvg.appendChild(textElement);
       }
-      chartSvg.appendChild(roughChart.line(plotLeft, plotBottom, plotRight, plotBottom, { stroke: '#4a4658', roughness: 1 }));
+      chartSvg.appendChild(roughChart.line(plotLeft, plotBottom, plotRight, plotBottom, { stroke: '#3a3a3a', strokeWidth: 1.5 }));
       const pointPositions = values.map((value, valueIndex) => [
         plotLeft + slotWidth * valueIndex + slotWidth / 2, plotBottom - (plotBottom - plotTop) * value / maximumValue ]);
       if (command.kind === 'line') {
-        chartSvg.appendChild(roughChart.linearPath(pointPositions, { stroke: '#c084fc', strokeWidth: 2.6, roughness: 1.2 }));
-        pointPositions.forEach(([pointX, pointY]) => chartSvg.appendChild(roughChart.circle(pointX, pointY, 10, { stroke: '#c084fc', fill: '#c084fc', fillStyle: 'solid' })));
+        chartSvg.appendChild(roughChart.linearPath(pointPositions, { stroke: '#2f5fc4', strokeWidth: 2.4 }));
+        pointPositions.forEach(([pointX, pointY]) => chartSvg.appendChild(roughChart.circle(pointX, pointY, 11, { stroke: '#2f5fc4', fill: '#d6e4f5', fillStyle: 'solid' })));
       } else {
         pointPositions.forEach(([pointX, pointY], valueIndex) => {
-          const barColor = chartColors[valueIndex % chartColors.length];
-          const barNode = roughChart.rectangle(pointX - slotWidth * 0.3, pointY, slotWidth * 0.6, plotBottom - pointY,
-            { stroke: barColor, strokeWidth: 2, roughness: 1.3, fill: barColor + '40', fillStyle: 'hachure', hachureGap: 6 });
-          barNode.style.transformBox = 'fill-box'; barNode.style.transformOrigin = 'bottom';
-          barNode.style.animation = `hb-grow 0.8s ${valueIndex * 0.15}s ease-out both`;
-          chartSvg.appendChild(barNode);
+          const [barFill, barOutline] = chartColors[valueIndex % chartColors.length];
+          chartSvg.appendChild(roughChart.rectangle(pointX - slotWidth * 0.3, pointY, slotWidth * 0.6, plotBottom - pointY,
+            { stroke: barOutline, strokeWidth: 2, fill: barFill, fillStyle: 'solid' }));
         });
       }
       pointPositions.forEach(([pointX, pointY], valueIndex) => {
-        addChartText(pointX, pointY - 9, (command.prefix || '') + values[valueIndex] + (command.suffix || ''), '#ece9f2');
-        if (labels[valueIndex]) { addChartText(pointX, plotBottom + 22, labels[valueIndex], '#8b8598'); }
+        addChartText(pointX, pointY - 9, (command.prefix || '') + values[valueIndex] + (command.suffix || ''), '#2a2a2a');
+        if (labels[valueIndex]) { addChartText(pointX, plotBottom + 22, labels[valueIndex], '#8a8578'); }
       });
       return chartElement;
     }
@@ -1772,23 +2356,29 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         katex.render(String(command.tex || ''), lineElement, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
       }
       if (!lineElement) { return; }
-      lineElement.classList.add('writing-in');
+      if (command.t === 'title') { setPanelTopic(command.topic || command.text); }
       notesElement.appendChild(lineElement);
+      // Hidden until the pen writes it, left to right.
+      queuePenLeaves([lineElement]);
       notesElement.scrollTop = notesElement.scrollHeight;
     }
 
     function hideWritingIndicatorIfComplete() {
-      if (isStreamFinished && !isWritingLine && commandQueue.length === 0) {
+      if (isStreamFinished && !isWritingLine && commandQueue.length === 0 && !pendingPenLeaves.length) {
         document.getElementById('drawing-indicator').classList.add('finished');
+        isPenStreamFinished = true;
+        return true;
       }
+      return false;
     }
 
+    // Lines are built as they arrive; the pen paces how fast they appear.
     function writeNextQueuedLine() {
       if (isWritingLine) { return; }
       if (commandQueue.length === 0) { hideWritingIndicatorIfComplete(); return; }
       isWritingLine = true;
       try { writeLine(commandQueue.shift()); } catch (writeError) { console.log(writeError); }
-      setTimeout(() => { isWritingLine = false; writeNextQueuedLine(); }, 320);
+      setTimeout(() => { isWritingLine = false; writeNextQueuedLine(); }, 60);
     }
 
     window.hb = {
@@ -1800,8 +2390,46 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       },
       done() {
         isStreamFinished = true;
-        hideWritingIndicatorIfComplete();
+        // The pen may still be writing; check until it has finished.
+        const completionCheckTimer = setInterval(() => { if (hideWritingIndicatorIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
       }
     };
     """
+}
+
+/// The panel's content view. Reports when the pointer enters or leaves the
+/// panel so the close and zoom lights can appear only on hover, like Clicky's.
+final class PanelHoverTrackingView: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        // activeAlways: the panel never becomes key, so hover has to be
+        // tracked even while another app is active.
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+}
+
+/// A transparent strip over the page-drawn title bar that lets the window be
+/// dragged from there (the web view underneath would otherwise eat the click).
+final class WindowDragStripView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
 }
