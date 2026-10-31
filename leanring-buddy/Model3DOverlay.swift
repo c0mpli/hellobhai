@@ -23,8 +23,8 @@ import WebKit
 
 @MainActor
 final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-    /// Largest overlay size; smaller screens get a panel that fits.
-    private static let maximumOverlaySize = NSSize(width: 900, height: 660)
+    /// The panel's size before it is first placed over a display.
+    private static let initialOverlaySize = NSSize(width: 900, height: 660)
 
     /// The handwriting font for callout tags: the same Patrick Hand the
     /// whiteboard uses.
@@ -38,6 +38,9 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
     /// Commands that arrive before the page has finished loading.
     private var pendingCommandLines: [String] = []
     private var isPageReady = false
+    /// hb.configure(...) with this overlay's screenshot size and focus point,
+    /// run once the page has loaded.
+    private var pageConfigurationScript: String?
     /// The overlay page's load, so the blank page loaded on close can't be
     /// mistaken for it finishing.
     private var overlayPageNavigation: WKNavigation?
@@ -89,23 +92,28 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
 
     // MARK: - Overlay API
 
-    /// Opens an empty overlay centered on the given point (AppKit global
-    /// coordinates), kept inside that display, ready for streamed commands.
-    func begin(centeredOnAppKitGlobalPoint centerPoint: CGPoint, onDisplayFrame displayFrame: CGRect) {
+    /// Opens an empty overlay over the whole display, ready for streamed
+    /// commands. The model can then sit right on the real object and its
+    /// labels go wherever there is room. The page is told the screenshot's
+    /// size, so the object box Claude reads off the screenshot (an anchor
+    /// line) maps onto the page, and where the model goes if no anchor comes.
+    func begin(
+        onDisplayFrame displayFrame: CGRect,
+        screenshotSizeInPixels: CGSize,
+        focusScreenshotPoint: CGPoint
+    ) {
         if panel == nil {
             createPanel()
         }
         guard let panel else { return }
 
-        let visibleFrame = NSScreen.screens.first(where: { $0.frame.intersects(displayFrame) })?.visibleFrame ?? displayFrame
-        let overlaySize = NSSize(
-            width: min(Self.maximumOverlaySize.width, visibleFrame.width - 24),
-            height: min(Self.maximumOverlaySize.height, visibleFrame.height - 24)
+        // The screenshot covers the display's full frame, so the panel does too.
+        panel.setFrame(displayFrame, display: false)
+        pageConfigurationScript = String(
+            format: "hb.configure(%.1f, %.1f, %.1f, %.1f)",
+            screenshotSizeInPixels.width, screenshotSizeInPixels.height,
+            focusScreenshotPoint.x, focusScreenshotPoint.y
         )
-        var overlayOrigin = NSPoint(x: centerPoint.x - overlaySize.width / 2, y: centerPoint.y - overlaySize.height / 2)
-        overlayOrigin.x = min(max(overlayOrigin.x, visibleFrame.minX + 12), visibleFrame.maxX - overlaySize.width - 12)
-        overlayOrigin.y = min(max(overlayOrigin.y, visibleFrame.minY + 12), visibleFrame.maxY - overlaySize.height - 12)
-        panel.setFrame(NSRect(origin: overlayOrigin, size: overlaySize), display: false)
 
         isPageReady = false
         pendingCommandLines.removeAll()
@@ -150,6 +158,10 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard navigation == overlayPageNavigation else { return }
         isPageReady = true
+        // Numbers only (formatted above), so nothing from the model is evaluated.
+        if let pageConfigurationScript {
+            webView.evaluateJavaScript(pageConfigurationScript)
+        }
         let queuedCommandLines = pendingCommandLines
         pendingCommandLines.removeAll()
         queuedCommandLines.forEach(addCommandLine)
@@ -269,7 +281,7 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
 
     private func createPanel() {
         let createdPanel = NSPanel(
-            contentRect: NSRect(origin: .zero, size: Self.maximumOverlaySize),
+            contentRect: NSRect(origin: .zero, size: Self.initialOverlaySize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -292,7 +304,7 @@ final class Model3DOverlayManager: NSObject, WKNavigationDelegate, WKScriptMessa
         webViewConfiguration.mediaTypesRequiringUserActionForPlayback = []
         webViewConfiguration.userContentController.add(self, name: "model3D")
 
-        let createdWebView = FirstMouseWebView(frame: NSRect(origin: .zero, size: Self.maximumOverlaySize), configuration: webViewConfiguration)
+        let createdWebView = FirstMouseWebView(frame: NSRect(origin: .zero, size: Self.initialOverlaySize), configuration: webViewConfiguration)
         createdWebView.autoresizingMask = [.width, .height]
         createdWebView.navigationDelegate = self
         // Transparent so only the model shows over the desktop.
