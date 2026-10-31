@@ -362,6 +362,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     // Soft pencil-on-paper scratch: looping white noise through a band-pass
     // filter, with its loudness jittered every frame while a stroke draws and
     // short ticks while text writes. Silent while the pen glides or idles.
+    // Peak gain of the scratch. Kept low: it should sit under the voice, not compete with it.
+    const PEN_SOUND_LOUDNESS = 0.016;
     const scratchSound = (() => {
       let audioContext = null, noiseGain = null, noiseFilter = null;
       function ensureAudio() {
@@ -396,7 +398,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         scratchWhileStroking() {
           if (!wakeAudio()) { return; }
           const now = audioContext.currentTime;
-          noiseGain.gain.setTargetAtTime(0.05 * (0.5 + Math.random() * 0.5), now, 0.015);
+          noiseGain.gain.setTargetAtTime(PEN_SOUND_LOUDNESS * (0.5 + Math.random() * 0.5), now, 0.015);
           noiseFilter.frequency.setTargetAtTime(1900 + Math.random() * 1500, now, 0.03);
         },
         tickWhileWriting() {
@@ -404,7 +406,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           const now = audioContext.currentTime;
           noiseGain.gain.cancelScheduledValues(now);
           noiseGain.gain.setValueAtTime(noiseGain.gain.value, now);
-          noiseGain.gain.linearRampToValueAtTime(0.03 + Math.random() * 0.025, now + 0.008);
+          noiseGain.gain.linearRampToValueAtTime(PEN_SOUND_LOUDNESS * (0.45 + Math.random() * 0.35), now + 0.008);
           noiseGain.gain.setTargetAtTime(0, now + 0.014, 0.012);
           noiseFilter.frequency.setTargetAtTime(2600 + Math.random() * 1400, now, 0.01);
         },
@@ -473,16 +475,85 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return leafElement.getBoundingClientRect();
     }
 
-    function setWriteClip(leafElement, revealedFraction) {
-      let hiddenRight = `${(1 - revealedFraction) * 100}%`;
-      // Nothing written yet: hide all of it (bullet dots, card edges too).
-      if (revealedFraction > 0 && revealedFraction < 1 && leafElement instanceof HTMLElement && leafElement.isConnected) {
-        // In the element's own pixels (it may be scaled), up to the text's right edge.
-        const leafRect = leafElement.getBoundingClientRect(), textRect = screenRectOfText(leafElement);
-        const elementScale = leafElement.offsetWidth ? leafRect.width / leafElement.offsetWidth : 1;
-        hiddenRight = `${Math.max(0, (leafRect.right - (textRect.left + textRect.width * revealedFraction)) / (elementScale || 1))}px`;
+    // The text's lines as screen rectangles, top to bottom. A wrapped notes
+    // paragraph gives one box per visual line; a multi-line board label gives
+    // one per tspan. Writing goes through them one line at a time.
+    function screenLinesOfText(leafElement) {
+      let lineRects = [];
+      if (leafElement instanceof HTMLElement) {
+        const textRange = document.createRange();
+        textRange.selectNodeContents(leafElement);
+        for (const fragmentRect of textRange.getClientRects()) {
+          if (fragmentRect.width < 1 || fragmentRect.height < 1) { continue; }
+          // Fragments whose vertical centers are close belong to the same visual line.
+          const fragmentCenterY = fragmentRect.top + fragmentRect.height / 2;
+          const sameLine = lineRects.find((lineRect) => Math.abs((lineRect.top + lineRect.bottom) / 2 - fragmentCenterY) < Math.min(lineRect.bottom - lineRect.top, fragmentRect.height) * 0.5);
+          if (sameLine) {
+            sameLine.left = Math.min(sameLine.left, fragmentRect.left); sameLine.right = Math.max(sameLine.right, fragmentRect.right);
+            sameLine.top = Math.min(sameLine.top, fragmentRect.top); sameLine.bottom = Math.max(sameLine.bottom, fragmentRect.bottom);
+          } else {
+            lineRects.push({ left: fragmentRect.left, right: fragmentRect.right, top: fragmentRect.top, bottom: fragmentRect.bottom });
+          }
+        }
+      } else {
+        leafElement.querySelectorAll('tspan').forEach((lineElement) => {
+          const lineRect = lineElement.getBoundingClientRect();
+          if (lineRect.width >= 1) { lineRects.push({ left: lineRect.left, right: lineRect.right, top: lineRect.top, bottom: lineRect.bottom }); }
+        });
       }
-      const clipValue = revealedFraction >= 1 ? '' : `inset(-30% ${hiddenRight} -30% -4%)`;
+      if (!lineRects.length) {
+        const wholeRect = leafElement.getBoundingClientRect();
+        lineRects = [{ left: wholeRect.left, right: wholeRect.right, top: wholeRect.top, bottom: wholeRect.bottom }];
+      }
+      return lineRects.sort((firstLine, secondLine) => firstLine.top - secondLine.top);
+    }
+
+    // Where the writing head is: which line, and how far along it. Lines are
+    // weighted by width, so each one takes as long as it has text.
+    function writingHeadOnLines(lineRects, revealedFraction) {
+      const totalWidth = lineRects.reduce((widthSum, lineRect) => widthSum + (lineRect.right - lineRect.left), 0) || 1;
+      let remainingWidth = revealedFraction * totalWidth;
+      for (let lineIndex = 0; lineIndex < lineRects.length; lineIndex += 1) {
+        const lineWidth = lineRects[lineIndex].right - lineRects[lineIndex].left;
+        if (remainingWidth <= lineWidth || lineIndex === lineRects.length - 1) {
+          return { lineIndex, headScreenX: lineRects[lineIndex].left + Math.min(remainingWidth, lineWidth) };
+        }
+        remainingWidth -= lineWidth;
+      }
+      return { lineIndex: 0, headScreenX: lineRects[0].left };
+    }
+
+    // Element pixels per screen pixel, so the clip can be written in the
+    // element's own coordinates even when the board camera scales it.
+    function screenToLocalScale(leafElement, leafRect) {
+      if (leafElement instanceof HTMLElement) {
+        return leafElement.offsetWidth ? leafRect.width / leafElement.offsetWidth : 1;
+      }
+      const screenMatrix = leafElement.getScreenCTM ? leafElement.getScreenCTM() : null;
+      return screenMatrix ? Math.hypot(screenMatrix.a, screenMatrix.b) || 1 : 1;
+    }
+
+    // Reveals text the way a hand writes it: lines above the current one are
+    // done, the current line is written up to the head, lines below are blank.
+    function setWriteClip(leafElement, revealedFraction) {
+      let clipValue = '';
+      if (revealedFraction <= 0) {
+        clipValue = 'inset(0 100% 0 0)';
+      } else if (revealedFraction < 1 && leafElement.isConnected) {
+        const leafRect = leafElement.getBoundingClientRect();
+        const localScale = screenToLocalScale(leafElement, leafRect);
+        const lineRects = screenLinesOfText(leafElement);
+        const { lineIndex, headScreenX } = writingHeadOnLines(lineRects, revealedFraction);
+        const currentLine = lineRects[lineIndex];
+        const lineHeight = currentLine.bottom - currentLine.top;
+        // Split the gap between neighbouring lines so ascenders and descenders stay with their line.
+        const currentLineTop = lineIndex === 0 ? currentLine.top - lineHeight : (lineRects[lineIndex - 1].bottom + currentLine.top) / 2;
+        const currentLineBottom = lineIndex === lineRects.length - 1 ? currentLine.bottom + lineHeight : (currentLine.bottom + lineRects[lineIndex + 1].top) / 2;
+        const toLocalX = (screenX) => ((screenX - leafRect.left) / localScale).toFixed(1) + 'px';
+        const toLocalY = (screenY) => ((screenY - leafRect.top) / localScale).toFixed(1) + 'px';
+        const farLeft = toLocalX(leafRect.left - 40), farRight = toLocalX(leafRect.right + 40), farTop = toLocalY(leafRect.top - 40);
+        clipValue = `polygon(${farLeft} ${farTop}, ${farRight} ${farTop}, ${farRight} ${toLocalY(currentLineTop)}, ${toLocalX(headScreenX)} ${toLocalY(currentLineTop)}, ${toLocalX(headScreenX)} ${toLocalY(currentLineBottom)}, ${farLeft} ${toLocalY(currentLineBottom)})`;
+      }
       leafElement.style.clipPath = clipValue;
       leafElement.style.webkitClipPath = clipValue;
     }
@@ -537,11 +608,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         screenMatrix.b * localPoint.x + screenMatrix.d * localPoint.y + screenMatrix.f];
     }
 
-    // The right edge of the part of a text that's written so far.
+    // The tip of the writing: the end of what's written so far, on the current line.
     function screenPointOfWritingHead(leafElement, revealedFraction) {
-      const leafRect = screenRectOfText(leafElement);
-      const lineHeight = Math.min(leafRect.height, 30);
-      return [leafRect.left + leafRect.width * revealedFraction, leafRect.top + lineHeight * 0.62];
+      const lineRects = screenLinesOfText(leafElement);
+      const { lineIndex, headScreenX } = writingHeadOnLines(lineRects, Math.min(Math.max(revealedFraction, 0), 1));
+      const currentLine = lineRects[lineIndex];
+      const lineHeight = Math.min(currentLine.bottom - currentLine.top, 30);
+      return [headScreenX, currentLine.top + lineHeight * 0.62];
     }
 
     function placePen(screenX, screenY) {
@@ -609,19 +682,38 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         return;
       }
       yield* glidePenTo(() => screenPointOfWritingHead(leafElement, 0));
-      const characterCount = Math.max(String(leafElement.textContent || '').trim().length, 1);
-      const writeSeconds = Math.min(Math.max(characterCount * 0.05, 0.25), 1.8);
-      let elapsedSeconds = 0, lastTickedCharacter = -1;
+      // A human pace: each letter takes a slightly different time, with a
+      // short lift of the pen between words and a longer one after punctuation.
+      const writtenText = String(leafElement.textContent || '').replace(/\\s+/g, ' ').trim() || ' ';
+      const letterSeconds = Array.from(writtenText).map((character, characterIndex) => {
+        const letterJitter = 0.75 + ((characterIndex * 7919) % 11) / 20;
+        if (character === ' ') { return 0.09; }
+        if (',.;:!?'.includes(character)) { return 0.14; }
+        return 0.055 * letterJitter;
+      });
+      let writeSeconds = letterSeconds.reduce((secondsSum, seconds) => secondsSum + seconds, 0);
+      // Very long paragraphs write faster so a notes block never stalls the narration.
+      const paceScale = writeSeconds > 9 ? 9 / writeSeconds : 1;
+      writeSeconds *= paceScale;
+      let elapsedSeconds = 0, lastTickedLetterIndex = -1;
       scratchSound.silence();
       while (elapsedSeconds < writeSeconds) {
         if (!leafElement.isConnected) { return; }
         elapsedSeconds += penFrameDelta * penSpeedMultiplier();
-        const progress = Math.min(elapsedSeconds / writeSeconds, 1);
+        // Which letter the pen is on, and how far through it.
+        let secondsLeft = elapsedSeconds, letterIndex = 0;
+        while (letterIndex < letterSeconds.length && secondsLeft > letterSeconds[letterIndex] * paceScale) {
+          secondsLeft -= letterSeconds[letterIndex] * paceScale; letterIndex += 1;
+        }
+        const partialLetter = letterIndex < letterSeconds.length ? secondsLeft / (letterSeconds[letterIndex] * paceScale) : 0;
+        const progress = Math.min((letterIndex + partialLetter) / letterSeconds.length, 1);
         setWriteClip(leafElement, progress);
         placePen(...screenPointOfWritingHead(leafElement, progress));
-        // One soft tick every couple of letters.
-        const currentCharacter = Math.floor(progress * characterCount / 2);
-        if (currentCharacter !== lastTickedCharacter) { lastTickedCharacter = currentCharacter; scratchSound.tickWhileWriting(); }
+        // A soft scratch for each letter, none while the pen lifts between words.
+        if (letterIndex !== lastTickedLetterIndex && letterIndex < writtenText.length) {
+          lastTickedLetterIndex = letterIndex;
+          if (writtenText[letterIndex] !== ' ') { scratchSound.tickWhileWriting(); }
+        }
         yield;
       }
       revealLeafInstantly(leafElement);
