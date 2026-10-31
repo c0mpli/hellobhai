@@ -23,7 +23,8 @@ https://github.com/user-attachments/assets/305cff8a-7777-4671-906f-11a68852630f
 
 - **Talks Hinglish.** Speak however you normally do; it auto-detects Hindi or English and replies the same way, in natural Hinglish.
 - **Sees your screen.** Every question comes with a screenshot of all your displays.
-- **Points at things.** A blue cursor flies over to the button or menu it's talking about.
+- **Lives in an orb.** A small glowing orb sits in the corner of your screen and shows what it's doing: listening, thinking, speaking, or dozing. Drag it anywhere; click it to chat. Pick its color in the menu bar panel.
+- **Points at things.** A blue pointer flies out of the orb to the button or menu it's talking about, then back in.
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your spoken "haan".
 - **Explains the simple way.** Every explanation starts from something you have already lived, like a chai tapri, a dabbawala or your phone's contact list, maps the idea onto it piece by piece, and only then gives the real term.
 - **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: groups, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows, all laid out automatically so nothing overlaps, on an infinite canvas you can pan and zoom. Narration follows your language; the board is always in English.
@@ -66,7 +67,7 @@ cd macos
 
 ### First launch
 
-1. A triangle appears in the menu bar and the setup panel opens.
+1. An orb icon appears in the menu bar and the setup panel opens.
 2. Grant **Microphone**, **Accessibility** and **Screen Recording**. Screen Recording needs one app restart; just run the script again.
 3. Click **Start**.
 4. Give it a couple of minutes: Whisper, Kokoro and Supertonic download (~1.2GB), and macOS compiles Whisper for the Neural Engine once. Until then it uses Apple's speech recognition (this needs **Dictation** turned on in System Settings → Keyboard) and the system voice.

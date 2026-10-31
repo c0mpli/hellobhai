@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  hellobhai's orb (loaded by OrbWindow.swift). Draws the bundled orb.riv with
+  Rive's web runtime on a transparent canvas. Swift fills the two placeholders
+  with the runtime source (its wasm is inlined) and the .riv as base64, so the
+  page needs no file or network access. Swift only calls hb.setOrbState and
+  hb.setOrbColor with fixed names and numbers.
+  'wasm-unsafe-eval' is required: without it WebKit refuses to compile the
+  runtime's inlined WebAssembly. It does not allow JavaScript eval.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'">
+<style>
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
+#orb-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="orb-canvas"></canvas>
+<script>/*__RIVE_RUNTIME_SOURCE__*/</script>
+<script>
+(function () {
+  const ORB_FILE_BASE64 = "__ORB_RIV_BASE64__";
+  const STATE_MACHINE_NAME = "default";
+  // The orb.riv state machine's boolean inputs. "idle" means all of them off.
+  const BOOLEAN_STATE_INPUT_NAMES = ["speaking", "asleep", "thinking", "listening", "hover"];
+
+  let stateMachineInputsByName = {};
+  let requestedStateName = "idle";
+  let requestedColorValue = 8;
+
+  function decodeBase64ToArrayBuffer(base64Text) {
+    const binaryText = atob(base64Text);
+    const bytes = new Uint8Array(binaryText.length);
+    for (let byteIndex = 0; byteIndex < binaryText.length; byteIndex++) {
+      bytes[byteIndex] = binaryText.charCodeAt(byteIndex);
+    }
+    return bytes.buffer;
+  }
+
+  function applyRequestedStateAndColor() {
+    BOOLEAN_STATE_INPUT_NAMES.forEach(function (inputName) {
+      const input = stateMachineInputsByName[inputName];
+      if (input) input.value = (inputName === requestedStateName);
+    });
+    const colorInput = stateMachineInputsByName.color;
+    if (colorInput) colorInput.value = requestedColorValue;
+  }
+
+  const orbCanvas = document.getElementById("orb-canvas");
+  const orbAnimation = new rive.Rive({
+    buffer: decodeBase64ToArrayBuffer(ORB_FILE_BASE64),
+    canvas: orbCanvas,
+    autoplay: true,
+    stateMachines: STATE_MACHINE_NAME,
+    layout: new rive.Layout({ fit: rive.Fit.Contain, alignment: rive.Alignment.Center }),
+    onLoad: function () {
+      orbAnimation.resizeDrawingSurfaceToCanvas();
+      (orbAnimation.stateMachineInputs(STATE_MACHINE_NAME) || []).forEach(function (input) {
+        stateMachineInputsByName[input.name] = input;
+      });
+      applyRequestedStateAndColor();
+      document.body.dataset.ready = "true";
+    }
+  });
+
+  window.addEventListener("resize", function () { orbAnimation.resizeDrawingSurfaceToCanvas(); });
+
+  window.hb = {
+    setOrbState: function (stateName) {
+      requestedStateName = stateName;
+      applyRequestedStateAndColor();
+    },
+    setOrbColor: function (colorValue) {
+      requestedColorValue = Number(colorValue) || 0;
+      applyRequestedStateAndColor();
+    },
+    // For the offscreen test harness: what the state machine exposes.
+    describeInputs: function () {
+      return Object.keys(stateMachineInputsByName).map(function (inputName) {
+        return inputName + "=" + stateMachineInputsByName[inputName].value;
+      }).join(",");
+    }
+  };
+})();
+</script>
+</body>
+</html>

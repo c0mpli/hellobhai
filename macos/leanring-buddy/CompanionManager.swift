@@ -143,6 +143,77 @@ final class CompanionManager: ObservableObject {
     /// The Claude Code model alias ("fable", "opus", "sonnet" or "haiku") used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "sonnet"
 
+    /// Which orb.riv color variant the orb shows. Persisted to UserDefaults.
+    @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
+        ?? OrbColorVariant.defaultColorInputValue
+
+    func setSelectedOrbColor(_ orbColorInputValue: Int) {
+        selectedOrbColor = orbColorInputValue
+        UserDefaults.standard.set(orbColorInputValue, forKey: "selectedOrbColor")
+        overlayWindowManager.orbWindowManager.setColorInputValue(orbColorInputValue)
+    }
+
+    // MARK: - Orb State
+
+    /// After this long with nothing happening, the orb dozes off.
+    private static let orbFallsAsleepAfterIdleSeconds: TimeInterval = 5 * 60
+    private var lastOrbActivityDate = Date()
+    private var orbVisualStateCancellable: AnyCancellable?
+    private var orbFallAsleepCheckTimer: Timer?
+
+    /// Mirrors what bhai is doing onto the orb's animation. Speaking covers
+    /// narrated whiteboard and 3D steps too, since they speak through the
+    /// same TTS client.
+    private func bindOrbVisualState() {
+        let orbWindowManager = overlayWindowManager.orbWindowManager
+        orbWindowManager.setColorInputValue(selectedOrbColor)
+        orbWindowManager.onOrbClicked = { [weak self] in
+            self?.showChatPanel()
+        }
+        orbWindowManager.onUserInteractedWithOrb = { [weak self] in
+            guard let self else { return }
+            self.lastOrbActivityDate = Date()
+            self.refreshOrbVisualState(voiceState: self.voiceState, isSpeakingAloud: self.isSpeakingAloud)
+        }
+        // @Published emits before the property changes, so the new values
+        // are passed along instead of read back from self.
+        orbVisualStateCancellable = $voiceState
+            .combineLatest($isSpeakingAloud)
+            .sink { [weak self] newVoiceState, newIsSpeakingAloud in
+                self?.refreshOrbVisualState(voiceState: newVoiceState, isSpeakingAloud: newIsSpeakingAloud)
+            }
+        orbFallAsleepCheckTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.refreshOrbVisualState(voiceState: self.voiceState, isSpeakingAloud: self.isSpeakingAloud)
+            }
+        }
+    }
+
+    private func refreshOrbVisualState(voiceState: CompanionVoiceState, isSpeakingAloud: Bool) {
+        let orbVisualState: OrbVisualState
+        if isSpeakingAloud {
+            orbVisualState = .speaking
+        } else {
+            switch voiceState {
+            case .listening:
+                orbVisualState = .listening
+            case .processing:
+                orbVisualState = .thinking
+            case .responding:
+                // Between spoken sentences, or a typed reply that isn't read aloud.
+                orbVisualState = .speaking
+            case .idle:
+                let hasBeenIdleTooLong = Date().timeIntervalSince(lastOrbActivityDate) > Self.orbFallsAsleepAfterIdleSeconds
+                orbVisualState = (!hasCompletedOnboarding || hasBeenIdleTooLong) ? .asleep : .idle
+            }
+        }
+        if orbVisualState != .idle && orbVisualState != .asleep {
+            lastOrbActivityDate = Date()
+        }
+        overlayWindowManager.orbWindowManager.setVisualState(orbVisualState)
+    }
+
     func setSelectedModel(_ model: String) {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
@@ -167,6 +238,7 @@ final class CompanionManager: ObservableObject {
         print("🔑 hellobhai start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindVoiceStateObservation()
+        bindOrbVisualState()
         bindAudioPowerLevel()
         bindShortcutTransitions()
         // Create the TTS client now so its model download starts at launch
@@ -194,6 +266,8 @@ final class CompanionManager: ObservableObject {
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
+        lastOrbActivityDate = Date()
+        refreshOrbVisualState(voiceState: voiceState, isSpeakingAloud: isSpeakingAloud)
 
         // Show the overlay for the first time — isFirstAppearance triggers
         // the welcome animation and pointing demo
@@ -230,6 +304,8 @@ final class CompanionManager: ObservableObject {
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
+        orbFallAsleepCheckTimer?.invalidate()
+        orbFallAsleepCheckTimer = nil
     }
 
     func refreshAllPermissions() {
@@ -723,10 +799,8 @@ final class CompanionManager: ObservableObject {
                         )
                     }
 
-                    // Handle element pointing if Claude returned coordinates.
-                    // Switch to idle BEFORE setting the location so the triangle
-                    // becomes visible and can fly to the target. Without this, the
-                    // spinner hides the triangle and the flight animation is invisible.
+                    // Handle element pointing if Claude returned coordinates: the
+                    // pointer launches out of the orb and flies to the target.
                     if let pointCoordinate = parseResult.coordinate,
                        let targetScreenCapture = Self.screenCapture(forScreenNumber: parseResult.screenNumber, in: screenCaptures) {
                         voiceState = .idle

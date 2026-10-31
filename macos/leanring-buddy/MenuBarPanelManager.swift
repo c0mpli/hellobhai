@@ -77,45 +77,37 @@ final class MenuBarPanelManager: NSObject {
 
         guard let button = statusItem?.button else { return }
 
-        button.image = makeMenuBarIcon()
+        button.image = Self.makeMenuBarIcon()
         button.image?.isTemplate = true
         button.action = #selector(statusItemClicked)
         button.target = self
     }
 
-    /// Draws the hellobhai triangle as a menu bar icon. Uses the same shape
-    /// and rotation as the in-app cursor so the menu bar icon matches.
-    private func makeMenuBarIcon() -> NSImage {
+    /// Draws the orb as a template menu bar glyph: a solid ball with a
+    /// crescent highlight cut out of its upper left, so it reads as a glossy
+    /// sphere at 18pt. Template images are tinted by macOS for light and
+    /// dark menu bars.
+    static func makeMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
-        let image = NSImage(size: NSSize(width: iconSize, height: iconSize))
-        image.lockFocus()
+        let image = NSImage(size: NSSize(width: iconSize, height: iconSize), flipped: false) { _ in
+            NSGraphicsContext.saveGraphicsState()
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 2, y: 2, width: 14, height: 14)).fill()
 
-        let triangleSize = iconSize * 0.7
-        let cx = iconSize * 0.50
-        let cy = iconSize * 0.50
-        let height = triangleSize * sqrt(3.0) / 2.0
-
-        let top = CGPoint(x: cx, y: cy + height / 1.5)
-        let bottomLeft = CGPoint(x: cx - triangleSize / 2, y: cy - height / 3)
-        let bottomRight = CGPoint(x: cx + triangleSize / 2, y: cy - height / 3)
-
-        let angle = 35.0 * .pi / 180.0
-        func rotate(_ point: CGPoint) -> CGPoint {
-            let dx = point.x - cx, dy = point.y - cy
-            let cosA = CGFloat(cos(angle)), sinA = CGFloat(sin(angle))
-            return CGPoint(x: cx + cosA * dx - sinA * dy, y: cy + sinA * dx + cosA * dy)
+            // The crescent is a highlight oval minus a second oval shifted
+            // down-right, erased from the ball (destinationOut) so it shows
+            // the menu bar through it.
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            let highlightOval = NSBezierPath(ovalIn: NSRect(x: 4.4, y: 8.0, width: 6.6, height: 5.4))
+            highlightOval.addClip()
+            let highlightCrescent = NSBezierPath(rect: highlightOval.bounds)
+            highlightCrescent.append(NSBezierPath(ovalIn: NSRect(x: 5.6, y: 6.7, width: 6.8, height: 5.2)))
+            highlightCrescent.windingRule = .evenOdd
+            highlightCrescent.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            return true
         }
-
-        let path = NSBezierPath()
-        path.move(to: rotate(top))
-        path.line(to: rotate(bottomLeft))
-        path.line(to: rotate(bottomRight))
-        path.close()
-
-        NSColor.black.setFill()
-        path.fill()
-
-        image.unlockFocus()
+        image.isTemplate = true
         return image
     }
 

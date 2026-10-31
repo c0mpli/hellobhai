@@ -13,7 +13,7 @@ flowchart LR
         Eyes["Eyes<br/>screenshot of<br/>every display"]
         Voice["Mouth<br/>Supertonic-3<br/>text to speech"]
         Hands["Hands<br/>clicks, typing,<br/>Mac commands"]
-        Screen["Screen overlay<br/>blue cursor, gold circles,<br/>whiteboard, 3D models"]
+        Screen["Screen overlay<br/>orb, blue pointer, gold circles,<br/>whiteboard, 3D models"]
     end
 
     Brain["Brain<br/>Claude, via your own<br/>Claude Code login"]
@@ -29,14 +29,14 @@ flowchart LR
 
 Say you're looking at a YouTube video of a gadget and you ask *"what is this device?"*
 
-1. **You press ctrl+option.** A tiny keyboard listener notices the shortcut, even while another app is in front. The blue cursor turns into a waveform to show it's listening.
+1. **You press ctrl+option.** A tiny keyboard listener notices the shortcut, even while another app is in front. The orb switches to its listening animation.
 2. **You talk, then let go.** Your voice is recorded, and **Whisper** turns it into text right on your Mac. It works out by itself whether you spoke English, Hindi or Hinglish. If you circled something with the mouse while talking, that area is noted too.
 3. **It takes a screenshot** of every display, so Claude can see exactly what you see.
 4. **It asks Claude.** The text, the screenshots and your last few questions go to Claude through the `claude` command-line tool that comes with Claude Code. That uses your own login, so there are no API keys and no hellobhai server in between.
 5. **Claude answers in two layers:** the words to say out loud, plus small instructions in square brackets for the app, like `[POINT:…]`, `[CIRCLE:…]`, `[SHOW:…]` or `[MODEL3D:…]`.
 6. **The app speaks the words** with **Supertonic-3**, an on-device voice, one sentence at a time so it starts talking quickly. A small pill grows out of the notch while it speaks.
 7. **The app follows the instructions:**
-   - `POINT`: the blue cursor flies over to a button or menu.
+   - `POINT`: a blue pointer flies out of the orb to a button or menu, then back in.
    - `CIRCLE`: gold, hand-drawn circles appear around the exact text it's talking about.
    - `CLICK` / `TYPE` / `KEY`: it clicks and types for you, then takes a fresh screenshot to check. It repeats this up to 8 times until the task is done. It only does this when you ask, and it asks before sending, posting or deleting anything.
    - `SHOW` / `NOTES`: a whiteboard or a notes page opens beside your cursor (see below).
@@ -61,7 +61,7 @@ sequenceDiagram
 
 When Claude decides a picture would help, the app asks Claude a second, focused question: *"draw this, step by step"*. Claude streams back a script, one line at a time. Each line is either a sentence to say or a drawing command, like "draw a blue box called Battery" or "add a cylinder for the antenna".
 
-- **Narration and drawing stay in step.** Each sentence is spoken while the shapes that belong to it are drawn. The blue cursor moves along every stroke as if it were holding the pen, with a soft pencil sound.
+- **Narration and drawing stay in step.** Each sentence is spoken while the shapes that belong to it are drawn. The blue pointer flies out of the orb and moves along every stroke as if it were holding the pen, with a soft pencil sound.
 - **The whiteboard** is a small, locked-down web page inside the app. It draws hand-drawn shapes with **rough.js**, lays out diagrams automatically with **dagre** so nothing overlaps, and renders math with **KaTeX**.
 - **3D models** use **three.js**. Claude describes the object in real millimeters as simple parts (boxes, cylinders, repeated pins, ready-made ports and connectors) with labels, reads the object's position and angle off the screenshot, and the app builds it part by part right over the thing on your screen. You can drag to rotate it.
 - **Claude never writes code that runs.** It only sends simple instructions as data. The pages can't load anything from the internet.
@@ -78,7 +78,8 @@ When Claude decides a picture would help, the app asks Claude a second, focused 
 | Brain | `claude -p` (Claude Code CLI) | `ClaudeCLI.swift` |
 | Mouth (text to speech) | Supertonic-3 (voice F2) on-device, optional Kokoro-82M, macOS voice as last fallback | `LocalTTSClient.swift` |
 | Hands (clicks, typing, Mac commands) | `CGEvent`, plus an allowlist: `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `ComputerControl.swift` |
-| Blue cursor, gold circles, notch pill | Transparent full-screen overlay | `OverlayWindow.swift` |
+| Blue pointer, gold circles, notch pill | Transparent full-screen overlay | `OverlayWindow.swift` |
+| The orb (Rive animation, drag to move, click to chat) | Small always-on-top panel | `OrbWindow.swift`, `VisualToolkit/orb.html` |
 | Whiteboard and notes | WKWebView + rough.js, dagre, KaTeX, Prism | `VisualExplanationPanel.swift` |
 | 3D models | WKWebView + three.js | `Model3DOverlay.swift`, `VisualToolkit/model3d.html` |
 

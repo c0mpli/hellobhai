@@ -87,6 +87,7 @@ struct CompanionPanelView: View {
             }
 
             modelSection
+            orbSection
             PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
             listeningSection
             permissionsSection
@@ -255,6 +256,28 @@ struct CompanionPanelView: View {
                         companionManager.setSelectedModel(selectedModelAlias)
                     }
                 )
+            }
+        }
+    }
+
+    // MARK: - Orb
+
+    private var orbSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Orb")
+
+            PanelSettingsRow(iconName: "circle.circle", label: "Orb color") {
+                HStack(spacing: 3) {
+                    ForEach(OrbColorVariant.allVariants) { orbColorVariant in
+                        OrbColorSwatchButton(
+                            orbColorVariant: orbColorVariant,
+                            isSelected: companionManager.selectedOrbColor == orbColorVariant.colorInputValue,
+                            onSelect: {
+                                companionManager.setSelectedOrbColor(orbColorVariant.colorInputValue)
+                            }
+                        )
+                    }
+                }
             }
         }
     }
@@ -657,6 +680,43 @@ private struct PanelSectionLabel: View {
 }
 
 /// Icon + label on the left, any control on the right.
+/// One small round preview of an orb color variant. Hover shows a faint
+/// ring; the selected variant is ringed in the accent color.
+private struct OrbColorSwatchButton: View {
+    let orbColorVariant: OrbColorVariant
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: orbColorVariant.swatchGradientHexColors.map { Color(hex: $0) },
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 12, height: 12)
+                .padding(2.5)
+                .overlay(
+                    Circle()
+                        .stroke(
+                            isSelected ? DS.Colors.accent : Color.white.opacity(isHovered ? 0.45 : 0),
+                            lineWidth: isSelected ? 2 : 1.5
+                        )
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+        .help("Orb color \(orbColorVariant.colorInputValue)")
+    }
+}
+
 private struct PanelSettingsRow<TrailingContent: View>: View {
     let iconName: String
     let label: String
