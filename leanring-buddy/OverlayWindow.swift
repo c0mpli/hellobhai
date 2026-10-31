@@ -121,6 +121,28 @@ enum BuddyNavigationMode {
     case pointingAtTarget
 }
 
+/// Reports whether macOS is currently drawing the real mouse pointer, system-wide.
+/// `CGCursorIsVisible` is marked unavailable in the Swift SDK but is still exported
+/// by CoreGraphics and correctly reports pointers hidden by other apps (video
+/// players, hide-while-typing), so it is looked up at runtime. If the symbol ever
+/// disappears, the pointer is treated as always visible and the buddy never hides.
+enum SystemPointerVisibility {
+    private typealias CursorIsVisibleFunction = @convention(c) () -> Int32
+
+    private static let cursorIsVisibleFunction: CursorIsVisibleFunction? = {
+        guard let coreGraphicsHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW),
+              let symbolAddress = dlsym(coreGraphicsHandle, "CGCursorIsVisible") else {
+            return nil
+        }
+        return unsafeBitCast(symbolAddress, to: CursorIsVisibleFunction.self)
+    }()
+
+    static func isSystemPointerVisible() -> Bool {
+        guard let cursorIsVisibleFunction else { return true }
+        return cursorIsVisibleFunction() != 0
+    }
+}
+
 // SwiftUI view for the blue glowing cursor pointer.
 // Each screen gets its own BlueCursorView. The view checks whether
 // the cursor is currently on THIS screen and only shows the buddy
@@ -155,11 +177,10 @@ struct BlueCursorView: View {
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
 
-    /// True when the mouse has sat still long enough that macOS (or a video
-    /// player) would hide the real pointer. The buddy hides with it so it
-    /// doesn't float alone over a video, and comes back on the next mouse move.
-    @State private var isBuddyHiddenBecauseMouseIsIdle: Bool = false
-    private static let secondsOfMouseStillnessBeforeHidingBuddy: Double = 3.0
+    /// True while macOS is not drawing the real pointer (a video player hid it,
+    /// or it is hidden while typing). The buddy hides with it so it never floats
+    /// alone on screen, and shows again the moment the real pointer does.
+    @State private var isBuddyHiddenBecauseSystemPointerIsHidden: Bool = false
 
     // MARK: - Buddy Navigation State
 
@@ -360,8 +381,8 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorColor, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && !isBuddyHiddenBecauseMouseIsIdle && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
-                .animation(.easeInOut(duration: 0.3), value: isBuddyHiddenBecauseMouseIsIdle)
+                .opacity(buddyIsVisibleOnThisScreen && !isBuddyHiddenBecauseSystemPointerIsHidden && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .animation(.easeInOut(duration: 0.3), value: isBuddyHiddenBecauseSystemPointerIsHidden)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -465,14 +486,13 @@ struct BlueCursorView: View {
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
 
-            // Only hide while the buddy is just following an idle mouse; never in
-            // the middle of answering, pointing, or flying to a target.
-            let secondsSinceMouseLastMoved = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
-            let shouldHideBuddyForIdleMouse = secondsSinceMouseLastMoved >= Self.secondsOfMouseStillnessBeforeHidingBuddy
+            // Follow the real pointer's visibility, but never hide in the middle
+            // of answering, pointing, or flying to a target.
+            let shouldHideBuddyWithSystemPointer = !SystemPointerVisibility.isSystemPointerVisible()
                 && self.companionManager.voiceState == .idle
                 && self.buddyNavigationMode == .followingCursor
-            if shouldHideBuddyForIdleMouse != self.isBuddyHiddenBecauseMouseIsIdle {
-                self.isBuddyHiddenBecauseMouseIsIdle = shouldHideBuddyForIdleMouse
+            if shouldHideBuddyWithSystemPointer != self.isBuddyHiddenBecauseSystemPointerIsHidden {
+                self.isBuddyHiddenBecauseSystemPointerIsHidden = shouldHideBuddyWithSystemPointer
             }
 
             // During forward flight or pointing, the buddy is NOT interrupted by
