@@ -325,6 +325,18 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       filter: drop-shadow(0 1.5px 3px rgba(90,70,20,0.32)) drop-shadow(0 0 5px rgba(201,166,70,0.25)); }
     /* Shows at once when drawing starts; only resting fades it out. */
     #pen.visible { opacity: 1; transition: none; }
+    #thinking { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 15;
+      display: flex; align-items: center; gap: 8px; pointer-events: none;
+      font: 24px "Patrick Hand", sans-serif; color: #9a9384; transition: opacity 0.3s; }
+    #thinking.gone { opacity: 0; }
+    #thinking svg { width: 20px; height: 20px; animation: thinking-bob 1.1s ease-in-out infinite;
+      filter: drop-shadow(0 1.5px 3px rgba(90,70,20,0.3)); }
+    #thinking i { width: 5px; height: 5px; border-radius: 50%; background: #b8b09d; margin-left: -3px;
+      animation: thinking-dot 1.2s ease-in-out infinite; }
+    #thinking i:nth-of-type(2) { animation-delay: 0.15s; }
+    #thinking i:nth-of-type(3) { animation-delay: 0.3s; }
+    @keyframes thinking-bob { 0%, 100% { transform: translateY(0) rotate(-8deg); } 50% { transform: translateY(-5px) rotate(8deg); } }
+    @keyframes thinking-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
     """
 
     /// The gold rounded "play" triangle that travels with the drawing head.
@@ -333,8 +345,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     <path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#cfa83a"/>
     """
 
+    /// The pen plus a "thinking" placeholder that bobs in the middle of the
+    /// empty page until the first line of the script arrives, so a slow start
+    /// never looks like nothing is happening.
     private static let penElementHTML = """
     <svg id="pen" viewBox="0 0 16 16">\(penTriangleSVGPath)</svg>
+    <div id="thinking"><svg viewBox="0 0 16 16">\(penTriangleSVGPath)</svg><span>thinking</span><i></i><i></i><i></i></div>
     """
 
     private static let boardStylesheet = """
@@ -438,6 +454,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     /// only while the pen is actually drawing.
     private static let penAndScratchSoundScript = """
     const penElement = document.getElementById('pen');
+    function hideThinkingIndicator() {
+      const thinkingElement = document.getElementById('thinking');
+      if (thinkingElement && !thinkingElement.classList.contains('gone')) {
+        thinkingElement.classList.add('gone');
+        setTimeout(() => thinkingElement.remove(), 400);
+      }
+    }
     const pendingPenLeaves = [];
     const penPosition = { x: 0, y: 0, hasBeenPlaced: false };
     // Seconds since the previous animation frame; the pen program reads it.
@@ -2406,10 +2429,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const trimmedLine = commandLine.trim();
         if (!trimmedLine.startsWith('{')) { return; }
         try { commandQueue.push(JSON.parse(trimmedLine)); } catch (parseError) { return; }
+        hideThinkingIndicator();
         drawNextQueuedCommand();
       },
       done() {
         isStreamFinished = true;
+        hideThinkingIndicator();
         // The pen may still be drawing; check until it has finished.
         const completionCheckTimer = setInterval(() => { if (markFinishedIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
       },
@@ -2685,10 +2710,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const trimmedLine = commandLine.trim();
         if (!trimmedLine.startsWith('{')) { return; }
         try { commandQueue.push(JSON.parse(trimmedLine)); } catch (parseError) { return; }
+        hideThinkingIndicator();
         writeNextQueuedLine();
       },
       done() {
         isStreamFinished = true;
+        hideThinkingIndicator();
         // The pen may still be writing; check until it has finished.
         const completionCheckTimer = setInterval(() => { if (markFinishedIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
       },

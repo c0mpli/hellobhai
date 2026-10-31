@@ -507,6 +507,17 @@ final class CompanionManager: ObservableObject {
     /// Sent instead of a transcript on every round after the first.
     private static let agentContinuationPrompt = "(this is the screen after your last actions. if the task is done, give a short wrap-up with no action tags. otherwise do the next steps.)"
 
+    /// Whisper writes Hindi in Devanagari, so a transcript without any
+    /// Devanagari means the user spoke English. Saying so explicitly stops
+    /// Claude from carrying on in Hindi just because earlier turns were Hindi.
+    static func replyLanguageNote(forTranscript transcript: String) -> String {
+        let transcriptContainsDevanagari = transcript.unicodeScalars.contains { (0x0900...0x097F).contains($0.value) }
+        if transcriptContainsDevanagari {
+            return "(the user spoke hindi or hinglish this turn: reply and narrate in natural hinglish written in devanagari.)"
+        }
+        return "(the user spoke english this turn: reply and narrate in english only, even if earlier turns were in hindi.)"
+    }
+
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
         currentVisualTask?.cancel()
@@ -544,7 +555,9 @@ final class CompanionManager: ObservableObject {
 
                     // Round one carries what the user said; later rounds just show
                     // Claude the screen after its last actions.
-                    var userPromptForThisStep = agentStepNumber == 1 ? transcript : Self.agentContinuationPrompt
+                    var userPromptForThisStep = agentStepNumber == 1
+                        ? transcript + "\n" + Self.replyLanguageNote(forTranscript: transcript)
+                        : Self.agentContinuationPrompt
 
                     // Regions the user drew around while speaking: tell Claude where
                     // they are and attach a native-resolution crop of each.
@@ -773,6 +786,7 @@ final class CompanionManager: ObservableObject {
 
                 the user asked: \(userRequest)
                 you already said, as an intro: \(spokenIntro)
+                \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
                 let (fullVisualScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
                     images: screenImages,
@@ -973,6 +987,7 @@ final class CompanionManager: ObservableObject {
 
                 the user asked: \(userRequest)
                 you already said, as an intro: \(spokenIntro)
+                \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
                 let (fullModelScript, modelScriptDuration) = try await claudeCLI.analyzeImageStreaming(
                     images: screenImages,
