@@ -32,27 +32,38 @@ enum ChatPanelSide: String {
 
 @MainActor
 final class ChatPanelManager: ObservableObject {
-    static let chatPanelSideUserDefaultsKey = "chatPanelSide"
     private static let panelWidth: CGFloat = 380
     private static let gapFromScreenEdges: CGFloat = 12
+    private static let minimizedTabSize = NSSize(width: 30, height: 112)
 
-    @Published var panelSide: ChatPanelSide = ChatPanelSide(
-        rawValue: UserDefaults.standard.string(forKey: ChatPanelManager.chatPanelSideUserDefaultsKey) ?? ""
-    ) ?? .right {
-        didSet {
-            UserDefaults.standard.set(panelSide.rawValue, forKey: Self.chatPanelSideUserDefaultsKey)
-            if let panel, panel.isVisible {
-                panel.setFrame(onScreenFrame(on: currentScreen), display: true, animate: true)
-            }
-        }
-    }
+    /// Minimized, the chat shrinks to a small tab sticking out of the screen
+    /// edge; clicking the tab brings the full chat back.
+    @Published private(set) var isMinimized = false
+    /// A reply arrived while minimized, so the tab shows a dot.
+    @Published private(set) var hasUnreadReply = false
 
     private unowned let companionManager: CompanionManager
     private var panel: ChatKeyablePanel?
     private var currentScreen: NSScreen = NSScreen.main ?? NSScreen.screens[0]
+    private var chatPanelSideCancellable: AnyCancellable?
+    private var chatMessagesCancellable: AnyCancellable?
+
+    private var panelSide: ChatPanelSide { companionManager.chatPanelSide }
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
+        // The side can be switched from the chat header or the menu bar panel.
+        chatPanelSideCancellable = companionManager.$chatPanelSide
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.moveToCurrentSide() }
+        chatMessagesCancellable = companionManager.$chatMessages
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chatMessages in
+                guard let self, self.isMinimized, chatMessages.last?.isFromUser == false else { return }
+                self.hasUnreadReply = true
+            }
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -67,6 +78,8 @@ final class ChatPanelManager: ObservableObject {
         let mouseLocation = NSEvent.mouseLocation
         currentScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main ?? currentScreen
 
+        isMinimized = false
+        hasUnreadReply = false
         let targetFrame = onScreenFrame(on: currentScreen)
         if !panel.isVisible {
             panel.setFrame(offScreenFrame(for: targetFrame), display: false)
@@ -95,8 +108,33 @@ final class ChatPanelManager: ObservableObject {
         })
     }
 
-    func switchSide() {
-        panelSide = panelSide == .right ? .left : .right
+    /// Shrinks the chat to a tab on the screen edge, centred on where the chat was.
+    func minimize() {
+        guard let panel, panel.isVisible, !isMinimized else { return }
+        isMinimized = true
+        animate(panel, to: minimizedTabFrame(centeredOn: panel.frame.midY))
+    }
+
+    func expandFromMinimized() {
+        guard let panel, isMinimized else { return }
+        isMinimized = false
+        hasUnreadReply = false
+        panel.makeKeyAndOrderFront(nil)
+        animate(panel, to: onScreenFrame(on: currentScreen))
+    }
+
+    private func moveToCurrentSide() {
+        guard let panel, panel.isVisible else { return }
+        let targetFrame = isMinimized ? minimizedTabFrame(centeredOn: panel.frame.midY) : onScreenFrame(on: currentScreen)
+        animate(panel, to: targetFrame)
+    }
+
+    private func animate(_ panel: NSPanel, to targetFrame: NSRect) {
+        NSAnimationContext.runAnimationGroup { animationContext in
+            animationContext.duration = 0.26
+            animationContext.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
+            panel.animator().setFrame(targetFrame, display: true)
+        }
     }
 
     /// Hands keyboard focus back to the app underneath, so [TYPE] and [KEY]
@@ -122,6 +160,15 @@ final class ChatPanelManager: ObservableObject {
         return NSRect(x: originX, y: visibleFrame.minY + Self.gapFromScreenEdges, width: Self.panelWidth, height: panelHeight)
     }
 
+    /// Flush with the screen edge so it reads as the chat tucked away there.
+    private func minimizedTabFrame(centeredOn centerY: CGFloat) -> NSRect {
+        let visibleFrame = currentScreen.visibleFrame
+        let tabSize = Self.minimizedTabSize
+        let originX = panelSide == .right ? visibleFrame.maxX - tabSize.width : visibleFrame.minX
+        let originY = min(max(centerY - tabSize.height / 2, visibleFrame.minY), visibleFrame.maxY - tabSize.height)
+        return NSRect(x: originX, y: originY, width: tabSize.width, height: tabSize.height)
+    }
+
     private func offScreenFrame(for onScreenFrame: NSRect) -> NSRect {
         let slideDistance = Self.panelWidth * 0.35
         return onScreenFrame.offsetBy(dx: panelSide == .right ? slideDistance : -slideDistance, dy: 0)
@@ -142,7 +189,7 @@ final class ChatPanelManager: ObservableObject {
         chatPanel.hidesOnDeactivate = false
         chatPanel.isExcludedFromWindowsMenu = true
         chatPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        chatPanel.onEscapePressed = { [weak self] in self?.hide() }
+        chatPanel.onEscapePressed = { [weak self] in self?.minimize() }
 
         let hostingView = NSHostingView(rootView: ChatPanelView(companionManager: companionManager, chatPanelManager: self))
         hostingView.wantsLayer = true
@@ -167,12 +214,19 @@ struct ChatPanelView: View {
         "Make notes of this page",
     ]
 
-    /// Thinking dots show between sending and the first reply line.
-    private var isWaitingForReply: Bool {
-        companionManager.voiceState == .processing && (companionManager.chatMessages.last?.isFromUser ?? false)
+    var body: some View {
+        if chatPanelManager.isMinimized {
+            ChatMinimizedTab(
+                panelSide: companionManager.chatPanelSide,
+                hasUnreadReply: chatPanelManager.hasUnreadReply,
+                action: { chatPanelManager.expandFromMinimized() }
+            )
+        } else {
+            expandedChat
+        }
     }
 
-    var body: some View {
+    private var expandedChat: some View {
         VStack(spacing: 0) {
             header
             Divider().background(DS.Colors.borderSubtle)
@@ -199,17 +253,24 @@ struct ChatPanelView: View {
                 .fill(DS.Colors.overlayCursorColor)
                 .frame(width: 8, height: 8)
                 .shadow(color: DS.Colors.overlayCursorColor.opacity(0.6), radius: 4)
-            Text("hellobhai")
+            Text("bhai")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
             Spacer()
-            ChatIconButton(
-                systemImageName: chatPanelManager.panelSide == .right ? "rectangle.lefthalf.inset.filled" : "rectangle.righthalf.inset.filled",
-                helpText: chatPanelManager.panelSide == .right ? "Move to the left" : "Move to the right"
-            ) {
-                chatPanelManager.switchSide()
+            ChatSegmentedToggle(
+                options: [(label: "L", optionID: ChatPanelSide.left.rawValue), (label: "R", optionID: ChatPanelSide.right.rawValue)],
+                selectedOptionID: companionManager.chatPanelSide.rawValue,
+                helpText: "Which side of the screen the chat sits on"
+            ) { selectedSideRawValue in
+                companionManager.chatPanelSide = ChatPanelSide(rawValue: selectedSideRawValue) ?? .right
             }
-            ChatIconButton(systemImageName: "xmark", helpText: "Close (Esc)") {
+            ChatIconButton(
+                systemImageName: companionManager.chatPanelSide == .right ? "chevron.right.2" : "chevron.left.2",
+                helpText: "Minimize to the screen edge (Esc)"
+            ) {
+                chatPanelManager.minimize()
+            }
+            ChatIconButton(systemImageName: "xmark", helpText: "Close") {
                 chatPanelManager.hide()
             }
         }
@@ -229,10 +290,6 @@ struct ChatPanelView: View {
                     ForEach(companionManager.chatMessages) { chatMessage in
                         ChatMessageRow(chatMessage: chatMessage)
                             .id(chatMessage.id)
-                    }
-                    if isWaitingForReply {
-                        ChatThinkingDots()
-                            .id("thinking")
                     }
                 }
                 .padding(14)
@@ -274,7 +331,7 @@ struct ChatPanelView: View {
         VStack(spacing: 8) {
             HStack(alignment: .bottom, spacing: 8) {
                 // Return sends; shift+return adds a line (vertical-axis TextField).
-                TextField("Message hellobhai...", text: $draftMessage, axis: .vertical)
+                TextField("Message bhai...", text: $draftMessage, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .foregroundColor(DS.Colors.textPrimary)
@@ -302,15 +359,16 @@ struct ChatPanelView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                 Spacer()
-                Text("Speak replies")
+                Text("Replies")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
-                Toggle("", isOn: $companionManager.speaksChatReplies)
-                    .toggleStyle(.switch)
-                    .tint(DS.Colors.overlayCursorColor)
-                    .controlSize(.mini)
-                    .labelsHidden()
-                    .pointerCursor()
+                ChatSegmentedToggle(
+                    options: [(label: "Text", optionID: "text"), (label: "Text + voice", optionID: "voice")],
+                    selectedOptionID: companionManager.speaksChatReplies ? "voice" : "text",
+                    helpText: "How typed messages are answered. Spoken questions always get a spoken reply."
+                ) { selectedOptionID in
+                    companionManager.speaksChatReplies = selectedOptionID == "voice"
+                }
             }
             .padding(.horizontal, 4)
         }
@@ -345,17 +403,22 @@ private struct ChatMessageRow: View {
                             .fill(DS.Colors.overlayCursorColor)
                     )
             }
+        } else if chatMessage.isStreaming && chatMessage.text.isEmpty {
+            // Before the first words arrive.
+            ChatThinkingDots()
         } else {
             HStack(alignment: .top, spacing: 8) {
                 Circle()
                     .fill(DS.Colors.overlayCursorColor.opacity(0.9))
                     .frame(width: 6, height: 6)
                     .padding(.top, 6)
-                Text(chatMessage.text)
+                // A blinking caret trails the text while it is still streaming.
+                (Text(chatMessage.text) + Text(chatMessage.isStreaming ? " \u{258D}" : "").foregroundColor(DS.Colors.overlayCursorColor))
                     .font(.system(size: 13))
                     .foregroundColor(DS.Colors.textPrimary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+                    .animation(.easeOut(duration: 0.12), value: chatMessage.text)
                 Spacer(minLength: 16)
             }
         }
@@ -443,6 +506,92 @@ private struct ChatIconButton: View {
         }
         .buttonStyle(.plain)
         .help(helpText)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+    }
+}
+
+/// Small two-or-more option toggle used in the chat header and composer.
+private struct ChatSegmentedToggle: View {
+    let options: [(label: String, optionID: String)]
+    let selectedOptionID: String
+    let helpText: String
+    let onSelectOption: (String) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(options, id: \.optionID) { option in
+                ChatSegmentButton(
+                    label: option.label,
+                    isSelected: option.optionID == selectedOptionID,
+                    action: { onSelectOption(option.optionID) }
+                )
+            }
+        }
+        .padding(1)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .overlay(Capsule().stroke(DS.Colors.borderSubtle, lineWidth: 0.5))
+        .help(helpText)
+    }
+}
+
+private struct ChatSegmentButton: View {
+    let label: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(isSelected ? .white : (isHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(isSelected ? DS.Colors.overlayCursorColor : Color.clear))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+    }
+}
+
+/// The minimized chat: a tab poking out of the screen edge, rounded only on
+/// the inner side so it looks like the chat is tucked behind the edge.
+private struct ChatMinimizedTab: View {
+    let panelSide: ChatPanelSide
+    let hasUnreadReply: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        let innerCornerRadius: CGFloat = 12
+        let tabShape = UnevenRoundedRectangle(
+            topLeadingRadius: panelSide == .right ? innerCornerRadius : 0,
+            bottomLeadingRadius: panelSide == .right ? innerCornerRadius : 0,
+            bottomTrailingRadius: panelSide == .left ? innerCornerRadius : 0,
+            topTrailingRadius: panelSide == .left ? innerCornerRadius : 0,
+            style: .continuous
+        )
+        Button(action: action) {
+            VStack(spacing: 10) {
+                Image(systemName: panelSide == .right ? "chevron.left" : "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                Image(systemName: "bubble.left.fill")
+                    .font(.system(size: 12))
+                Circle()
+                    .fill(hasUnreadReply ? DS.Colors.overlayCursorColor : Color.clear)
+                    .frame(width: 6, height: 6)
+            }
+            .foregroundColor(isHovered ? .white : DS.Colors.textSecondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(tabShape.fill(isHovered ? DS.Colors.surface3 : DS.Colors.background))
+            .overlay(tabShape.stroke(DS.Colors.borderSubtle, lineWidth: 1))
+            .contentShape(tabShape)
+        }
+        .buttonStyle(.plain)
+        .help("Open chat")
         .onHover { isHovered = $0 }
         .pointerCursor()
     }

@@ -87,6 +87,7 @@ struct CompanionPanelView: View {
             }
 
             modelSection
+            chatSection
             PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
             listeningSection
             permissionsSection
@@ -111,7 +112,7 @@ struct CompanionPanelView: View {
                     .frame(width: 8, height: 8)
                     .shadow(color: statusDotColor.opacity(0.6), radius: 4)
 
-                Text("hellobhai")
+                Text("bhai")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(DS.Colors.textPrimary)
             }
@@ -396,6 +397,39 @@ struct CompanionPanelView: View {
                 companionManager.requestScreenContentPermission()
             }
         )
+    }
+
+    // MARK: - Chat
+
+    /// Speaking always gets a spoken reply; typing gets text, optionally voiced too.
+    private var chatSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Chat")
+
+            PanelSettingsRow(iconName: "mic", label: "When you speak", subtitle: "Always replies out loud") {
+                PanelStatusLabel(statusText: "Voice", statusColor: DS.Colors.success)
+            }
+
+            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "How replies come back") {
+                PanelSegmentedControl(
+                    options: [(label: "Text", optionID: "text"), (label: "Text + voice", optionID: "voice")],
+                    selectedOptionID: companionManager.speaksChatReplies ? "voice" : "text",
+                    onSelectOption: { selectedOptionID in
+                        companionManager.speaksChatReplies = selectedOptionID == "voice"
+                    }
+                )
+            }
+
+            PanelSettingsRow(iconName: "sidebar.squares.right", label: "Chat side") {
+                PanelSegmentedControl(
+                    options: [(label: "Left", optionID: ChatPanelSide.left.rawValue), (label: "Right", optionID: ChatPanelSide.right.rawValue)],
+                    selectedOptionID: companionManager.chatPanelSide.rawValue,
+                    onSelectOption: { selectedSideRawValue in
+                        companionManager.chatPanelSide = ChatPanelSide(rawValue: selectedSideRawValue) ?? .right
+                    }
+                )
+            }
+        }
     }
 
     // MARK: - General
