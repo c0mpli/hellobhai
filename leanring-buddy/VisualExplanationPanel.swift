@@ -1348,7 +1348,16 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       const edge = edgesById[edgeId];
       const layoutEdge = layoutGraph.edge(edge.command.from, edge.command.to, edgeId);
       if (!layoutEdge || !layoutEdge.points) { return; }
-      const points = layoutEdge.points;
+      // dagre returns a point per rank it crosses, often five in a straight
+      // run followed by a sharp turn; a smooth curve through those overshoots
+      // into a little hump. Dropping the points in the middle of straight runs
+      // leaves clean lines with one gentle bend.
+      const points = layoutEdge.points.filter((point, pointIndex, allPoints) => {
+        if (pointIndex === 0 || pointIndex === allPoints.length - 1) { return true; }
+        const previousPoint = allPoints[pointIndex - 1], nextPoint = allPoints[pointIndex + 1];
+        const turnAngle = Math.abs(Math.atan2(nextPoint.y - point.y, nextPoint.x - point.x) - Math.atan2(point.y - previousPoint.y, point.x - previousPoint.x));
+        return Math.min(turnAngle, Math.PI * 2 - turnAngle) > 0.05;
+      });
       if (edge.element) { edge.element.remove(); }
       if (edge.labelElement) { edge.labelElement.remove(); }
       const isConnector = edge.edgeStyle === 'connector';
@@ -1636,6 +1645,22 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
     function drawRow(command) {
       const rowItems = Array.isArray(command.items) ? command.items : [];
       const itemSizes = rowItems.map(rowItemSize);
+      // Like Clicky's token rows: every box in a row has the same height, and
+      // a run of adjacent boxes (The | sky | is) shares one width, so the row
+      // reads as a clean strip instead of ragged boxes. Explicit w/h win.
+      const isRowBox = (item) => item && typeof item === 'object' && item.box !== undefined;
+      const sharedBoxHeight = Math.max(0, ...rowItems.map((item, itemIndex) => isRowBox(item) ? itemSizes[itemIndex][1] : 0));
+      rowItems.forEach((item, itemIndex) => { if (isRowBox(item) && !item.h) { itemSizes[itemIndex] = [itemSizes[itemIndex][0], sharedBoxHeight]; } });
+      for (let runStartIndex = 0; runStartIndex < rowItems.length; runStartIndex += 1) {
+        if (!isRowBox(rowItems[runStartIndex])) { continue; }
+        let runEndIndex = runStartIndex;
+        while (runEndIndex + 1 < rowItems.length && isRowBox(rowItems[runEndIndex + 1])) { runEndIndex += 1; }
+        const runIndexes = [];
+        for (let runIndex = runStartIndex; runIndex <= runEndIndex; runIndex += 1) { if (!rowItems[runIndex].w) { runIndexes.push(runIndex); } }
+        const sharedRunWidth = Math.max(0, ...runIndexes.map((runIndex) => itemSizes[runIndex][0]));
+        runIndexes.forEach((runIndex) => { itemSizes[runIndex] = [sharedRunWidth, itemSizes[runIndex][1]]; });
+        runStartIndex = runEndIndex;
+      }
       const rowHeight = Math.max(42, ...itemSizes.map((itemSize) => itemSize[1]));
       const slotHeight = Math.max(rowHeight, ROW_MINIMUM_SLOT_HEIGHT);
       const rowCenterY = flowCursorY + slotHeight / 2;
@@ -1651,13 +1676,16 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       rowItems.forEach((item, itemIndex) => {
         if (!item || typeof item !== 'object') { return; }
         if (item.arrow) {
-          const arrowStartX = cursorX + (itemIndex === 0 ? 0 : 26);
+          // Same 22-unit clearance at both ends, so the arrow sits centered in its gap.
+          const arrowStartX = cursorX + (itemIndex === 0 ? 0 : 22);
           const arrowEndX = itemIndex === lastArrowIndex ? Math.max(arrowStartX + 70, ROW_RESULT_COLUMN_X - 22) : arrowStartX + 70;
           drawStraightArrow(rowGroup, arrowStartX, rowCenterY, arrowEndX, rowCenterY, { seedText: 'row' + itemIndex });
           if (typeof item.arrow === 'string') {
             addText(rowGroup, (arrowStartX + arrowEndX) / 2, rowCenterY - 18, item.arrow, { size: 18, color: 'muted' });
           }
-          cursorX = arrowEndX + 22;
+          // The next item adds the 22-unit gap itself, so the result starts
+          // exactly on ROW_RESULT_COLUMN_X, under its "column":"result" caption.
+          cursorX = arrowEndX;
           previousItemWasBox = false;
           return;
         }
@@ -1689,6 +1717,45 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       positionTitleAndCaptions();
     }
 
+    // A timeline in the flow, like Clicky's: one thin gray line, nodes evenly
+    // spaced by index (not by date, so close dates never collide), the date
+    // centered above each dark dot and the caption centered below. The
+    // spacing fits the widest label so neighbouring labels never touch.
+    const TIMELINE_DATE_SIZE = 24, TIMELINE_CAPTION_SIZE = 22;
+    const TIMELINE_DATE_OFFSET_Y = 27, TIMELINE_CAPTION_OFFSET_Y = 31, TIMELINE_DOT_RADIUS = 6.5;
+    function drawTimeline(command) {
+      const timelineItems = (Array.isArray(command.items) ? command.items : []).filter((item) => item && typeof item === 'object').slice(0, 8);
+      if (!timelineItems.length) { return; }
+      const captionMaxCharacters = 18;
+      const labelWidthOf = (item) => Math.max(measureTextWidth(item.at || '', TIMELINE_DATE_SIZE),
+        ...wrapIntoLines(item.text || '', captionMaxCharacters).map((lineText) => measureTextWidth(lineText, TIMELINE_CAPTION_SIZE)));
+      const labelWidths = timelineItems.map(labelWidthOf);
+      const nodeSpacing = Math.min(Math.max(Math.max(...labelWidths) + 60, 200), 280);
+      const captionLineCount = Math.max(1, ...timelineItems.map((item) => wrapIntoLines(item.text || '', captionMaxCharacters).length));
+      // The first node sits half its label width in, so no label starts left of the board origin.
+      const firstNodeX = labelWidths[0] / 2;
+      const lineY = flowCursorY + TIMELINE_DATE_OFFSET_Y + 14;
+      const lastNodeX = firstNodeX + nodeSpacing * (timelineItems.length - 1);
+      const timelineGroup = svgElement('g');
+      mainLayer.appendChild(timelineGroup);
+      // The line runs a little past both end nodes, like Clicky's.
+      timelineGroup.appendChild(roughCanvas.line(firstNodeX - 12, lineY, lastNodeX + 24, lineY,
+        { ...CLEAN_STROKE, roughness: 0.25, stroke: '#9a978f', strokeWidth: 1.6, seed: stableSeed('timeline' + lineY) }));
+      timelineItems.forEach((item, itemIndex) => {
+        const nodeX = firstNodeX + nodeSpacing * itemIndex;
+        const nodeColor = item.color && PALETTE[item.color] ? colorOf(item.color) : '#3a3a3a';
+        timelineGroup.appendChild(svgElement('circle', { cx: nodeX, cy: lineY, r: TIMELINE_DOT_RADIUS, fill: nodeColor }));
+        if (item.at) { addText(timelineGroup, nodeX, lineY - TIMELINE_DATE_OFFSET_Y, item.at, { size: TIMELINE_DATE_SIZE }); }
+        if (item.text) {
+          addText(timelineGroup, nodeX, lineY + TIMELINE_CAPTION_OFFSET_Y + (wrapIntoLines(item.text, captionMaxCharacters).length - 1) * TIMELINE_CAPTION_SIZE * 0.575,
+            item.text, { size: TIMELINE_CAPTION_SIZE, maxCharacters: captionMaxCharacters, color: item.color && PALETTE[item.color] ? item.color : 'fg' });
+        }
+      });
+      flowCursorY = lineY + TIMELINE_CAPTION_OFFSET_Y + captionLineCount * TIMELINE_CAPTION_SIZE * 1.15 + ROW_VERTICAL_GAP;
+      previousFlowCaption = null;
+      positionTitleAndCaptions();
+    }
+
     // MARK: commands
 
     function drawCommand(command) {
@@ -1715,25 +1782,36 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       } else if (commandType === 'caption') {
         drawFlowCaption(command);
 
+      } else if (commandType === 'timeline') {
+        drawTimeline(command);
+
       } else if (commandType === 'force') {
         // A thick colored force arrow in board coordinates (lift, weight,
         // thrust), with its label beside the middle or past the end.
         const [fromX, fromY] = command.from, [toX, toY] = command.to;
         const forceColor = colorOf(command.color, 'blue');
         const groupElement = svgElement('g');
-        drawStraightArrow(groupElement, fromX, fromY, toX, toY, { color: forceColor, width: command.width || 3.2, headLength: 17, seedText: 'force' });
+        const forceLength = Math.hypot(toX - fromX, toY - fromY) || 1;
+        const directionX = (toX - fromX) / forceLength, directionY = (toY - fromY) / forceLength;
+        // "pair" draws two parallel arrows that far apart (true = 24), centered
+        // on from→to, like Clicky's twin air streams under a fan or nozzle.
+        const pairGap = command.pair === true ? 24 : (Number(command.pair) || 0);
+        const pairOffsets = pairGap ? [-pairGap / 2, pairGap / 2] : [0];
+        for (const pairOffset of pairOffsets) {
+          const offsetX = -directionY * pairOffset, offsetY = directionX * pairOffset;
+          drawStraightArrow(groupElement, fromX + offsetX, fromY + offsetY, toX + offsetX, toY + offsetY,
+            { color: forceColor, width: command.width || (pairGap ? 2.4 : 3.2), headLength: pairGap ? 13 : 17, seedText: 'force' + pairOffset });
+        }
         mainLayer.appendChild(groupElement);
         if (command.label) {
-          const forceLength = Math.hypot(toX - fromX, toY - fromY) || 1;
-          const directionX = (toX - fromX) / forceLength, directionY = (toY - fromY) / forceLength;
           const labelColorName = command.labelColor || (command.color === 'gray' ? 'muted' : 'fg');
           if (command.labelAt === 'end') {
             addText(mainLayer, toX + directionX * 40, toY + directionY * 40, command.label, { size: command.size || 24, color: labelColorName });
           } else {
             // Beside the arrow: to its right for vertical arrows, above for horizontal ones.
             const isMostlyVertical = Math.abs(directionY) > Math.abs(directionX);
-            const labelX = isMostlyVertical ? (fromX + toX) / 2 + 16 : (fromX + toX) / 2;
-            const labelY = isMostlyVertical ? (fromY + toY) / 2 : (fromY + toY) / 2 - 22;
+            const labelX = isMostlyVertical ? (fromX + toX) / 2 + 16 + pairGap / 2 : (fromX + toX) / 2;
+            const labelY = isMostlyVertical ? (fromY + toY) / 2 : (fromY + toY) / 2 - 22 - pairGap / 2;
             addText(mainLayer, labelX, labelY, command.label, { size: command.size || 24, color: labelColorName, anchor: isMostlyVertical ? 'start' : 'middle' });
           }
         }
@@ -2042,8 +2120,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
         if (pathPoints.length < 2) { return; }
         const groupElement = svgElement('g');
         const drawOpenPath = command.smooth === false ? roughCanvas.linearPath.bind(roughCanvas) : roughCanvas.curve.bind(roughCanvas);
-        groupElement.appendChild(drawOpenPath(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2,
-          roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined }));
+        const pathElement = drawOpenPath(pathPoints, { stroke: colorOf(command.color, 'purple'), strokeWidth: command.width || 2,
+          roughness: 0.4, seed: stableSeed(JSON.stringify(pathPoints)), strokeLineDash: command.style === 'dashed' ? [9, 7] : undefined });
+        // Round ends, so a thick stroke (a swivel nozzle, a pipe) ends cleanly instead of in a square stub.
+        pathElement.querySelectorAll('path').forEach((strokeElement) => strokeElement.setAttribute('stroke-linecap', 'round'));
+        groupElement.appendChild(pathElement);
         mainLayer.appendChild(groupElement);
         registerGeometryShape(command.id, pathPoints, groupElement);
 
@@ -2322,7 +2403,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate, WKScr
       }
       // Centered on the drawing, but never so far left that the drawing's
       // left edge leaves the padding (a title wider than the drawing).
-      const centeredX = (drawing.minX + drawing.maxX) / 2 - frameWidth / 2;
+      // Flow boards (rows, captions, timelines) instead stay left-aligned with
+      // the heading, like Clicky's, so the heading and the rows share one edge.
+      const isFlowBoard = flowCursorY > 0;
+      const centeredX = isFlowBoard ? Infinity : (drawing.minX + drawing.maxX) / 2 - frameWidth / 2;
       return { x: Math.min(centeredX, drawing.minX - FRAME_PADDING_LEFT), y: contentTop - FRAME_PADDING_TOP, width: frameWidth, height: frameHeight };
     }
 
