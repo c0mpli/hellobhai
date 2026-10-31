@@ -155,6 +155,12 @@ struct BlueCursorView: View {
     @State private var bubbleOpacity: Double = 1.0
     @State private var cursorOpacity: Double = 0.0
 
+    /// True when the mouse has sat still long enough that macOS (or a video
+    /// player) would hide the real pointer. The buddy hides with it so it
+    /// doesn't float alone over a video, and comes back on the next mouse move.
+    @State private var isBuddyHiddenBecauseMouseIsIdle: Bool = false
+    private static let secondsOfMouseStillnessBeforeHidingBuddy: Double = 3.0
+
     // MARK: - Buddy Navigation State
 
     /// The buddy's current behavioral mode (following cursor, navigating, or pointing).
@@ -354,7 +360,8 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: DS.Colors.overlayCursorColor, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && !isBuddyHiddenBecauseMouseIsIdle && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .animation(.easeInOut(duration: 0.3), value: isBuddyHiddenBecauseMouseIsIdle)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -457,6 +464,16 @@ struct BlueCursorView: View {
         timer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { _ in
             let mouseLocation = NSEvent.mouseLocation
             self.isCursorOnThisScreen = self.screenFrame.contains(mouseLocation)
+
+            // Only hide while the buddy is just following an idle mouse; never in
+            // the middle of answering, pointing, or flying to a target.
+            let secondsSinceMouseLastMoved = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
+            let shouldHideBuddyForIdleMouse = secondsSinceMouseLastMoved >= Self.secondsOfMouseStillnessBeforeHidingBuddy
+                && self.companionManager.voiceState == .idle
+                && self.buddyNavigationMode == .followingCursor
+            if shouldHideBuddyForIdleMouse != self.isBuddyHiddenBecauseMouseIsIdle {
+                self.isBuddyHiddenBecauseMouseIsIdle = shouldHideBuddyForIdleMouse
+            }
 
             // During forward flight or pointing, the buddy is NOT interrupted by
             // mouse movement — it completes its full animation and return flight.
