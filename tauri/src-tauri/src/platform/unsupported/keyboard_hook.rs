@@ -1,7 +1,7 @@
 use crate::platform::PlatformError;
 use crate::push_to_talk::RawKeyEvent;
 
-pub fn start_keyboard_hook(on_key_event: Box<dyn Fn(RawKeyEvent) + Send + 'static>) -> Result<(), PlatformError> {
+pub fn start_keyboard_hook(_on_key_event: Box<dyn Fn(RawKeyEvent) + Send + 'static>) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }
 
