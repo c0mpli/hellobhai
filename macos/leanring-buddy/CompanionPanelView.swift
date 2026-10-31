@@ -26,6 +26,9 @@ struct CompanionPanelView: View {
     @State private var isCloseButtonHovered = false
     @State private var isQuitButtonHovered = false
     @State private var isOpenChatButtonHovered = false
+    /// nil while the lookup runs. It can start a login shell, so it runs off
+    /// the main thread instead of freezing the panel.
+    @State private var isSelectedBrainCLIFound: Bool?
     /// Settings are split into tabs so the panel stays short.
     @AppStorage("selectedPanelSettingsTab") private var selectedSettingsTabRawValue = PanelSettingsTab.general.rawValue
 
@@ -238,14 +241,79 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: 2) {
             PanelSectionLabel(title: "Model")
 
-            PanelSettingsRow(iconName: "sparkles", label: "Claude") {
+            PanelSettingsRow(iconName: "brain", label: "Brain") {
                 PanelSegmentedControl(
-                    options: Self.claudeModelOptions.map { (label: $0.label, optionID: $0.modelAlias) },
-                    selectedOptionID: companionManager.selectedModel,
-                    onSelectOption: { selectedModelAlias in
-                        companionManager.setSelectedModel(selectedModelAlias)
+                    options: [(label: "Claude", optionID: BrainEngine.claude.rawValue), (label: "Codex", optionID: BrainEngine.codex.rawValue)],
+                    selectedOptionID: companionManager.selectedBrainEngine.rawValue,
+                    onSelectOption: { selectedBrainEngineRawValue in
+                        companionManager.setSelectedBrainEngine(BrainEngine(rawValue: selectedBrainEngineRawValue) ?? .claude)
                     }
                 )
+            }
+
+            switch companionManager.selectedBrainEngine {
+            case .claude:
+                PanelSettingsRow(iconName: "sparkles", label: "Claude") {
+                    PanelSegmentedControl(
+                        options: Self.claudeModelOptions.map { (label: $0.label, optionID: $0.modelAlias) },
+                        selectedOptionID: companionManager.selectedModel,
+                        onSelectOption: { selectedModelAlias in
+                            companionManager.setSelectedModel(selectedModelAlias)
+                        }
+                    )
+                }
+            case .codex:
+                PanelSettingsRow(iconName: "sparkles", label: "Codex default", subtitle: "Reasoning effort") {
+                    PanelMenuPicker(
+                        selectedTitle: Self.codexReasoningEffortOptions.first { $0.optionID == (companionManager.selectedCodexReasoningEffort ?? "") }?.title ?? "Default",
+                        options: Self.codexReasoningEffortOptions,
+                        onSelectOption: { selectedEffortOptionID in
+                            companionManager.setSelectedCodexReasoningEffort(selectedEffortOptionID.isEmpty ? nil : selectedEffortOptionID)
+                        }
+                    )
+                }
+            }
+
+            PanelSettingsRow(iconName: "terminal", label: "CLI") {
+                selectedBrainCLIStatusLabel
+            }
+            .task(id: companionManager.selectedBrainEngine) {
+                let brainEngineToLookUp = companionManager.selectedBrainEngine
+                isSelectedBrainCLIFound = nil
+                isSelectedBrainCLIFound = await Task.detached {
+                    switch brainEngineToLookUp {
+                    case .claude: return ClaudeCLI.claudeExecutableURL != nil
+                    case .codex: return CodexCLI.codexExecutableURL != nil
+                    }
+                }.value
+            }
+        }
+    }
+
+    /// "" means the model's own default effort (no override passed).
+    private static let codexReasoningEffortOptions: [(title: String, optionID: String)] = [
+        ("Default", ""),
+        ("Low", "low"),
+        ("Medium", "medium"),
+        ("High", "high"),
+    ]
+
+    @ViewBuilder
+    private var selectedBrainCLIStatusLabel: some View {
+        switch companionManager.selectedBrainEngine {
+        case _ where isSelectedBrainCLIFound == nil:
+            PanelStatusLabel(statusText: "Looking for the CLI...", statusColor: DS.Colors.textTertiary)
+        case .claude:
+            if isSelectedBrainCLIFound == true {
+                PanelStatusLabel(statusText: "Claude Code found", statusColor: DS.Colors.success)
+            } else {
+                PanelStatusLabel(statusText: "Claude CLI not found: install Claude Code, then run claude", statusColor: DS.Colors.warning)
+            }
+        case .codex:
+            if isSelectedBrainCLIFound == true {
+                PanelStatusLabel(statusText: "Codex CLI found", statusColor: DS.Colors.success)
+            } else {
+                PanelStatusLabel(statusText: "Codex CLI not found: install it, then sign in with codex login", statusColor: DS.Colors.warning)
             }
         }
     }

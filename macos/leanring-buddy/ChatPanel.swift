@@ -420,7 +420,7 @@ struct ChatPanelView: View {
             )
 
             HStack(spacing: 8) {
-                Text(companionManager.selectedModel.capitalized)
+                Text(companionManager.selectedBrainEngine == .codex ? "Codex" : companionManager.selectedModel.capitalized)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                 Spacer()

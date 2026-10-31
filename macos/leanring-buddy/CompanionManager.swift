@@ -81,6 +81,13 @@ final class CompanionManager: ObservableObject {
     /// Runs the local `claude -p` CLI — uses your Claude Code login, no API keys.
     private lazy var claudeCLI = ClaudeCLI(model: selectedModel)
 
+    /// Runs the local `codex exec` CLI instead when the panel's Brain is Codex.
+    private lazy var codexCLI: CodexCLI = {
+        let codexCLI = CodexCLI()
+        codexCLI.reasoningEffort = selectedCodexReasoningEffort
+        return codexCLI
+    }()
+
     /// On-device neural text-to-speech (Kokoro for English, Supertonic-3 for
     /// Hindi and as fallback). Exposed so the panel can switch engine and voice.
     private(set) lazy var localTTSClient = LocalTTSClient { [weak self] isSpeaking in
@@ -204,6 +211,12 @@ final class CompanionManager: ObservableObject {
     /// The Claude Code model alias ("fable", "opus", "sonnet" or "haiku") used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "sonnet"
 
+    /// Which local CLI answers: `claude -p` (default) or `codex exec`. Persisted to UserDefaults.
+    @Published private(set) var selectedBrainEngine: BrainEngine = BrainEngine(rawValue: UserDefaults.standard.string(forKey: "selectedBrainEngine") ?? "") ?? .claude
+
+    /// Codex reasoning effort ("low", "medium", "high"), or nil for the model default. Persisted to UserDefaults.
+    @Published private(set) var selectedCodexReasoningEffort: String? = UserDefaults.standard.string(forKey: "selectedCodexReasoningEffort")
+
     /// Which orb.riv color variant the orb shows. Persisted to UserDefaults.
     @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
         ?? OrbColorVariant.defaultColorInputValue
@@ -290,6 +303,59 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeCLI.model = model
     }
+
+    func setSelectedBrainEngine(_ brainEngine: BrainEngine) {
+        selectedBrainEngine = brainEngine
+        UserDefaults.standard.set(brainEngine.rawValue, forKey: "selectedBrainEngine")
+    }
+
+    func setSelectedCodexReasoningEffort(_ reasoningEffort: String?) {
+        selectedCodexReasoningEffort = reasoningEffort
+        UserDefaults.standard.set(reasoningEffort, forKey: "selectedCodexReasoningEffort")
+        codexCLI.reasoningEffort = reasoningEffort
+    }
+
+    /// Sends one request to whichever CLI the panel's Brain picks. Claude
+    /// gets the arguments untouched. Codex can't run the Mac tools, so the
+    /// voice prompt (the only one with `allowsMacTools`) gets a note
+    /// steering it to on-screen actions instead.
+    private func askSelectedBrain(
+        images: [(data: Data, label: String)],
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String,
+        allowsMacTools: Bool = false,
+        effort: String? = nil,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async throws -> (text: String, duration: TimeInterval) {
+        switch selectedBrainEngine {
+        case .claude:
+            return try await claudeCLI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                allowsMacTools: allowsMacTools,
+                effort: effort,
+                onTextChunk: onTextChunk
+            )
+        case .codex:
+            return try await codexCLI.analyzeImageStreaming(
+                images: images,
+                systemPrompt: allowsMacTools ? systemPrompt + Self.codexCannotRunMacToolsNote : systemPrompt,
+                conversationHistory: conversationHistory,
+                userPrompt: userPrompt,
+                effort: effort,
+                onTextChunk: onTextChunk
+            )
+        }
+    }
+
+    private static let codexCannotRunMacToolsNote = """
+
+
+    important: in this session you cannot run shell commands, so the mac tools above (osascript, open, mdfind, ls, shortcuts) are not available, and you can't save notes to apple notes. do everything with on-screen actions ([CLICK], [TYPE], [KEY]) instead, for example [KEY:cmd+space] then [TYPE:whatsapp][KEY:return] to open an app.
+    """
 
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
@@ -846,7 +912,7 @@ final class CompanionManager: ObservableObject {
                     let streamingReplyMessage = CompanionChatMessage(isFromUser: false, text: "", isStreaming: true)
                     chatMessages.append(streamingReplyMessage)
                     replyChatMessageIDsFromThisRequest.append(streamingReplyMessage.id)
-                    let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
+                    let (fullResponseText, _) = try await askSelectedBrain(
                         images: imagesForThisStep,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
                         conversationHistory: historyForAPI,
@@ -1073,7 +1139,7 @@ final class CompanionManager: ObservableObject {
                 you already said, as an intro: \(spokenIntro)
                 \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
-                let (fullVisualScript, visualDuration) = try await claudeCLI.analyzeImageStreaming(
+                let (fullVisualScript, visualDuration) = try await askSelectedBrain(
                     images: screenImages,
                     systemPrompt: liveContentKind == .drawing ? Self.visualExplanationSystemPrompt : Self.liveNotesSystemPrompt,
                     userPrompt: visualRequestPrompt,
@@ -1290,7 +1356,7 @@ final class CompanionManager: ObservableObject {
                 you already said, as an intro: \(spokenIntro)
                 \(Self.replyLanguageNote(forTranscript: userRequest))
                 """
-                let (fullModelScript, modelScriptDuration) = try await claudeCLI.analyzeImageStreaming(
+                let (fullModelScript, modelScriptDuration) = try await askSelectedBrain(
                     images: screenImages,
                     systemPrompt: Self.model3DSystemPrompt,
                     userPrompt: model3DRequestPrompt,
@@ -1791,7 +1857,7 @@ final class CompanionManager: ObservableObject {
                 let dimensionInfo = " (image dimensions: \(cursorScreenCapture.screenshotWidthInPixels)x\(cursorScreenCapture.screenshotHeightInPixels) pixels)"
                 let labeledImages = [(data: cursorScreenCapture.imageData, label: cursorScreenCapture.label + dimensionInfo)]
 
-                let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
+                let (fullResponseText, _) = try await askSelectedBrain(
                     images: labeledImages,
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     userPrompt: "look around my screen and find something interesting to point at",
