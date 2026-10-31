@@ -44,17 +44,7 @@ final class ClaudeCLI {
             throw ClaudeCLIError(message: "couldn't find the claude CLI. install claude code and run `claude` once to log in.")
         }
 
-        // The CLI's stream-json input takes one user message, so prior turns
-        // are folded into the prompt text instead of sent as separate messages.
-        var promptText = ""
-        if !conversationHistory.isEmpty {
-            promptText += "conversation so far:\n"
-            for (userPlaceholder, assistantResponse) in conversationHistory {
-                promptText += "user: \(userPlaceholder)\nyou: \(assistantResponse)\n"
-            }
-            promptText += "\nnew message from the user:\n"
-        }
-        promptText += userPrompt
+        let promptText = Self.foldedPromptText(conversationHistory: conversationHistory, userPrompt: userPrompt)
 
         var contentBlocks: [[String: Any]] = []
         for image in images {
@@ -168,6 +158,25 @@ final class ClaudeCLI {
         return (text: finalResultText ?? accumulatedResponseText, duration: duration)
     }
 
+    /// The CLI's stream-json input takes one user message, so prior turns
+    /// are folded into the prompt text instead of sent as separate messages.
+    /// CodexCLI reuses this, since `codex exec` also takes one prompt.
+    static func foldedPromptText(
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)],
+        userPrompt: String
+    ) -> String {
+        var promptText = ""
+        if !conversationHistory.isEmpty {
+            promptText += "conversation so far:\n"
+            for (userPlaceholder, assistantResponse) in conversationHistory {
+                promptText += "user: \(userPlaceholder)\nyou: \(assistantResponse)\n"
+            }
+            promptText += "\nnew message from the user:\n"
+        }
+        promptText += userPrompt
+        return promptText
+    }
+
     /// Lets Claude drive the Mac with a short allowlist of commands. In print
     /// mode anything not allowlisted (and not read-only) is denied outright,
     /// so `rm`, `mv`, `curl` and friends never run. `osascript` is the
@@ -188,7 +197,7 @@ final class ClaudeCLI {
 
     /// GUI apps launch with a minimal PATH, so check the usual install
     /// locations first, then ask a login shell as a last resort.
-    private static let claudeExecutableURL: URL? = {
+    static let claudeExecutableURL: URL? = {
         let homeDirectoryPath = FileManager.default.homeDirectoryForCurrentUser.path
         let candidatePaths = [
             "\(homeDirectoryPath)/.local/bin/claude",

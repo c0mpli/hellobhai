@@ -56,6 +56,10 @@ The full walkthrough, diagrams, the pieces and where they live, and exactly what
 - Xcode 16+
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in. Run `claude` once in a terminal.
 
+### Use Codex instead of Claude
+
+bhai can also think with OpenAI's [Codex CLI](https://github.com/openai/codex). Install it, run `codex login` once in a terminal, then pick **Brain → Codex** in the menu bar panel (General tab). It runs `codex exec` read-only with your ChatGPT login, with no access to your Codex config, MCP servers or AGENTS.md files. Pointing, circles, whiteboard, notes, 3D models and on-screen clicks/typing all work. The Mac command tools (osascript, open, mdfind, Shortcuts, saving notes to Apple Notes) are Claude-only, because Codex has no safe command allowlist; with Codex, bhai does those tasks by clicking and typing instead.
+
 ### Build & run
 
 ```bash
@@ -88,7 +92,7 @@ Pressing the hotkey again interrupts whatever it's doing, in either mode.
 
 Click the orb glyph in the menu bar to open the panel:
 
-- **Claude model**: Fable, Opus, Sonnet (default) or Haiku.
+- **Brain**: Claude (default) or Codex, and the Claude model: Fable, Opus, Sonnet (default) or Haiku.
 - **Orb**: its color.
 - **Chat**: hotkey mode (**Voice**: hold to talk; **Chat**: press to open the chat, press again to tuck it away), how typed questions are answered (text, or text + voice), and which screen edge the chat slides in from.
 - **Voice**: engine and voice, with previews; speech model status.
