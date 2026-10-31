@@ -139,8 +139,16 @@ final class CompanionManager: ObservableObject {
     /// The slide-in chat panel, created the first time it opens.
     private var chatPanelManager: ChatPanelManager?
 
-    func showChatPanel() {
-        if !isChatInputMode {
+    /// Whether replies to spoken questions are read aloud (default) or only
+    /// written in the chat, for when the user can talk but can't listen.
+    @Published var speaksVoiceReplies: Bool = UserDefaults.standard.object(forKey: "speaksVoiceReplies") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(speaksVoiceReplies, forKey: "speaksVoiceReplies") }
+    }
+
+    /// Opens the chat. Usually that also switches to chat mode; a spoken
+    /// question with a text-only reply opens it without leaving voice mode.
+    func showChatPanel(switchesToChatMode: Bool = true) {
+        if switchesToChatMode && !isChatInputMode {
             isChatInputMode = true
         }
         if chatPanelManager == nil {
@@ -865,7 +873,11 @@ final class CompanionManager: ObservableObject {
 
     private func sendTranscriptToClaudeWithScreenshot(transcript: String, isTypedChatMessage: Bool = false) {
         chatMessages.append(CompanionChatMessage(isFromUser: true, text: transcript))
-        let repliesAreSpoken = !isTypedChatMessage || speaksChatReplies
+        let repliesAreSpoken = isTypedChatMessage ? speaksChatReplies : speaksVoiceReplies
+        // A spoken question answered in text needs the chat on screen to be read.
+        if !isTypedChatMessage && !speaksVoiceReplies {
+            showChatPanel(switchesToChatMode: false)
+        }
         let languageNote = isTypedChatMessage
             ? Self.typedReplyLanguageNote(repliesAreSpoken: repliesAreSpoken)
             : Self.replyLanguageNote(forTranscript: transcript)

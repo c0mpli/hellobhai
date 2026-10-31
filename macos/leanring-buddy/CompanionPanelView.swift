@@ -556,7 +556,17 @@ struct CompanionPanelView: View {
         VStack(alignment: .leading, spacing: 2) {
             PanelSectionLabel(title: "Chat")
 
-            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "Spoken questions always get voice") {
+            PanelSettingsRow(iconName: "mic", label: "When you speak", subtitle: "Text only opens the chat") {
+                PanelSegmentedControl(
+                    options: [(label: "Voice + text", optionID: "voice"), (label: "Text", optionID: "text")],
+                    selectedOptionID: companionManager.speaksVoiceReplies ? "voice" : "text",
+                    onSelectOption: { selectedOptionID in
+                        companionManager.speaksVoiceReplies = selectedOptionID == "voice"
+                    }
+                )
+            }
+
+            PanelSettingsRow(iconName: "keyboard", label: "When you type") {
                 PanelSegmentedControl(
                     options: [(label: "Text", optionID: "text"), (label: "Text + voice", optionID: "voice")],
                     selectedOptionID: companionManager.speaksChatReplies ? "voice" : "text",
