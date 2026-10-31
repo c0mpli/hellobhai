@@ -40,6 +40,17 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
+    /// Hand-drawn gold ellipses from [CIRCLE] tags, drawn on the overlay
+    /// around the on-screen text the reply talks about.
+    @Published var screenCircleAnnotations: [ScreenCircleAnnotation] = []
+    /// Fades the circles out once the reply finishes speaking.
+    private var screenCircleFadeTask: Task<Void, Never>?
+    /// Freehand strokes (global AppKit coords) the user drew on the overlay
+    /// while holding the hotkey, so "what is this?" knows what "this" is.
+    @Published var userDrawnStrokes: [[CGPoint]] = []
+    /// True from hotkey release until the strokes ride along with a request,
+    /// so a drawing with no speech can still be sent as "what is this?".
+    private var userDrawnStrokesAwaitingRequest = false
 
     // MARK: - Onboarding Prompt Bubble
 
@@ -342,6 +353,13 @@ final class CompanionManager: ObservableObject {
             visualExplanationPanelManager.finishLiveContent()
             model3DOverlayManager.close()
             clearDetectedElementLocation()
+            screenCircleFadeTask?.cancel()
+            screenCircleAnnotations = []
+            userDrawnStrokes = []
+            userDrawnStrokesAwaitingRequest = false
+            // While the hotkey is held, a mouse drag draws on the overlay
+            // instead of clicking the app underneath.
+            overlayWindowManager.setAcceptsUserDrawing(true)
 
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
@@ -376,6 +394,8 @@ final class CompanionManager: ObservableObject {
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            overlayWindowManager.setAcceptsUserDrawing(false)
+            sendUserDrawingIfNoTranscriptArrives()
         case .none:
             break
         }
@@ -413,6 +433,10 @@ final class CompanionManager: ObservableObject {
     format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
 
     if pointing wouldn't help, append [POINT:none].
+
+    to circle things on screen, put [CIRCLE:x,y,width,height:label] or [CIRCLE:x,y,width,height:label:screenN] before the POINT tag: x,y is the center and width,height the size, in the same coordinate space and screen rules as POINT. use it to circle the exact text, values, or UI your explanation refers to, tight around the item with about 6px padding. use several small circles, one per item, in the order you mention them. POINT still flies the cursor to a single target; you can use both.
+
+    the user can also draw on screen while speaking. when they do, the message says which region they circled (screen number and screenshot pixels) and a zoomed crop of it is attached; "this", "that", or "here" means that region, so answer about it.
 
     examples:
     - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
@@ -486,6 +510,11 @@ final class CompanionManager: ObservableObject {
         currentVisualTask?.cancel()
         localTTSClient.stopPlayback()
 
+        // Strokes are cleared on every hotkey press, so any left belong to this
+        // utterance. Pad each by 8pt so a single click still makes a region.
+        let userCircledRegions = userDrawnStrokes.map { CGRect(boundingBoxOfStroke: $0).insetBy(dx: -8, dy: -8) }
+        userDrawnStrokesAwaitingRequest = false
+
         currentResponseTask = Task {
             do {
                 var previousStepActionSummary: [String] = []
@@ -513,10 +542,25 @@ final class CompanionManager: ObservableObject {
 
                     // Round one carries what the user said; later rounds just show
                     // Claude the screen after its last actions.
-                    let userPromptForThisStep = agentStepNumber == 1 ? transcript : Self.agentContinuationPrompt
+                    var userPromptForThisStep = agentStepNumber == 1 ? transcript : Self.agentContinuationPrompt
+
+                    // Regions the user drew around while speaking: tell Claude where
+                    // they are and attach a native-resolution crop of each.
+                    var imagesForThisStep = labeledImages
+                    if agentStepNumber == 1 {
+                        for userCircledRegion in userCircledRegions {
+                            let regionCenter = CGPoint(x: userCircledRegion.midX, y: userCircledRegion.midY)
+                            guard let screenIndex = screenCaptures.firstIndex(where: { $0.displayFrame.contains(regionCenter) }) else { continue }
+                            let pixelRect = screenCaptures[screenIndex].screenshotPixelRect(forGlobalAppKitRect: userCircledRegion)
+                            userPromptForThisStep += "\n(the user circled a region on screen \(screenIndex + 1) at \(Int(pixelRect.minX)),\(Int(pixelRect.minY)),\(Int(pixelRect.width)),\(Int(pixelRect.height)) (top-left x,y then width,height, in screenshot pixels) while speaking. \"this\", \"that\", or \"here\" refers to it.)"
+                            if let regionCropData = try? await CompanionScreenCaptureUtility.captureRegionAsJPEG(globalAppKitRect: userCircledRegion.insetBy(dx: -24, dy: -24)) {
+                                imagesForThisStep.append((data: regionCropData, label: "zoomed crop of the region the user circled on screen \(screenIndex + 1) (for reading only, not a coordinate space)"))
+                            }
+                        }
+                    }
 
                     let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
-                        images: labeledImages,
+                        images: imagesForThisStep,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
                         conversationHistory: historyForAPI,
                         userPrompt: userPromptForThisStep,
@@ -548,7 +592,8 @@ final class CompanionManager: ObservableObject {
                     let (textWithoutVisualRequest, visualDescription) = Self.extractTaggedRequest(named: "SHOW", from: responseTextWithoutDrawingCommands)
                     let (textWithoutNotesRequest, notesDescription) = Self.extractTaggedRequest(named: "NOTES", from: textWithoutVisualRequest)
                     let (textWithoutModel3DRequest, model3DRequest) = Self.extractTaggedRequest(named: "MODEL3D", from: textWithoutNotesRequest)
-                    let parseResult = Self.parsePointingCoordinates(from: textWithoutModel3DRequest)
+                    let (textWithoutCircleTags, circleTags) = Self.parseCircleTags(from: textWithoutModel3DRequest)
+                    let parseResult = Self.parsePointingCoordinates(from: textWithoutCircleTags)
                     let spokenText = parseResult.spokenText
 
                     if visualDescription != nil || notesDescription != nil {
@@ -632,6 +677,7 @@ final class CompanionManager: ObservableObject {
                         localTTSClient.speakText(spokenText)
                         voiceState = .responding
                     }
+                    showScreenCirclesWhileSpeaking(circleTags, screenCaptures: screenCaptures)
 
                     // No on-screen actions means the task is finished — any Mac-tool
                     // work already happened inside the claude -p call.
@@ -1042,7 +1088,7 @@ final class CompanionManager: ObservableObject {
     /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
         // Match [POINT:none] or [POINT:123,456:label] or [POINT:123,456:label:screen2]
-        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?)\]\s*$"#
+        let pattern = #"\[POINT:(?:none|(\d+)\s*,\s*(\d+)"# + tagLabelAndScreenPattern + #")\]\s*$"#
 
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
               let match = regex.firstMatch(in: responseText, range: NSRange(responseText.startIndex..., in: responseText)) else {
@@ -1079,6 +1125,96 @@ final class CompanionManager: ObservableObject {
             elementLabel: elementLabel,
             screenNumber: screenNumber
         )
+    }
+
+    // MARK: - Circle Tag Parsing
+
+    /// The ":label:screenN" tail shared by the [POINT] and [CIRCLE] tag patterns.
+    private static let tagLabelAndScreenPattern = #"(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?"#
+
+    /// One parsed [CIRCLE:x,y,width,height:label:screenN] tag, in screenshot pixels.
+    struct CircleTag {
+        let screenshotRect: CGRect
+        let label: String?
+        let screenNumber: Int?
+    }
+
+    /// Pulls every [CIRCLE:...] tag out of the reply. Runs before the
+    /// [POINT] parser, which only matches a tag at the very end.
+    static func parseCircleTags(from responseText: String) -> (remainingText: String, circleTags: [CircleTag]) {
+        let pattern = #"\[CIRCLE:(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)"# + tagLabelAndScreenPattern + #"\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return (responseText, []) }
+
+        let fullRange = NSRange(responseText.startIndex..., in: responseText)
+        let circleTags: [CircleTag] = regex.matches(in: responseText, range: fullRange).compactMap { match in
+            func capturedText(_ groupIndex: Int) -> String? {
+                Range(match.range(at: groupIndex), in: responseText).map { String(responseText[$0]) }
+            }
+            guard let centerX = capturedText(1).flatMap(Double.init),
+                  let centerY = capturedText(2).flatMap(Double.init),
+                  let width = capturedText(3).flatMap(Double.init),
+                  let height = capturedText(4).flatMap(Double.init) else { return nil }
+            return CircleTag(
+                screenshotRect: CGRect(x: centerX - width / 2, y: centerY - height / 2, width: width, height: height),
+                label: capturedText(5)?.trimmingCharacters(in: .whitespaces),
+                screenNumber: capturedText(6).flatMap { Int($0) }
+            )
+        }
+        let remainingText = regex.stringByReplacingMatches(in: responseText, range: fullRange, withTemplate: "")
+        return (remainingText.trimmingCharacters(in: .whitespacesAndNewlines), circleTags)
+    }
+
+    /// Shows the circles staggered ~1.2s apart while the reply is spoken,
+    /// then fades them (and the user's own strokes) out once speech ends
+    /// and every circle has been drawn.
+    private func showScreenCirclesWhileSpeaking(_ circleTags: [CircleTag], screenCaptures: [CompanionScreenCapture]) {
+        screenCircleFadeTask?.cancel()
+        screenCircleAnnotations = []
+        guard !circleTags.isEmpty || !userDrawnStrokes.isEmpty else { return }
+
+        screenCircleAnnotations = circleTags.enumerated().compactMap { circleIndex, circleTag in
+            guard let targetScreenCapture = Self.screenCapture(forScreenNumber: circleTag.screenNumber, in: screenCaptures) else { return nil }
+            // Map two opposite corners the same way POINT maps its point. AppKit's
+            // y axis is flipped, so the screenshot's top-left lands at the top.
+            let topLeft = Self.globalAppKitLocation(forScreenshotPoint: CGPoint(x: circleTag.screenshotRect.minX, y: circleTag.screenshotRect.minY), in: targetScreenCapture)
+            let bottomRight = Self.globalAppKitLocation(forScreenshotPoint: CGPoint(x: circleTag.screenshotRect.maxX, y: circleTag.screenshotRect.maxY), in: targetScreenCapture)
+            print("⭕ Circle: \(circleTag.screenshotRect) → \"\(circleTag.label ?? "item")\"")
+            return ScreenCircleAnnotation(
+                globalAppKitFrame: CGRect(x: topLeft.x, y: bottomRight.y, width: bottomRight.x - topLeft.x, height: topLeft.y - bottomRight.y),
+                // Speech starts a moment after speakText (first sentence is synthesized first).
+                appearDelaySeconds: 0.3 + Double(circleIndex) * 1.2
+            )
+        }
+
+        let lastCircleAppearDelaySeconds = screenCircleAnnotations.last?.appearDelaySeconds ?? 0
+        screenCircleFadeTask = Task {
+            let earliestFadeTime = ContinuousClock.now + .seconds(lastCircleAppearDelaySeconds + 1.5)
+            while !Task.isCancelled && (isSpeakingAloud || ContinuousClock.now < earliestFadeTime) {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.6)) {
+                screenCircleAnnotations = []
+                userDrawnStrokes = []
+            }
+        }
+    }
+
+    /// Speech is optional when the user draws: if dictation ends without a
+    /// transcript (silence submits nothing), send the drawing as "what is this?".
+    private func sendUserDrawingIfNoTranscriptArrives() {
+        guard !userDrawnStrokes.isEmpty else { return }
+        userDrawnStrokesAwaitingRequest = true
+        Task {
+            // A transcript, if any, is submitted in the same main-actor turn
+            // that dictation stops, which clears the flag.
+            try? await Task.sleep(for: .milliseconds(200))
+            while buddyDictationManager.isDictationInProgress {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard userDrawnStrokesAwaitingRequest else { return }
+            sendTranscriptToClaudeWithScreenshot(transcript: "What is this?")
+        }
     }
 
     // MARK: - Onboarding Demo

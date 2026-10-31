@@ -129,4 +129,67 @@ enum CompanionScreenCaptureUtility {
 
         return capturedScreens
     }
+
+    /// Recaptures one region (global AppKit coords) at the display's native
+    /// resolution, so small text the user circled is legible. The full-screen
+    /// screenshots above are downscaled to 1280px.
+    static func captureRegionAsJPEG(globalAppKitRect: CGRect) async throws -> Data? {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let regionCenter = CGPoint(x: globalAppKitRect.midX, y: globalAppKitRect.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(regionCenter) }),
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
+              let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            return nil
+        }
+
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        let ownAppWindows = content.windows.filter { $0.owningApplication?.bundleIdentifier == ownBundleIdentifier }
+
+        // sourceRect is in display-local points with a top-left origin.
+        let regionOnScreen = globalAppKitRect.intersection(screen.frame)
+        guard !regionOnScreen.isEmpty else { return nil }
+        let configuration = SCStreamConfiguration()
+        configuration.sourceRect = CGRect(
+            x: regionOnScreen.minX - screen.frame.minX,
+            y: screen.frame.maxY - regionOnScreen.maxY,
+            width: regionOnScreen.width,
+            height: regionOnScreen.height
+        )
+        configuration.width = Int(regionOnScreen.width * screen.backingScaleFactor)
+        configuration.height = Int(regionOnScreen.height * screen.backingScaleFactor)
+
+        let cgImage = try await SCScreenshotManager.captureImage(
+            contentFilter: SCContentFilter(display: display, excludingWindows: ownAppWindows),
+            configuration: configuration
+        )
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+    }
+}
+
+extension CompanionScreenCapture {
+    /// Inverse of CompanionManager.globalAppKitLocation: maps a rect in global
+    /// AppKit coords (bottom-left origin) into this screenshot's pixel space
+    /// (top-left origin), clipped to the screenshot.
+    func screenshotPixelRect(forGlobalAppKitRect globalAppKitRect: CGRect) -> CGRect {
+        let pixelsPerPointHorizontally = CGFloat(screenshotWidthInPixels) / CGFloat(displayWidthInPoints)
+        let pixelsPerPointVertically = CGFloat(screenshotHeightInPixels) / CGFloat(displayHeightInPoints)
+        let pixelRect = CGRect(
+            x: (globalAppKitRect.minX - displayFrame.minX) * pixelsPerPointHorizontally,
+            y: (displayFrame.maxY - globalAppKitRect.maxY) * pixelsPerPointVertically,
+            width: globalAppKitRect.width * pixelsPerPointHorizontally,
+            height: globalAppKitRect.height * pixelsPerPointVertically
+        )
+        return pixelRect.intersection(CGRect(x: 0, y: 0, width: screenshotWidthInPixels, height: screenshotHeightInPixels))
+    }
+}
+
+extension CGRect {
+    /// Smallest rect containing every point of a freehand stroke the user drew.
+    init(boundingBoxOfStroke strokePoints: [CGPoint]) {
+        let xValues = strokePoints.map(\.x)
+        let yValues = strokePoints.map(\.y)
+        let minimumX = xValues.min() ?? 0
+        let minimumY = yValues.min() ?? 0
+        self.init(x: minimumX, y: minimumY, width: (xValues.max() ?? 0) - minimumX, height: (yValues.max() ?? 0) - minimumY)
+    }
 }

@@ -10,12 +10,17 @@
 import AppKit
 import SwiftUI
 
-class OverlayWindow: NSWindow {
+// An NSPanel with .nonactivatingPanel so that while the hotkey is held and the
+// overlay accepts mouse events for drawing, clicking it never activates the app.
+class OverlayWindow: NSPanel {
+    /// Receives the user's freehand strokes while drawing is enabled.
+    weak var companionManager: CompanionManager?
+
     init(screen: NSScreen) {
         // Create window covering entire screen
         super.init(
             contentRect: screen.frame,
-            styleMask: .borderless,
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -48,6 +53,27 @@ class OverlayWindow: NSWindow {
 
     override var canBecomeMain: Bool {
         return false
+    }
+
+    // Mouse events only reach this window while the hotkey is held (see
+    // OverlayWindowManager.setAcceptsUserDrawing). Handled here, before
+    // NSWindow's first-mouse logic, so the very first drag already draws.
+    // Ctrl+click can arrive as a right-click, so both buttons draw.
+    override func sendEvent(_ event: NSEvent) {
+        guard let companionManager else { return super.sendEvent(event) }
+        let globalPoint = convertPoint(toScreen: event.locationInWindow)
+        switch event.type {
+        case .leftMouseDown, .rightMouseDown:
+            companionManager.userDrawnStrokes.append([globalPoint])
+        case .leftMouseDragged, .rightMouseDragged:
+            if !companionManager.userDrawnStrokes.isEmpty {
+                companionManager.userDrawnStrokes[companionManager.userDrawnStrokes.count - 1].append(globalPoint)
+            }
+        case .leftMouseUp, .rightMouseUp:
+            break
+        default:
+            super.sendEvent(event)
+        }
     }
 }
 
@@ -179,6 +205,35 @@ struct BlueCursorView: View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            // Gold hand-drawn ellipses from [CIRCLE] tags, traced live around
+            // the on-screen text the reply is talking about.
+            ForEach(companionManager.screenCircleAnnotations.filter { $0.globalAppKitFrame.intersects(screenFrame) }) { screenCircleAnnotation in
+                let topLeftInSwiftUI = convertScreenPointToSwiftUICoordinates(
+                    CGPoint(x: screenCircleAnnotation.globalAppKitFrame.minX, y: screenCircleAnnotation.globalAppKitFrame.maxY)
+                )
+                HandDrawnScreenCircleView(
+                    wobbleSeed: screenCircleAnnotation.wobbleSeed,
+                    appearDelaySeconds: screenCircleAnnotation.appearDelaySeconds
+                )
+                .frame(width: screenCircleAnnotation.globalAppKitFrame.width, height: screenCircleAnnotation.globalAppKitFrame.height)
+                .position(
+                    x: topLeftInSwiftUI.x + screenCircleAnnotation.globalAppKitFrame.width / 2,
+                    y: topLeftInSwiftUI.y + screenCircleAnnotation.globalAppKitFrame.height / 2
+                )
+                .transition(.opacity)
+            }
+
+            // The user's own freehand strokes, drawn while holding the hotkey.
+            if !companionManager.userDrawnStrokes.isEmpty {
+                Path { strokePath in
+                    for userDrawnStroke in companionManager.userDrawnStrokes {
+                        strokePath.addLines(userDrawnStroke.map(convertScreenPointToSwiftUICoordinates))
+                    }
+                }
+                .stroke(HandDrawnScreenCircleView.goldStrokeColor, style: HandDrawnScreenCircleView.goldStrokeStyle)
+                .transition(.opacity)
+            }
 
             // Dynamic-Island-style pill that grows out of the notch while
             // speaking. Only mounted while speaking so its animation costs
@@ -865,6 +920,7 @@ class OverlayWindowManager {
         // Create one overlay window per screen
         for screen in screens {
             let window = OverlayWindow(screen: screen)
+            window.companionManager = companionManager
 
             let contentView = BlueCursorView(
                 screenFrame: screen.frame,
@@ -891,5 +947,92 @@ class OverlayWindowManager {
 
     func isShowingOverlay() -> Bool {
         return !overlayWindows.isEmpty
+    }
+
+    /// While the push-to-talk hotkey is held the overlay takes mouse events,
+    /// so a drag draws on it instead of clicking the app underneath.
+    /// Click-through is restored as soon as the hotkey is released.
+    func setAcceptsUserDrawing(_ acceptsUserDrawing: Bool) {
+        for window in overlayWindows {
+            window.ignoresMouseEvents = !acceptsUserDrawing
+        }
+    }
+}
+
+// MARK: - Screen Circles
+
+/// One gold ellipse Claude asked for with a [CIRCLE] tag.
+struct ScreenCircleAnnotation: Identifiable {
+    let id = UUID()
+    /// Where to draw, in global AppKit coords (bottom-left origin).
+    let globalAppKitFrame: CGRect
+    /// Seconds after the reply starts before this circle starts tracing.
+    let appearDelaySeconds: Double
+    /// Gives each circle its own slightly different wobble.
+    let wobbleSeed = Double.random(in: 0..<1000)
+}
+
+/// A hand-drawn ellipse: the radius wobbles a little and the line goes
+/// ~1.1 turns, drifting slightly outward, so it overshoots its start the
+/// way a pen circle does.
+struct HandDrawnEllipseShape: Shape {
+    let wobbleSeed: Double
+
+    func path(in rect: CGRect) -> Path {
+        let startAngle = -2.4 + sin(wobbleSeed) * 0.3
+        let totalTurnRadians = 2.0 * Double.pi * 1.1
+        let firstWobblePhase = wobbleSeed * 1.7
+        let secondWobblePhase = wobbleSeed * 2.9
+        let pointCount = 140
+        // Wide items (a whole line of text) get a flatter, pill-like loop the
+        // way a pen circles them; small items stay round.
+        let widthToHeightRatio = rect.width / max(rect.height, 1)
+        let superellipseExponent = 2.0 + min(1.5, max(0, widthToHeightRatio - 1.5) * 0.3)
+        func superellipseComponent(_ trigValue: Double) -> Double {
+            (trigValue < 0 ? -1 : 1) * pow(abs(trigValue), 2.0 / superellipseExponent)
+        }
+
+        var ellipsePath = Path()
+        for pointIndex in 0...pointCount {
+            let progress = Double(pointIndex) / Double(pointCount)
+            let angle = startAngle + progress * totalTurnRadians
+            // Start a bit inside the rect and end a bit outside, so the
+            // overshoot sits beside the start instead of on top of it.
+            let outwardDrift = 0.95 + 0.09 * progress
+            let wobble = 1.0 + 0.035 * sin(2.0 * angle + firstWobblePhase) + 0.02 * sin(3.0 * angle + secondWobblePhase)
+            let radiusScale = outwardDrift * wobble
+            let point = CGPoint(
+                x: rect.midX + rect.width / 2 * radiusScale * superellipseComponent(cos(angle)),
+                y: rect.midY + rect.height / 2 * radiusScale * superellipseComponent(sin(angle))
+            )
+            if pointIndex == 0 {
+                ellipsePath.move(to: point)
+            } else {
+                ellipsePath.addLine(to: point)
+            }
+        }
+        return ellipsePath
+    }
+}
+
+/// Traces a HandDrawnEllipseShape in thin warm gold once its delay passes.
+struct HandDrawnScreenCircleView: View {
+    let wobbleSeed: Double
+    let appearDelaySeconds: Double
+
+    static let goldStrokeColor = Color(red: 0.83, green: 0.655, blue: 0.17).opacity(0.85)
+    static let goldStrokeStyle = StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
+
+    @State private var tracedFraction: CGFloat = 0
+
+    var body: some View {
+        HandDrawnEllipseShape(wobbleSeed: wobbleSeed)
+            .trim(from: 0, to: tracedFraction)
+            .stroke(Self.goldStrokeColor, style: Self.goldStrokeStyle)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.4).delay(appearDelaySeconds)) {
+                    tracedFraction = 1
+                }
+            }
     }
 }
