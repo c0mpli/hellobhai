@@ -3,8 +3,9 @@
 //  leanring-buddy
 //
 //  System-wide transparent overlay windows, one per screen. The blue
-//  pointer flies out of the orb (OrbWindow.swift) onto any screen when
-//  Claude points, clicks or draws; the overlays also show the gold circles,
+//  pointer flies out of the orb (OrbWindow.swift), or from beside the mouse
+//  in the cursor voice style, onto any screen when Claude points, clicks or
+//  draws; the overlays also show the gold circles,
 //  the user's own strokes, and the notch speaking pill.
 //
 
@@ -147,19 +148,21 @@ struct NavigationBubbleSizePreferenceKey: PreferenceKey {
     }
 }
 
-/// What the blue pointer is doing. It only exists on screen while it has a
-/// job: it launches out of the orb, does it, and flies back in.
+/// What the blue pointer is doing. Its home depends on the voice style: in
+/// the orb style it launches out of the orb for a job and flies back in; in
+/// the cursor style it follows the mouse and flies back to it.
 enum BuddyNavigationMode {
-    /// Default: no pointer on screen, bhai is just the orb.
-    case restingInOrb
+    /// Default. Orb style: no pointer on screen, bhai is just the orb.
+    /// Cursor style: the pointer follows the mouse.
+    case restingAtHome
     /// Flying toward a detected UI element or the drawing pen.
     case navigatingToTarget
     /// Arrived at the target and pointing at it with a speech bubble.
     case pointingAtTarget
     /// Sitting on the whiteboard or 3D pen's drawing head and moving with it.
     case followingDrawingPen
-    /// Flying back into the orb, shrinking as it goes.
-    case returningToOrb
+    /// Flying back into the orb (shrinking as it goes) or to the mouse.
+    case returningHome
 }
 
 /// Reports whether macOS is currently drawing the real mouse pointer, system-wide.
@@ -189,8 +192,11 @@ enum SystemPointerVisibility {
 // draws, the screen that holds the target launches the pointer from the
 // orb's position (off this screen if the orb is on another display, so it
 // flies in from that side), plays the job, and flies it back into the orb.
+// In the cursor voice style the pointer's home is beside the mouse instead:
+// it follows the mouse on the mouse's screen (waveform while listening,
+// spinner while thinking) and launches from and returns to there.
 // Also draws the gold circles, the user's strokes, the notch pill, and the
-// onboarding bubbles next to the orb.
+// onboarding bubbles next to the orb (or the pointer, in the cursor style).
 struct BlueCursorView: View {
     let screenFrame: CGRect
     let isFirstAppearance: Bool
@@ -206,7 +212,7 @@ struct BlueCursorView: View {
 
     // MARK: - Buddy Navigation State
 
-    @State private var buddyNavigationMode: BuddyNavigationMode = .restingInOrb
+    @State private var buddyNavigationMode: BuddyNavigationMode = .restingAtHome
 
     /// The rotation angle of the pointer in degrees. Default is -35° (cursor-like).
     /// Changes to face the direction of travel while flying.
@@ -242,6 +248,18 @@ struct BlueCursorView: View {
     /// Changes for every new pointing job, so the delayed "fade the bubble,
     /// fly home" steps of an earlier job can't cut a newer one short.
     @State private var pointingJobIdentifier = UUID()
+
+    /// Cursor style only: whether the mouse is on this screen. Only that
+    /// screen shows the pointer following it.
+    @State private var isMouseOnThisScreen: Bool = false
+
+    /// Cursor style only: true while macOS is not drawing the real pointer
+    /// (a video player hid it, or it is hidden while typing). The following
+    /// pointer hides with it so it never floats alone on screen.
+    @State private var isPointerHiddenBecauseSystemPointerIsHidden: Bool = false
+
+    /// This screen's id in `companionManager.overlayScreensWithPointerAwayFromHome`.
+    @State private var overlayScreenIdentifier = UUID()
 
     private let fullWelcomeMessage = "hey! i'm hellobhai"
 
@@ -304,23 +322,27 @@ struct BlueCursorView: View {
             .animation(.spring(response: 0.45, dampingFraction: 0.72), value: companionManager.isSpeakingAloud)
             .allowsHitTesting(false)
 
-            // Welcome speech bubble above the orb (first launch only)
-            if isOrbOnThisScreen && showWelcome && !welcomeText.isEmpty {
+            // Welcome speech bubble above the orb, or beside the following
+            // pointer in the cursor style (first launch only)
+            if isBubbleHomeOnThisScreen && showWelcome && !welcomeText.isEmpty {
                 orbBubbleText(welcomeText)
                     .opacity(bubbleOpacity)
-                    .position(bubbleCenterNextToOrb(bubbleSize: bubbleSize))
+                    .position(bubbleCenterNextToHome(bubbleSize: bubbleSize))
+                    .animation(isCursorStyle ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
                     .animation(.easeOut(duration: 0.5), value: bubbleOpacity)
                     .onPreferenceChange(SizePreferenceKey.self) { newSize in
                         bubbleSize = newSize
                     }
             }
 
-            // Onboarding prompt above the orb — "press control + option and
-            // say hi" streamed after the welcome demo
-            if isOrbOnThisScreen && companionManager.showOnboardingPrompt && !companionManager.onboardingPromptText.isEmpty {
+            // Onboarding prompt above the orb (beside the pointer in the
+            // cursor style) — "press control + option and say hi" streamed
+            // after the welcome demo
+            if isBubbleHomeOnThisScreen && companionManager.showOnboardingPrompt && !companionManager.onboardingPromptText.isEmpty {
                 orbBubbleText(companionManager.onboardingPromptText)
                     .opacity(companionManager.onboardingPromptOpacity)
-                    .position(bubbleCenterNextToOrb(bubbleSize: bubbleSize))
+                    .position(bubbleCenterNextToHome(bubbleSize: bubbleSize))
+                    .animation(isCursorStyle ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
                     .animation(.easeOut(duration: 0.4), value: companionManager.onboardingPromptOpacity)
                     .onPreferenceChange(SizePreferenceKey.self) { newSize in
                         bubbleSize = newSize
@@ -362,37 +384,61 @@ struct BlueCursorView: View {
                     }
             }
 
-            // The blue pointer. Only on screen while it has a job. While it
-            // follows the pen a fast spring smooths the pen's jumps; while
-            // flying there is NO implicit animation — the frame-by-frame
+            // The blue pointer. Orb style: only on screen while it has a job.
+            // Cursor style: also beside the mouse at rest, swapped for the
+            // waveform/spinner below while listening/thinking. While it
+            // follows the pen or the mouse a fast spring smooths the jumps;
+            // while flying there is NO implicit animation — the frame-by-frame
             // bezier timer moves it directly at 60fps for a smooth arc.
             BuddyPointerView(extraGlowRadius: max(0, buddyFlightScale - 1.0) * 20)
                 .rotationEffect(.degrees(pointerRotationDegrees))
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyNavigationMode == .restingInOrb ? 0 : pointerOpacity)
+                .opacity(pointerDisplayOpacity)
                 .position(cursorPosition)
                 .animation(
-                    buddyNavigationMode == .followingDrawingPen
+                    isPointerFollowingSomething
                         ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
                         : nil,
                     value: cursorPosition
                 )
                 .animation(
-                    buddyNavigationMode == .pointingAtTarget || buddyNavigationMode == .followingDrawingPen
+                    buddyNavigationMode == .pointingAtTarget || isPointerFollowingSomething
                         ? .easeInOut(duration: 0.3)
                         : nil,
                     value: pointerRotationDegrees
                 )
+                .animation(.easeInOut(duration: 0.3), value: isPointerHiddenBecauseSystemPointerIsHidden)
+                .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
+
+            // Cursor style: blue waveform where the pointer is while
+            // listening. Only mounted while shown, so its 36fps timeline
+            // costs nothing in the orb style.
+            if isCursorStyleIndicatorShownOnThisScreen && companionManager.voiceState == .listening {
+                BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+                    .position(cursorPosition)
+                    .animation(isPointerFollowingSomething ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+            }
+
+            // Cursor style: blue spinner where the pointer is while thinking
+            // (transcription + Claude + waiting for TTS).
+            if isCursorStyleIndicatorShownOnThisScreen && companionManager.voiceState == .processing {
+                BlueCursorSpinnerView()
+                    .position(cursorPosition)
+                    .animation(isPointerFollowingSomething ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+            }
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
         .onAppear {
-            cursorPosition = orbCenterInThisScreen
+            isMouseOnThisScreen = screenFrame.contains(NSEvent.mouseLocation)
+            cursorPosition = pointerHomePosition
             startTrackingDrawingPen()
 
             // Only show the welcome message on first appearance (app start),
-            // on the screen the orb is on.
-            if isFirstAppearance && isOrbOnThisScreen {
+            // on the screen the orb (or, in the cursor style, the mouse) is on.
+            if isFirstAppearance && isBubbleHomeOnThisScreen {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     self.bubbleOpacity = 0.0
                     startWelcomeAnimation()
@@ -402,6 +448,36 @@ struct BlueCursorView: View {
         .onDisappear {
             drawingPenTrackingTimer?.invalidate()
             navigationAnimationTimer?.invalidate()
+            companionManager.overlayScreensWithPointerAwayFromHome.remove(overlayScreenIdentifier)
+        }
+        .onChange(of: buddyNavigationMode) { newNavigationMode in
+            // Shared with the other screens so the mouse's screen hides its
+            // following pointer for as long as this one is out.
+            if newNavigationMode == .restingAtHome {
+                companionManager.overlayScreensWithPointerAwayFromHome.remove(overlayScreenIdentifier)
+            } else {
+                companionManager.overlayScreensWithPointerAwayFromHome.insert(overlayScreenIdentifier)
+            }
+        }
+        .onChange(of: isCursorStyle) { _ in
+            // Style switched live, or chat mode switched to voice mode: move
+            // the resting pointer to its new home without flying it across
+            // the screen, and re-aim a return flight that is underway.
+            switch buddyNavigationMode {
+            case .restingAtHome:
+                isMouseOnThisScreen = screenFrame.contains(NSEvent.mouseLocation)
+                var jumpWithoutAnimation = Transaction()
+                jumpWithoutAnimation.disablesAnimations = true
+                withTransaction(jumpWithoutAnimation) {
+                    cursorPosition = pointerHomePosition
+                }
+            case .returningHome:
+                // Undo a half-done fade into the orb before re-aiming.
+                pointerOpacity = 1.0
+                startFlyingBackHome()
+            case .navigatingToTarget, .pointingAtTarget, .followingDrawingPen:
+                break
+            }
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, launch the pointer at
@@ -442,6 +518,114 @@ struct BlueCursorView: View {
             )
     }
 
+    // MARK: - Pointer Home (orb or mouse)
+
+    /// The cursor voice style only applies in voice mode; chat mode keeps
+    /// the orb's position as the launch point (the orb is hidden there).
+    private var isCursorStyle: Bool {
+        companionManager.voiceBuddyStyle == .cursor && !companionManager.isChatInputMode
+    }
+
+    /// Following the pen, or (cursor style) resting beside the mouse.
+    private var isPointerFollowingSomething: Bool {
+        buddyNavigationMode == .followingDrawingPen
+            || (isCursorStyle && buddyNavigationMode == .restingAtHome)
+    }
+
+    /// Cursor style at rest: the following pointer (or its waveform/spinner)
+    /// shows only on the screen with the mouse, and not while another
+    /// screen's pointer is out pointing or drawing, so only one is visible.
+    private var isFollowingPointerShownOnThisScreen: Bool {
+        isCursorStyle
+            && buddyNavigationMode == .restingAtHome
+            && isMouseOnThisScreen
+            && companionManager.overlayScreensWithPointerAwayFromHome.isEmpty
+    }
+
+    /// Cursor style: where the waveform/spinner show. Beside the mouse at
+    /// rest, or wherever this screen's pointer is while it is out, so a
+    /// hotkey press mid-pointing still shows that bhai is listening.
+    private var isCursorStyleIndicatorShownOnThisScreen: Bool {
+        isFollowingPointerShownOnThisScreen
+            || (isCursorStyle && buddyNavigationMode != .restingAtHome)
+    }
+
+    /// Cursor style: the arrow gives way to the waveform and spinner.
+    private var isVoiceStateShowingArrow: Bool {
+        companionManager.voiceState == .idle || companionManager.voiceState == .responding
+    }
+
+    private var pointerDisplayOpacity: Double {
+        if buddyNavigationMode != .restingAtHome {
+            return isCursorStyle && !isVoiceStateShowingArrow ? 0 : pointerOpacity
+        }
+        let isShowingFollowingArrow = isFollowingPointerShownOnThisScreen
+            && isVoiceStateShowingArrow
+            && !isPointerHiddenBecauseSystemPointerIsHidden
+        return isShowingFollowingArrow ? 1 : 0
+    }
+
+    /// Where the pointer launches from and returns to, in this screen's
+    /// SwiftUI coordinates (may lie off this screen).
+    private var pointerHomePosition: CGPoint {
+        isCursorStyle ? mouseFollowingPosition : orbCenterInThisScreen
+    }
+
+    /// Cursor style: the pointer sits just below-right of the real mouse tip.
+    private var mouseFollowingPosition: CGPoint {
+        let mouseInSwiftUI = convertScreenPointToSwiftUICoordinates(NSEvent.mouseLocation)
+        return CGPoint(x: mouseInSwiftUI.x + 35, y: mouseInSwiftUI.y + 25)
+    }
+
+    /// The onboarding bubbles sit by the orb, or by the pointer in the
+    /// cursor style.
+    /// In the cursor style they wait while the pointer is out, so they
+    /// never sit on top of the "right here!" bubble or ride its flight.
+    private var isBubbleHomeOnThisScreen: Bool {
+        isCursorStyle
+            ? isMouseOnThisScreen && buddyNavigationMode == .restingAtHome
+            : isOrbOnThisScreen
+    }
+
+    private func bubbleCenterNextToHome(bubbleSize: CGSize) -> CGPoint {
+        if isCursorStyle {
+            return CGPoint(x: cursorPosition.x + 10 + bubbleSize.width / 2, y: cursorPosition.y + 18)
+        }
+        return bubbleCenterNextToOrb(bubbleSize: bubbleSize)
+    }
+
+    /// Cursor style at rest: keep the pointer beside the mouse and hide it
+    /// while the real pointer is hidden (never mid-answer).
+    private func followMouseWhileResting() {
+        let mouseLocation = NSEvent.mouseLocation
+        let mouseIsOnThisScreen = screenFrame.contains(mouseLocation)
+        let mouseJustEnteredThisScreen = mouseIsOnThisScreen && !isMouseOnThisScreen
+        if mouseIsOnThisScreen != isMouseOnThisScreen {
+            isMouseOnThisScreen = mouseIsOnThisScreen
+        }
+        let shouldHideWithSystemPointer = !SystemPointerVisibility.isSystemPointerVisible()
+            && companionManager.voiceState == .idle
+        if shouldHideWithSystemPointer != isPointerHiddenBecauseSystemPointerIsHidden {
+            isPointerHiddenBecauseSystemPointerIsHidden = shouldHideWithSystemPointer
+        }
+        // Only the mouse's screen moves its pointer (other screens would
+        // redraw at 60fps for nothing); a launch from rest re-reads the
+        // mouse position in placePointerAtHomeReadyToLaunch anyway.
+        guard mouseIsOnThisScreen else { return }
+        let newPointerPosition = mouseFollowingPosition
+        guard newPointerPosition != cursorPosition else { return }
+        if mouseJustEnteredThisScreen {
+            // Jump into place instead of springing in from a stale spot.
+            var jumpWithoutAnimation = Transaction()
+            jumpWithoutAnimation.disablesAnimations = true
+            withTransaction(jumpWithoutAnimation) {
+                cursorPosition = newPointerPosition
+            }
+        } else {
+            cursorPosition = newPointerPosition
+        }
+    }
+
     // MARK: - Orb Position
 
     private var isOrbOnThisScreen: Bool {
@@ -479,28 +663,35 @@ struct BlueCursorView: View {
         return CGPoint(x: x, y: y)
     }
 
-    /// Puts the pointer at the orb, small and visible, ready to fly out.
-    private func placePointerInsideOrb() {
-        cursorPosition = orbCenterInThisScreen
-        buddyFlightScale = 0.3
+    /// Puts the pointer at home, visible and ready to fly out: small inside
+    /// the orb, or full size beside the mouse in the cursor style.
+    private func placePointerAtHomeReadyToLaunch() {
+        cursorPosition = pointerHomePosition
+        buddyFlightScale = isCursorStyle ? 1.0 : 0.3
         pointerOpacity = 1.0
     }
 
     // MARK: - Drawing Pen
 
     /// While the whiteboard or 3D model is drawing, the pointer is the pen:
-    /// it flies out of the orb to the drawing head, moves with it, and flies
-    /// home once the pen has rested for a moment.
+    /// it flies out of its home to the drawing head, moves with it, and
+    /// flies home once the pen has rested for a moment. In the cursor style
+    /// the same timer keeps the resting pointer beside the mouse.
     private func startTrackingDrawingPen() {
         drawingPenTrackingTimer?.invalidate()
         drawingPenTrackingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
             let drawingPenLocation = self.companionManager.buddyDrawingPenScreenLocation
 
             switch self.buddyNavigationMode {
-            case .restingInOrb, .returningToOrb:
-                guard let drawingPenLocation, self.screenFrame.contains(drawingPenLocation) else { return }
-                if self.buddyNavigationMode == .restingInOrb {
-                    self.placePointerInsideOrb()
+            case .restingAtHome, .returningHome:
+                guard let drawingPenLocation, self.screenFrame.contains(drawingPenLocation) else {
+                    if self.buddyNavigationMode == .restingAtHome && self.isCursorStyle {
+                        self.followMouseWhileResting()
+                    }
+                    return
+                }
+                if self.buddyNavigationMode == .restingAtHome {
+                    self.placePointerAtHomeReadyToLaunch()
                 }
                 self.lastTimeDrawingPenWasSeen = Date()
                 self.buddyNavigationMode = .navigatingToTarget
@@ -517,7 +708,7 @@ struct BlueCursorView: View {
                     self.lastTimeDrawingPenWasSeen = Date()
                     self.cursorPosition = self.pointerPositionOnDrawingHead(drawingPenLocation)
                 } else if Date().timeIntervalSince(self.lastTimeDrawingPenWasSeen) > self.drawingPenRestSecondsBeforeReturning {
-                    self.startFlyingBackToOrb()
+                    self.startFlyingBackHome()
                 }
             case .navigatingToTarget, .pointingAtTarget:
                 break
@@ -534,7 +725,8 @@ struct BlueCursorView: View {
     // MARK: - Element Navigation
 
     /// Launches the pointer toward a detected UI element location: out of
-    /// the orb if it was resting, or from wherever it is if already out.
+    /// its home (orb or mouse) if it was resting, or from wherever it is if
+    /// already out.
     private func startNavigatingToElement(screenLocation: CGPoint) {
         // Don't interrupt welcome animation
         guard !showWelcome || welcomeText.isEmpty else { return }
@@ -555,16 +747,16 @@ struct BlueCursorView: View {
             y: max(20, min(offsetTarget.y, screenFrame.height - 20))
         )
 
-        let isLaunchingFromOrb = buddyNavigationMode == .restingInOrb
-        if isLaunchingFromOrb {
-            placePointerInsideOrb()
+        if buddyNavigationMode == .restingAtHome {
+            placePointerAtHomeReadyToLaunch()
         }
         pointingJobIdentifier = UUID()
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         buddyNavigationMode = .navigatingToTarget
 
-        animateBezierFlightArc(to: clampedTarget, growsFromOrb: isLaunchingFromOrb || buddyFlightScale < 1.0) {
+        // Only an orb launch starts small (placePointerAtHomeReadyToLaunch).
+        animateBezierFlightArc(to: clampedTarget, growsFromOrb: buddyFlightScale < 1.0) {
             guard self.buddyNavigationMode == .navigatingToTarget else { return }
             self.startPointingAtElement()
         }
@@ -695,7 +887,7 @@ struct BlueCursorView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     guard self.buddyNavigationMode == .pointingAtTarget,
                           self.pointingJobIdentifier == thisPointingJobIdentifier else { return }
-                    self.startFlyingBackToOrb()
+                    self.startFlyingBackHome()
                 }
             }
         }
@@ -732,25 +924,26 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Flies the pointer back into the orb (wherever it is now, even on
-    /// another screen) and hides it there.
-    private func startFlyingBackToOrb() {
-        buddyNavigationMode = .returningToOrb
+    /// Flies the pointer back home (wherever home is now, even on another
+    /// screen): into the orb, where it hides, or back beside the mouse.
+    private func startFlyingBackHome() {
+        buddyNavigationMode = .returningHome
         navigationBubbleText = ""
         navigationBubbleOpacity = 0.0
         navigationBubbleScale = 1.0
 
-        animateBezierFlightArc(to: orbCenterInThisScreen, shrinksIntoOrb: true) {
-            guard self.buddyNavigationMode == .returningToOrb else { return }
-            self.finishNavigationAndRestInOrb()
+        animateBezierFlightArc(to: pointerHomePosition, shrinksIntoOrb: !isCursorStyle) {
+            guard self.buddyNavigationMode == .returningHome else { return }
+            self.finishNavigationAndRestAtHome()
         }
     }
 
-    /// Back home: the pointer is hidden until the next job.
-    private func finishNavigationAndRestInOrb() {
+    /// Back home: hidden in the orb until the next job, or (cursor style)
+    /// following the mouse again.
+    private func finishNavigationAndRestAtHome() {
         navigationAnimationTimer?.invalidate()
         navigationAnimationTimer = nil
-        buddyNavigationMode = .restingInOrb
+        buddyNavigationMode = .restingAtHome
         pointerRotationDegrees = -35.0
         buddyFlightScale = 1.0
         pointerOpacity = 0.0
@@ -871,6 +1064,77 @@ private struct NotchSpeakingIndicatorView: View {
             }
         }
         .frame(height: 16)
+    }
+}
+
+// MARK: - Blue Cursor Waveform
+
+/// A small blue waveform that replaces the following pointer (cursor
+/// style) while the user is holding the push-to-talk shortcut and speaking.
+private struct BlueCursorWaveformView: View {
+    let audioPowerLevel: CGFloat
+
+    private let barCount = 5
+    private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { timelineContext in
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(0..<barCount, id: \.self) { barIndex in
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(DS.Colors.overlayCursorColor)
+                        .frame(
+                            width: 2,
+                            height: barHeight(
+                                for: barIndex,
+                                timelineDate: timelineContext.date
+                            )
+                        )
+                }
+            }
+            .shadow(color: DS.Colors.overlayCursorColor.opacity(0.6), radius: 6, x: 0, y: 0)
+            .animation(.linear(duration: 0.08), value: audioPowerLevel)
+        }
+    }
+
+    private func barHeight(for barIndex: Int, timelineDate: Date) -> CGFloat {
+        let animationPhase = CGFloat(timelineDate.timeIntervalSinceReferenceDate * 3.6) + CGFloat(barIndex) * 0.35
+        let normalizedAudioPowerLevel = max(audioPowerLevel - 0.008, 0)
+        let easedAudioPowerLevel = pow(min(normalizedAudioPowerLevel * 2.85, 1), 0.76)
+        let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
+        let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
+        return 3 + reactiveHeight + idlePulse
+    }
+}
+
+// MARK: - Blue Cursor Spinner
+
+/// A small blue spinning indicator that replaces the following pointer
+/// (cursor style) while the AI is processing a voice input.
+private struct BlueCursorSpinnerView: View {
+    @State private var isSpinning = false
+
+    var body: some View {
+        Circle()
+            .trim(from: 0.15, to: 0.85)
+            .stroke(
+                AngularGradient(
+                    colors: [
+                        DS.Colors.overlayCursorColor.opacity(0.0),
+                        DS.Colors.overlayCursorColor
+                    ],
+                    center: .center
+                ),
+                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+            )
+            .frame(width: 14, height: 14)
+            .rotationEffect(.degrees(isSpinning ? 360 : 0))
+            .shadow(color: DS.Colors.overlayCursorColor.opacity(0.6), radius: 6, x: 0, y: 0)
+            .onAppear {
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
+                    isSpinning = true
+                }
+            }
     }
 }
 

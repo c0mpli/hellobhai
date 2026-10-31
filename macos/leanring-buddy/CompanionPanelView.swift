@@ -114,8 +114,8 @@ struct CompanionPanelView: View {
                 PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
             case .chat:
                 chatSection
-            case .orb:
-                orbSection
+            case .buddy:
+                buddySection
             }
         }
         .padding(16)
@@ -318,12 +318,44 @@ struct CompanionPanelView: View {
         }
     }
 
-    // MARK: - Orb
+    // MARK: - Buddy
 
-    private var orbSection: some View {
+    /// How bhai looks in voice mode (orb or cursor), plus the orb's own
+    /// settings, which only matter in the orb style.
+    private var buddySection: some View {
+        let isOrbStyle = companionManager.voiceBuddyStyle == .orb
+        return VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Buddy")
+
+            PanelSettingsRow(
+                iconName: isOrbStyle ? "circle.circle" : "cursorarrow",
+                label: "Voice style",
+                subtitle: isOrbStyle ? "Pointer flies out of the orb" : "Pointer stays next to the mouse"
+            ) {
+                PanelSegmentedControl(
+                    options: [(label: "Orb", optionID: VoiceBuddyStyle.orb.rawValue), (label: "Cursor", optionID: VoiceBuddyStyle.cursor.rawValue)],
+                    selectedOptionID: companionManager.voiceBuddyStyle.rawValue,
+                    onSelectOption: { selectedOptionID in
+                        companionManager.setVoiceBuddyStyle(VoiceBuddyStyle(rawValue: selectedOptionID) ?? .orb)
+                    }
+                )
+            }
+
+            orbAppearanceRows
+                .disabled(!isOrbStyle)
+                .opacity(isOrbStyle ? 1 : 0.4)
+
+            if !isOrbStyle {
+                Text("Size and color apply to the orb style")
+                    .font(.system(size: 10))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    private var orbAppearanceRows: some View {
         VStack(alignment: .leading, spacing: 2) {
-            PanelSectionLabel(title: "Orb")
-
             PanelSettingsRow(iconName: "arrow.up.left.and.arrow.down.right", label: "Size") {
                 HStack(spacing: 8) {
                     Slider(
@@ -337,7 +369,7 @@ struct CompanionPanelView: View {
                     .controlSize(.mini)
                     .tint(DS.Colors.overlayCursorColor)
                     .frame(width: 120)
-                    .pointerCursor()
+                    .pointerCursor(isEnabled: companionManager.voiceBuddyStyle == .orb)
                     Text("\(Int(companionManager.orbSideLength)) pt")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
                         .foregroundColor(DS.Colors.textSecondary)
@@ -781,14 +813,14 @@ private enum PanelSettingsTab: String, CaseIterable {
     case general
     case voice
     case chat
-    case orb
+    case buddy
 
     var title: String {
         switch self {
         case .general: return "General"
         case .voice: return "Voice"
         case .chat: return "Chat"
-        case .orb: return "Orb"
+        case .buddy: return "Buddy"
         }
     }
 }
@@ -1043,6 +1075,8 @@ private struct PanelMenuPicker<SelectedValueLabel: View>: View {
     @ViewBuilder let selectedValueLabel: () -> SelectedValueLabel
 
     @State private var isHovered = false
+    /// False inside a `.disabled` row, so the dimmed picker keeps the arrow cursor.
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Menu {
@@ -1071,7 +1105,7 @@ private struct PanelMenuPicker<SelectedValueLabel: View>: View {
         .buttonStyle(.plain)
         .fixedSize()
         .onHover { isHovered = $0 }
-        .pointerCursor()
+        .pointerCursor(isEnabled: isEnabled)
     }
 }
 
