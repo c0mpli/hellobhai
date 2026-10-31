@@ -8,11 +8,16 @@ An open-source, local-first take on HeyClicky, built on top of Farza's open-sour
 
 **"How do these buses actually work?"** A 3D model built right over the video, then a live whiteboard of the swivel joint.
 
-[![Bus demo: 3D model and whiteboard](docs/media/bus-3d-and-whiteboard.jpg)](docs/media/bus-3d-and-whiteboard.mp4)
+
+https://github.com/user-attachments/assets/f3f0f3b9-85ad-42b9-aef5-4ef3e5641740
+
 
 **"What is this device?"** A Raspberry Pi hotspot, modelled part by part over the YouTube video.
 
-[![Raspberry Pi demo: 3D model with labels](docs/media/raspberry-pi-3d.jpg)](docs/media/raspberry-pi-3d.mp4)
+
+
+https://github.com/user-attachments/assets/305cff8a-7777-4671-906f-11a68852630f
+
 
 ## What it does
 
