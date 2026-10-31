@@ -112,7 +112,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         callBoardFunction("add", withStringArgument: drawingCommandLine)
     }
 
-    /// Hides the "drawing…" / "writing…" indicator once every step is shown.
+    /// Tells the page every step is shown, so the pen can rest out of view.
     func finishLiveContent() {
         guard isBoardPageReady else {
             pendingDrawingCommandLines.append(Self.finishedDrawingMarker)
@@ -121,7 +121,17 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         webView?.evaluateJavaScript("hb.done()")
     }
 
+    /// Reveals whatever the pen hasn't drawn yet at once and stops the pen
+    /// and its scratch sound (the hotkey was pressed, so the user is talking).
+    func stopDrawing() {
+        guard isBoardPageReady else { return }
+        webView?.evaluateJavaScript("hb.stopDrawing()")
+    }
+
     func close() {
+        // Stop the pen first: once hidden, the page stops animating, and only
+        // its animation loop would otherwise silence a scratch mid-stroke.
+        stopDrawing()
         panel?.orderOut(nil)
     }
 
@@ -286,8 +296,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           <g id="title-layer"></g>
           <g id="motion-layer"></g>
         </svg>
-        <div id="drawing-indicator">drawing…</div>
-        <div id="navigation-hint">scroll or drag to move · pinch to zoom · double-click to fit</div>
+        <div id="formula-layer"></div>
         \(penElementHTML)
         <script>\(penAndScratchSoundScript)</script>
         <script>\(boardRendererScript)</script>
@@ -299,10 +308,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     /// Cream grid paper, the warm title bar with the centered lowercase topic,
     /// the gold pen, and the drawing indicator: shared by the board and notes.
     private static let sharedPaperStylesheet = """
+    /* Barely-visible square grid. The board moves it with its camera (see
+       moveGridWithCamera) so the drawing never slides over a static grid. */
     html, body { margin: 0; height: 100%; overflow: hidden; background-color: #f8f5ec;
-      background-image: linear-gradient(rgba(84,72,40,0.07) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(84,72,40,0.07) 1px, transparent 1px);
-      background-size: 22px 22px; background-position: -1px 5px; }
+      background-image: linear-gradient(rgba(84,72,40,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(84,72,40,0.04) 1px, transparent 1px);
+      background-size: 17px 17px; background-position: -1px 5px; }
     #titlebar { position: absolute; top: 0; left: 0; right: 0; height: 28px; z-index: 5;
       background: linear-gradient(#e9e6dc, #e1ded3); border-bottom: 1px solid #d6d2c5;
       display: flex; align-items: center; justify-content: center;
@@ -310,20 +321,16 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       -webkit-user-select: none; cursor: default; }
     #topic { max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #pen { position: fixed; left: 0; top: 0; width: 17px; height: 17px; z-index: 20; pointer-events: none;
-      opacity: 0; transition: opacity 0.35s; will-change: transform;
-      filter: drop-shadow(0 1px 1.5px rgba(110,80,0,0.35)) drop-shadow(0 0 3px rgba(217,176,46,0.35)); }
+      opacity: 0; transition: opacity 0.5s; will-change: transform;
+      filter: drop-shadow(0 1.5px 3px rgba(90,70,20,0.32)) drop-shadow(0 0 5px rgba(201,166,70,0.25)); }
     /* Shows at once when drawing starts; only resting fades it out. */
     #pen.visible { opacity: 1; transition: none; }
-    #drawing-indicator { position: absolute; right: 16px; bottom: 8px; z-index: 5; color: #a39d8f; font: 17px "Patrick Hand", sans-serif;
-      animation: hb-blink 1.1s infinite ease-in-out; transition: opacity 0.4s; pointer-events: none; }
-    #drawing-indicator.finished { animation: none; opacity: 0; }
-    @keyframes hb-blink { 0%,100% { opacity: 0.35; } 50% { opacity: 1; } }
     """
 
     /// The gold rounded "play" triangle that travels with the drawing head.
     /// Shared with the 3D model overlay so both pens look the same.
     static let penTriangleSVGPath = """
-    <path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#d9b02e"/>
+    <path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#cfa83a"/>
     """
 
     private static let penElementHTML = """
@@ -333,14 +340,15 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     private static let boardStylesheet = """
     #board { position: absolute; inset: 28px 0 0 0; width: 100%; height: calc(100% - 28px); cursor: grab; touch-action: none; }
     #board.panning { cursor: grabbing; }
-    #navigation-hint { position: absolute; left: 16px; bottom: 8px; color: #a39d8f; font: 15px "Patrick Hand", sans-serif;
-      opacity: 0; transition: opacity 0.6s; pointer-events: none; }
-    #navigation-hint.visible { opacity: 1; }
+    /* KaTeX formulas live in HTML over the board (see positionFormulaOverlays). */
+    #formula-layer { position: absolute; inset: 28px 0 0 0; overflow: hidden; pointer-events: none; z-index: 1; }
+    #formula-layer > div { position: absolute; left: 0; top: 0; transform-origin: 0 0; white-space: nowrap; }
     /* Free labels get a paper-colored halo so they stay readable over lines. */
     text.halo { stroke: #f8f5ec; stroke-width: 5px; stroke-linejoin: round; paint-order: stroke; }
     /* The heading is bold marker: Patrick Hand has one weight, so the ink is
-       thickened with a same-colored outline. */
-    text.heading { stroke: #2a2a2a; stroke-width: 1.4px; stroke-linejoin: round; paint-order: normal; }
+       thickened with a same-colored outline, and letter-spacing undoes the
+       crowding the outline adds. */
+    text.heading { stroke: #2a2a2a; stroke-width: 1.5px; stroke-linejoin: round; paint-order: normal; letter-spacing: 0.6px; }
     .hb-pulse { transform-box: fill-box; transform-origin: center; animation: hb-pulse 1.4s 3 ease-in-out; }
     .hb-shake { animation: hb-shake 0.6s ease-in-out 2; }
     .hb-glow { filter: drop-shadow(0 0 5px #e9c84a) drop-shadow(0 0 2px #e9c84a); }
@@ -403,9 +411,20 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         silence() {
           if (!audioContext) { return; }
           noiseGain.gain.setTargetAtTime(0, audioContext.currentTime, 0.03);
+        },
+        // Cuts the sound at once and parks the audio clock. Needed when the
+        // page stops animating (hidden panel): only the animation loop would
+        // otherwise ramp the gain back down, so a hiss would keep playing.
+        // The next scratch or tick wakes the context again.
+        stopImmediately() {
+          if (!audioContext) { return; }
+          noiseGain.gain.cancelScheduledValues(0);
+          noiseGain.gain.value = 0;
+          audioContext.suspend().catch(() => {});
         }
       };
     })();
+    document.addEventListener('visibilitychange', () => { if (document.hidden) { scratchSound.stopImmediately(); } });
     """
 
     /// The live-drawing engine shared by the board and notes. Elements handed
@@ -442,9 +461,28 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return 'write';
     }
 
+    // Where the text itself is on screen. A block element (a notes heading,
+    // a table) is as wide as the page, but its text may end much sooner.
+    function screenRectOfText(leafElement) {
+      if (leafElement instanceof HTMLElement) {
+        const textRange = document.createRange();
+        textRange.selectNodeContents(leafElement);
+        const textRect = textRange.getBoundingClientRect();
+        if (textRect.width > 0) { return textRect; }
+      }
+      return leafElement.getBoundingClientRect();
+    }
+
     function setWriteClip(leafElement, revealedFraction) {
-      const hiddenPercent = (1 - revealedFraction) * 100;
-      const clipValue = revealedFraction >= 1 ? '' : `inset(-30% ${hiddenPercent}% -30% -4%)`;
+      let hiddenRight = `${(1 - revealedFraction) * 100}%`;
+      // Nothing written yet: hide all of it (bullet dots, card edges too).
+      if (revealedFraction > 0 && revealedFraction < 1 && leafElement instanceof HTMLElement && leafElement.isConnected) {
+        // In the element's own pixels (it may be scaled), up to the text's right edge.
+        const leafRect = leafElement.getBoundingClientRect(), textRect = screenRectOfText(leafElement);
+        const elementScale = leafElement.offsetWidth ? leafRect.width / leafElement.offsetWidth : 1;
+        hiddenRight = `${Math.max(0, (leafRect.right - (textRect.left + textRect.width * revealedFraction)) / (elementScale || 1))}px`;
+      }
+      const clipValue = revealedFraction >= 1 ? '' : `inset(-30% ${hiddenRight} -30% -4%)`;
       leafElement.style.clipPath = clipValue;
       leafElement.style.webkitClipPath = clipValue;
     }
@@ -501,15 +539,15 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
 
     // The right edge of the part of a text that's written so far.
     function screenPointOfWritingHead(leafElement, revealedFraction) {
-      const leafRect = leafElement.getBoundingClientRect();
+      const leafRect = screenRectOfText(leafElement);
       const lineHeight = Math.min(leafRect.height, 30);
       return [leafRect.left + leafRect.width * revealedFraction, leafRect.top + lineHeight * 0.62];
     }
 
     function placePen(screenX, screenY) {
       penPosition.x = screenX; penPosition.y = screenY; penPosition.hasBeenPlaced = true;
-      // The triangle sits just right of and below the drawing head, like a nib.
-      penElement.style.transform = `translate(${screenX + 4}px, ${screenY - 4}px)`;
+      // The triangle sits a little right of and below the drawing head, like a nib.
+      penElement.style.transform = `translate(${screenX + 3}px, ${screenY - 1}px)`;
       penElement.classList.add('visible');
     }
 
@@ -589,32 +627,58 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       revealLeafInstantly(leafElement);
     }
 
+    // Per-frame work that runs on the pen's clock (the board's shape glides),
+    // so it advances exactly when the pen does.
+    const penFrameCallbacks = [];
+    function runPenFrameCallbacks() { penFrameCallbacks.forEach((frameCallback) => frameCallback(penFrameDelta)); }
+    // Set by a page that needs to know when the pen starts on a leaf (notes
+    // scroll it into view).
+    let onPenLeafStart = null;
+
+    let currentPenLeaf = null, currentLeafAnimation = null;
+    // Hotkey or close: everything still queued appears at once, and the
+    // pen and its sound stop.
+    function stopPenDrawing() {
+      pendingPenLeaves.splice(0).forEach(revealLeafInstantly);
+      fadingFills.splice(0).forEach((fade) => revealLeafInstantly(fade.leafElement));
+      if (currentPenLeaf) { revealLeafInstantly(currentPenLeaf); }
+      currentPenLeaf = null;
+      currentLeafAnimation = null;
+      scratchSound.stopImmediately();
+      penElement.classList.remove('visible');
+    }
+
     function* penProgram() {
       while (true) {
-        if (!pendingPenLeaves.length) {
+        runPenFrameCallbacks();
+        if (!pendingPenLeaves.length && !currentLeafAnimation) {
           advanceFadingFills();
           scratchSound.silence();
           penIdleSeconds += penFrameDelta;
-          if (isPenStreamFinished && penIdleSeconds > 1.2) { penElement.classList.remove('visible'); }
+          // Fade out once the last element is done, so it never sits parked in empty space.
+          if (penIdleSeconds > (isPenStreamFinished ? 0.6 : 1.4)) { penElement.classList.remove('visible'); }
           yield;
           continue;
         }
         penIdleSeconds = 0;
-        const nextLeaf = pendingPenLeaves.shift();
-        // Shapes redrawn by a relayout replace their old elements.
-        if (!nextLeaf.isConnected) { continue; }
-        const leafAnimation = drawLeafWithPen(nextLeaf);
-        while (true) {
-          advanceFadingFills();
-          let animationStep;
-          try { animationStep = leafAnimation.next(); } catch (leafError) { console.log(leafError); revealLeafInstantly(nextLeaf); break; }
-          if (animationStep.done) { break; }
-          yield;
+        if (!currentLeafAnimation) {
+          // Shapes redrawn by a relayout replace their old elements, so
+          // disconnected leaves are skipped.
+          while (pendingPenLeaves.length && !pendingPenLeaves[0].isConnected) { pendingPenLeaves.shift(); }
+          if (!pendingPenLeaves.length) { yield; continue; }
+          currentPenLeaf = pendingPenLeaves.shift();
+          if (onPenLeafStart) { onPenLeafStart(currentPenLeaf); }
+          currentLeafAnimation = drawLeafWithPen(currentPenLeaf);
         }
+        advanceFadingFills();
+        let animationStep;
+        try { animationStep = currentLeafAnimation.next(); } catch (leafError) { console.log(leafError); revealLeafInstantly(currentPenLeaf); animationStep = { done: true }; }
+        if (animationStep.done) { currentLeafAnimation = null; currentPenLeaf = null; }
+        yield;
       }
     }
 
-    function isPenBusy() { return pendingPenLeaves.length > 0 || penIdleSeconds === 0; }
+    function isPenBusy() { return pendingPenLeaves.length > 0 || currentLeafAnimation !== null || penIdleSeconds === 0; }
 
     const penAnimation = penProgram();
     let previousPenFrameTime = null;
@@ -654,6 +718,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     // and a strong ink for lines, curves, force arrows, and colored text.
     const PALETTE = {
       blue:   { fill: '#d6e4f5', outline: '#6fa0e3', ink: '#2f5fc4' },
+      // The saturated blue Clicky uses for the key parts of technical drawings.
+      bluestrong: { fill: '#a9c8ef', outline: '#3c6fd0', ink: '#2f5fc4' },
       pink:   { fill: '#f6d5d0', outline: '#e39a90', ink: '#c9604f' },
       green:  { fill: '#d5efd5', outline: '#8fcf8f', ink: '#3f9a4a' },
       gray:   { fill: '#dcdcd8', outline: '#8d8d8d', ink: '#888888' },
@@ -747,8 +813,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         lineElement.textContent = lineText;
         textElement.appendChild(lineElement);
       });
-      // Labels floating on the board (not inside a shape) get a paper halo.
-      if (parentElement === mainLayer || parentElement === edgeLayer) { textElement.classList.add('halo'); }
+      // Labels floating on the board (not inside a shape) get a paper halo,
+      // and keep a minimum size on screen when the camera zooms out.
+      if (parentElement === mainLayer || parentElement === edgeLayer) {
+        textElement.classList.add('halo');
+        textElement.baseFontSize = size;
+        applyMinimumLabelSize(textElement);
+      }
       parentElement.appendChild(textElement);
       // Free-standing labels on the board never land on top of each other.
       if (parentElement === mainLayer) { moveLabelToFreeSpot(textElement); }
@@ -849,9 +920,12 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     // Numbered step badge: a small pale-yellow circle with a thin dark ring.
     function drawStepBadge(parentElement, centerX, centerY, stepNumber) {
       const badgeGroup = svgElement('g');
-      badgeGroup.appendChild(roughCanvas.circle(centerX, centerY, 20, { ...CLEAN_STROKE, roughness: 0.25, stroke: '#3a3a3a', strokeWidth: 1.3,
-        fill: '#f7edc4', fillStyle: 'solid', seed: stableSeed('step' + stepNumber) }));
-      addText(badgeGroup, centerX, centerY - 1, stepNumber, { size: 14 });
+      badgeGroup.appendChild(roughCanvas.circle(centerX, centerY, 20, { ...CLEAN_STROKE, roughness: 0.25, stroke: '#4a4a4a', strokeWidth: 1.2,
+        fill: '#f9f1d2', fillStyle: 'solid', seed: stableSeed('step' + stepNumber) }));
+      // Centered on the glyph box (not the baseline) so the digit sits optically in the middle.
+      const digitElement = addText(badgeGroup, centerX, centerY, stepNumber, { size: 14 });
+      digitElement.setAttribute('dominant-baseline', 'central');
+      digitElement.setAttribute('y', centerY + 2);
       parentElement.appendChild(badgeGroup);
       return badgeGroup;
     }
@@ -1205,20 +1279,83 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return { minX, maxX, minY, maxY };
     }
 
-    // A transform attribute (not a CSS transition), so the bounds the camera
-    // reads are always the final position.
-    function moveTitleLayerElement(element, x, y) {
-      element.setAttribute('transform', `translate(${x},${y})`);
+    // Board units per screen point at the current camera zoom.
+    // Keeps each HTML formula exactly over its placeholder rect, at the camera's zoom.
+    const formulaLayer = document.getElementById('formula-layer');
+    const formulaOverlays = [];
+    function positionFormulaOverlays() {
+      const layerRect = formulaLayer.getBoundingClientRect();
+      for (const { formulaElement, placeholderElement } of formulaOverlays) {
+        const screenMatrix = placeholderElement.getScreenCTM();
+        if (!screenMatrix) { continue; }
+        const placeholderX = parseFloat(placeholderElement.getAttribute('x')), placeholderY = parseFloat(placeholderElement.getAttribute('y'));
+        const screenX = screenMatrix.a * placeholderX + screenMatrix.c * placeholderY + screenMatrix.e - layerRect.left;
+        const screenY = screenMatrix.b * placeholderX + screenMatrix.d * placeholderY + screenMatrix.f - layerRect.top;
+        formulaElement.style.transform = `translate(${screenX}px, ${screenY}px) scale(${screenMatrix.a})`;
+      }
+    }
+
+    function boardUnitsPerScreenPoint() {
+      const boardWidth = board.getBoundingClientRect().width;
+      return boardWidth ? camera.width / boardWidth : 1;
+    }
+
+    // Free labels never get smaller than about 15pt on screen, however far
+    // the camera zooms out to fit a big drawing.
+    const MINIMUM_LABEL_SCREEN_SIZE = 15;
+    function applyMinimumLabelSize(textElement) {
+      const neededSize = Math.max(textElement.baseFontSize, MINIMUM_LABEL_SCREEN_SIZE * boardUnitsPerScreenPoint());
+      if (Math.abs(neededSize - parseFloat(textElement.getAttribute('font-size'))) > 0.3) { textElement.setAttribute('font-size', neededSize); }
+    }
+
+    // The title and captions are counter-scaled by the camera zoom, so the
+    // heading stays one constant large size on screen like Clicky's. They
+    // use a transform attribute (not a CSS transition), so the bounds the
+    // camera reads are always the final position.
+    function moveTitleLayerElement(element, x, y, scale) {
+      element.setAttribute('transform', `translate(${x},${y}) scale(${scale})`);
     }
 
     function positionTitleAndCaptions() {
       const { minX, minY, maxY } = drawingBounds();
+      const titleScale = boardUnitsPerScreenPoint();
       // Left-aligned with the board origin (where rows and captions start),
       // or further left if the drawing extends past it.
-      if (titleElement) { moveTitleLayerElement(titleElement, Math.min(minX, 0), minY - (titleElement.hasSubtitle ? 98 : 70)); }
+      // At the left edge of the frame that fits the drawing, like Clicky's
+      // heading, even when the drawing itself is centered.
+      const frameLeftX = frameFittingDrawing().x + FRAME_PADDING_LEFT;
+      if (titleElement) { moveTitleLayerElement(titleElement, frameLeftX, minY - (titleElement.hasSubtitle ? 98 : 70) * titleScale, titleScale); }
       captionElements.forEach((captionElement, captionIndex) => {
-        moveTitleLayerElement(captionElement, minX, maxY + 40 + captionIndex * 32);
+        moveTitleLayerElement(captionElement, frameLeftX, maxY + (40 + captionIndex * 32) * titleScale, titleScale);
       });
+    }
+
+    // Shapes glide on the pen's clock instead of a CSS transition, so a
+    // glide always lands on its target (a transition can stall while the
+    // page isn't rendering) and later relayouts start from where it is.
+    function placeNodeAt(node, x, y) {
+      node.shownX = x; node.shownY = y;
+      node.outerElement.setAttribute('transform', `translate(${x},${y})`);
+    }
+    function startNodeGlide(node, targetX, targetY) {
+      if (Math.abs(node.shownX - targetX) < 0.5 && Math.abs(node.shownY - targetY) < 0.5) { node.glide = null; placeNodeAt(node, targetX, targetY); return; }
+      node.glide = { fromX: node.shownX, fromY: node.shownY, toX: targetX, toY: targetY, elapsedSeconds: 0 };
+    }
+    penFrameCallbacks.push((frameDelta) => {
+      for (const node of Object.values(nodesById)) {
+        if (!node.glide) { continue; }
+        node.glide.elapsedSeconds += frameDelta;
+        const progress = Math.min(node.glide.elapsedSeconds / GLIDE_SECONDS, 1);
+        const easedProgress = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+        placeNodeAt(node, node.glide.fromX + (node.glide.toX - node.glide.fromX) * easedProgress, node.glide.fromY + (node.glide.toY - node.glide.fromY) * easedProgress);
+        if (progress >= 1) { node.glide = null; }
+      }
+    });
+    // Snaps every gliding shape to its target (arrows are redrawn there).
+    function finishNodeGlides() {
+      for (const node of Object.values(nodesById)) {
+        if (node.glide) { placeNodeAt(node, node.glide.toX, node.glide.toY); node.glide = null; }
+      }
     }
 
     // Lays everything out again: shapes glide to their new spots, then arrows,
@@ -1241,19 +1378,19 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         if (!layoutNode) { continue; }
         node.centerX = layoutNode.x; node.centerY = layoutNode.y;
         if (!node.isPlaced) {
-          node.outerElement.style.transform = `translate(${layoutNode.x}px,${layoutNode.y}px)`;
-          node.outerElement.getBoundingClientRect();
-          node.outerElement.style.transition = `transform ${GLIDE_SECONDS}s ease-in-out`;
+          placeNodeAt(node, layoutNode.x, layoutNode.y);
           node.outerElement.style.opacity = 1;
           drawNodeContents(node.innerElement, node.command, node.width, node.height);
           node.isPlaced = true;
         } else {
-          node.outerElement.style.transform = `translate(${layoutNode.x}px,${layoutNode.y}px)`;
+          startNodeGlide(node, layoutNode.x, layoutNode.y);
         }
       }
       positionTitleAndCaptions();
       clearTimeout(edgeRedrawTimer);
       edgeRedrawTimer = setTimeout(() => {
+        // Arrows and groups are drawn at the final layout, so the shapes must be there too.
+        finishNodeGlides();
         Object.keys(groupsById).forEach(redrawGroup);
         Object.keys(edgesById).forEach(redrawEdge);
         positionStepBadges();
@@ -1296,13 +1433,14 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (item.check) {
         drawCheckMark(parentElement, leftX + width / 2, centerY, 24);
       } else if (item.stack) {
-        // Three offset cards, front one filled: a pile of documents or data.
+        // Three offset translucent cards: a pile of documents or data. The
+        // back cards' outlines show through the front ones, like Clicky's.
         const cardWidth = 79, cardHeight = 54;
+        const stackColorName = item.stack === true ? 'gray' : item.stack;
         for (let cardIndex = 0; cardIndex < 3; cardIndex += 1) {
-          const isFrontCard = cardIndex === 2;
           parentElement.appendChild(roughCanvas.rectangle(leftX + cardIndex * 12, centerY - height / 2 + cardIndex * 8, cardWidth, cardHeight,
-            { stroke: outlineOf(item.stack === true ? 'gray' : item.stack, 'gray'), strokeWidth: 1.8,
-              fill: isFrontCard ? fillOf(item.stack === true ? 'gray' : item.stack, 'gray') : '#eeebe3', fillStyle: 'solid', seed: stableSeed('card' + cardIndex + leftX + centerY) }));
+            { stroke: outlineOf(stackColorName, 'gray'), strokeWidth: 1.8,
+              fill: translucent(fillOf(stackColorName, 'gray'), 0.45), fillStyle: 'solid', seed: stableSeed('card' + cardIndex + leftX + centerY) }));
         }
       } else if (item.network) {
         drawNetworkIcon(parentElement, leftX + width / 2, centerY);
@@ -1549,7 +1687,8 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         const isOutlineOnly = command.fill === false;
         const groupElement = svgElement('g');
         groupElement.appendChild(roughCanvas.polygon(polygonPoints, {
-          ...CLEAN_STROKE, stroke: isOutlineOnly ? colorOf(command.color, 'fg') : outlineOf(command.color, 'blue'), strokeWidth: command.width || 2,
+          ...CLEAN_STROKE, stroke: isOutlineOnly ? colorOf(command.color, 'fg') : outlineOf(command.color, 'blue'),
+          strokeWidth: command.width || (command.color === 'bluestrong' ? 2.5 : 2),
           seed: stableSeed(JSON.stringify(polygonPoints)), fill: isOutlineOnly ? undefined : fillOf(command.color, 'blue'), fillStyle: 'solid' }));
         mainLayer.appendChild(groupElement);
         registerGeometryShape(command.id, polygonPoints, groupElement);
@@ -1673,6 +1812,22 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         mainLayer.appendChild(groupElement);
         if (command.xLabel) { addText(mainLayer, frame.left + frame.width + 26, xAxisBoardY, command.xLabel, { size: 17, color: 'muted' }); }
         if (command.yLabel) { addText(mainLayer, yAxisBoardX, frame.top - 26, command.yLabel, { size: 17, color: 'muted' }); }
+        // Without explicit ticks, integer-ish numbers along both axes so the scale can be read.
+        if (!command.xTicks && !command.yTicks) {
+          const niceTickStep = (range) => { const roughStep = range / 8; const power = Math.pow(10, Math.floor(Math.log10(roughStep)));
+            return [1, 2, 5, 10].map((multiple) => multiple * power).find((step) => step >= roughStep) || roughStep; };
+          const xTickStep = command.grid ? (command.gridStep || 1) : niceTickStep(frame.xMax - frame.xMin);
+          const yTickStep = command.grid ? (command.gridStep || 1) : niceTickStep(frame.yMax - frame.yMin);
+          const tickText = (value) => String(Math.round(value * 1000) / 1000);
+          command.xTicks = [];
+          command.yTicks = [];
+          for (let tickValue = Math.ceil(frame.xMin / xTickStep) * xTickStep; tickValue <= frame.xMax + 1e-9; tickValue += xTickStep) {
+            if (Math.abs(tickValue) > 1e-9) { command.xTicks.push([tickValue, tickText(tickValue)]); }
+          }
+          for (let tickValue = Math.ceil(frame.yMin / yTickStep) * yTickStep; tickValue <= frame.yMax + 1e-9; tickValue += yTickStep) {
+            if (Math.abs(tickValue) > 1e-9) { command.yTicks.push([tickValue, tickText(tickValue)]); }
+          }
+        }
         (command.xTicks || []).forEach((tick) => {
           const [tickX] = frameToBoard(frame, tick[0], xAxisMathY);
           addText(mainLayer, tickX, xAxisBoardY + 18, tick[1], { size: 17, color: 'muted' });
@@ -1788,6 +1943,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           const [labelX, labelY] = frameToBoard(frame, (areaFrom + areaTo) / 2, (upperFunction((areaFrom + areaTo) / 2) + lowerFunction((areaFrom + areaTo) / 2)) / 2);
           addText(mainLayer, labelX, labelY, command.label, { size: 18, color: command.color || 'yellow' });
         }
+        // Later labels (a tangent's slope, a point name) keep off the shaded
+        // region's edge: points along its outline count as placed labels.
+        regionPoints.forEach((outlinePoint, pointIndex) => {
+          if (pointIndex % 6 === 0) { placedLabelBoxes.push({ x: outlinePoint[0], y: outlinePoint[1], width: 1, height: 1 }); }
+        });
         registerGeometryShape(command.id, regionPoints, groupElement);
 
       } else if (commandType === 'tangent') {
@@ -1905,28 +2065,29 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       } else if (commandType === 'latex') {
         // Properly typeset math (fractions, integrals, sums, matrices, roots)
         // via KaTeX, embedded in the board and centered at x, y.
+        // It's HTML laid over the board, not a foreignObject: WebKit paints
+        // KaTeX's relatively positioned spans inside a foreignObject without
+        // the SVG camera transform, so the formula showed up somewhere else.
+        // An invisible rect of the same size holds its place in the drawing.
         if (!window.katex) { return; }
         const formulaSize = (command.size || 1.3) * 22;
-        const foreignElement = svgElement('foreignObject', { x: 0, y: 0, width: 1600, height: 400 });
         const formulaElement = document.createElement('div');
-        formulaElement.style.cssText = `display:inline-block;white-space:nowrap;font-size:${formulaSize}px;color:${colorOf(command.color, 'fg')}`;
+        formulaElement.style.cssText = `font-size:${formulaSize}px;color:${colorOf(command.color, 'fg')}`;
         try {
           katex.render(String(command.tex || ''), formulaElement, { throwOnError: false, displayMode: true, trust: false, strict: 'ignore' });
         } catch (formulaError) { console.log(formulaError); return; }
-        foreignElement.appendChild(formulaElement);
-        // Measure it in the motion layer first, so its own placeholder size
-        // doesn't count toward the bounds used to place it.
-        motionLayer.appendChild(foreignElement);
+        formulaLayer.appendChild(formulaElement);
         const formulaWidth = formulaElement.offsetWidth + 4, formulaHeight = formulaElement.offsetHeight + 4;
-        foreignElement.setAttribute('width', formulaWidth);
-        foreignElement.setAttribute('height', formulaHeight);
         // Without coordinates, it goes centered under everything drawn so far.
         const formulaBounds = drawingBounds();
         const formulaCenterX = command.x ?? (formulaBounds.minX + formulaBounds.maxX) / 2;
         const formulaCenterY = command.y ?? formulaBounds.maxY + formulaHeight / 2 + 24;
-        foreignElement.setAttribute('x', formulaCenterX - formulaWidth / 2);
-        foreignElement.setAttribute('y', formulaCenterY - formulaHeight / 2);
-        mainLayer.appendChild(foreignElement);
+        const placeholderElement = svgElement('rect', { x: formulaCenterX - formulaWidth / 2, y: formulaCenterY - formulaHeight / 2,
+          width: formulaWidth, height: formulaHeight, fill: 'none', 'data-pen': 'done' });
+        mainLayer.appendChild(placeholderElement);
+        formulaOverlays.push({ formulaElement, placeholderElement });
+        positionFormulaOverlays();
+        queuePenLeaves([formulaElement]);
 
       } else if (commandType === 'label') {
         const labelElement = addText(mainLayer, command.x, command.y, command.text,
@@ -1935,8 +2096,11 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
           // A faint gray highlight pill behind the label, drawn first.
           labelElement.classList.remove('halo');
           const labelBox = labelElement.getBBox();
-          labelElement.before(svgElement('rect', { x: labelBox.x - 9, y: labelBox.y - 3, width: labelBox.width + 18, height: labelBox.height + 6,
-            rx: (labelBox.height + 6) / 2, fill: '#e7e3d8' }));
+          const pillElement = svgElement('rect', { x: labelBox.x - 6, y: labelBox.y - 1, width: labelBox.width + 12, height: labelBox.height + 2,
+            rx: (labelBox.height + 2) / 2, fill: '#e9e7e0', 'fill-opacity': 0.7 });
+          // Feathered edge, so it reads as a soft highlight hugging the text.
+          pillElement.style.filter = 'blur(1.2px)';
+          labelElement.before(pillElement);
         }
 
       } else if (commandType === 'formula') {
@@ -1977,37 +2141,63 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       return boardRect.height / Math.max(boardRect.width, 1);
     }
 
-    function drawnContentBounds() {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const layer of [zoneLayer, edgeLayer, mainLayer, titleLayer]) {
-        if (!layer.childElementCount) { continue; }
-        const layerBounds = layer.getBBox();
-        if (!layerBounds.width && !layerBounds.height) { continue; }
-        minX = Math.min(minX, layerBounds.x); minY = Math.min(minY, layerBounds.y);
-        maxX = Math.max(maxX, layerBounds.x + layerBounds.width); maxY = Math.max(maxY, layerBounds.y + layerBounds.height);
-      }
-      if (minX === Infinity) { return { x: 0, y: -60, width: MINIMUM_FRAME.width, height: MINIMUM_FRAME.height }; }
-      return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-    }
-
-    // The frame with the viewport's shape, anchored at the drawing's top-left
-    // corner (where the heading is), at 1 board unit per screen point until
-    // the drawing outgrows the panel and has to zoom out to fit.
+    // The frame with the viewport's shape that fits the drawing (with the
+    // heading at its top-left). A small drawing is scaled up to fill the
+    // panel's width, up to MAXIMUM_ZOOM_IN, and centered horizontally if it
+    // still doesn't fill it; a big one zooms out to fit.
+    const MAXIMUM_ZOOM_IN = 1.4;
+    // The title and captions don't count toward centering (they sit at the
+    // frame's left edge, see positionTitleAndCaptions), only toward its
+    // height and minimum width, so there's no feedback between the two.
     function frameFittingDrawing() {
-      const contentBounds = drawnContentBounds();
+      const drawing = drawingBounds();
+      const titleBounds = titleLayer.childElementCount ? titleLayer.getBBox() : null;
+      const hasTitleBounds = titleBounds && titleBounds.height > 0;
+      const contentTop = hasTitleBounds ? Math.min(drawing.minY, titleBounds.y) : drawing.minY;
+      const contentBottom = hasTitleBounds ? Math.max(drawing.maxY, titleBounds.y + titleBounds.height) : drawing.maxY;
       const boardRect = board.getBoundingClientRect();
       const aspectRatio = viewportAspectRatio();
-      let frameWidth = Math.max(contentBounds.width + FRAME_PADDING_LEFT + FRAME_PADDING_RIGHT, boardRect.width || MINIMUM_FRAME.width);
+      const paddedContentWidth = Math.max(drawing.maxX - drawing.minX, hasTitleBounds ? titleBounds.width : 0) + FRAME_PADDING_LEFT + FRAME_PADDING_RIGHT;
+      let frameWidth = Math.max(paddedContentWidth, (boardRect.width || MINIMUM_FRAME.width) / MAXIMUM_ZOOM_IN);
       let frameHeight = frameWidth * aspectRatio;
-      if (frameHeight < contentBounds.height + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM) {
-        frameHeight = contentBounds.height + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM;
+      if (frameHeight < contentBottom - contentTop + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM) {
+        frameHeight = contentBottom - contentTop + FRAME_PADDING_TOP + FRAME_PADDING_BOTTOM;
         frameWidth = frameHeight / aspectRatio;
       }
-      return { x: contentBounds.x - FRAME_PADDING_LEFT, y: contentBounds.y - FRAME_PADDING_TOP, width: frameWidth, height: frameHeight };
+      // Centered on the drawing, but never so far left that the drawing's
+      // left edge leaves the padding (a title wider than the drawing).
+      const centeredX = (drawing.minX + drawing.maxX) / 2 - frameWidth / 2;
+      return { x: Math.min(centeredX, drawing.minX - FRAME_PADDING_LEFT), y: contentTop - FRAME_PADDING_TOP, width: frameWidth, height: frameHeight };
     }
 
+    // The paper grid pans and zooms with the camera; its cell doubles or
+    // halves so it always shows as a fine grid of about 12-24pt.
+    const GRID_CELL_BOARD_UNITS = 17;
+    function moveGridWithCamera() {
+      const unitsPerPoint = boardUnitsPerScreenPoint();
+      let cellSizeOnScreen = GRID_CELL_BOARD_UNITS / unitsPerPoint;
+      while (cellSizeOnScreen < 12) { cellSizeOnScreen *= 2; }
+      while (cellSizeOnScreen > 24) { cellSizeOnScreen /= 2; }
+      const titleBarHeight = 28;
+      document.body.style.backgroundSize = `${cellSizeOnScreen}px ${cellSizeOnScreen}px`;
+      document.body.style.backgroundPosition = `${(-camera.x / unitsPerPoint) % cellSizeOnScreen}px ${(titleBarHeight - camera.y / unitsPerPoint) % cellSizeOnScreen}px`;
+    }
+
+    // Labels and the title depend on the zoom, so they're refreshed whenever
+    // it changes noticeably.
+    let zoomUsedForLabels = 0;
     function applyCamera() {
       board.setAttribute('viewBox', `${camera.x} ${camera.y} ${camera.width} ${camera.height}`);
+      moveGridWithCamera();
+      positionFormulaOverlays();
+      const unitsPerPoint = boardUnitsPerScreenPoint();
+      if (Math.abs(unitsPerPoint - zoomUsedForLabels) / unitsPerPoint > 0.02) {
+        zoomUsedForLabels = unitsPerPoint;
+        for (const layer of [mainLayer, edgeLayer]) {
+          layer.querySelectorAll('text.halo').forEach((textElement) => { if (textElement.baseFontSize) { applyMinimumLabelSize(textElement); } });
+        }
+        positionTitleAndCaptions();
+      }
     }
 
     function easeCameraTowardTarget() {
@@ -2029,7 +2219,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     function stopFollowingDrawing() {
       if (!isFollowingDrawing) { return; }
       isFollowingDrawing = false;
-      document.getElementById('navigation-hint').classList.remove('visible');
     }
 
     // Screen point (relative to the board) → drawing coordinates.
@@ -2096,13 +2285,10 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     Object.assign(camera, frameFittingDrawing());
     applyCamera();
     requestAnimationFrame(easeCameraTowardTarget);
-    document.getElementById('navigation-hint').classList.add('visible');
-    setTimeout(() => document.getElementById('navigation-hint').classList.remove('visible'), 5000);
 
-    // Hide "drawing…" once the stream has ended and the pen has drawn everything.
-    function hideDrawingIndicatorIfComplete() {
+    // Once the stream has ended and the pen has drawn everything, the pen can rest out of view.
+    function markFinishedIfComplete() {
       if (isStreamFinished && !isDrawingCommand && commandQueue.length === 0 && !pendingPenLeaves.length) {
-        document.getElementById('drawing-indicator').classList.add('finished');
         isPenStreamFinished = true;
         return true;
       }
@@ -2115,7 +2301,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     let isHandwritingFontReady = false;
     function drawNextQueuedCommand() {
       if (isDrawingCommand || !isHandwritingFontReady) { return; }
-      if (commandQueue.length === 0) { hideDrawingIndicatorIfComplete(); return; }
+      if (commandQueue.length === 0) { markFinishedIfComplete(); return; }
       isDrawingCommand = true;
       const nextCommand = commandQueue.shift();
       try { drawCommand(nextCommand); positionTitleAndCaptions(); queueUnrevealedBoardElements(); } catch (drawError) { console.log(drawError); }
@@ -2133,8 +2319,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       done() {
         isStreamFinished = true;
         // The pen may still be drawing; check until it has finished.
-        const completionCheckTimer = setInterval(() => { if (hideDrawingIndicatorIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
-      }
+        const completionCheckTimer = setInterval(() => { if (markFinishedIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
+      },
+      stopDrawing: stopPenDrawing
     };
     """
 
@@ -2161,7 +2348,6 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         <body>
         <div id="titlebar"><span id="topic"></span></div>
         <main id="notes"></main>
-        <div id="drawing-indicator">writing…</div>
         \(penElementHTML)
         <script>\(penAndScratchSoundScript)</script>
         <script>\(notesRendererScript)</script>
@@ -2175,7 +2361,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     #notes { position: absolute; inset: 28px 0 0 0; overflow-y: auto; padding: 18px 30px 52px; scroll-behavior: smooth; }
     #notes::-webkit-scrollbar { width: 0; }
     h1 { font: 33px/1.15 "Patrick Hand", sans-serif; margin: 4px 0 14px; color: #2a2a2a;
-      -webkit-text-stroke: 1.1px #2a2a2a; }
+      -webkit-text-stroke: 1.1px #2a2a2a; letter-spacing: 0.6px; }
     h2 { font: 24px/1.2 "Patrick Hand", sans-serif; margin: 20px 0 6px; color: #8a8578; }
     .bullet { position: relative; padding-left: 24px; margin: 5px 0; }
     .bullet::before { content: ""; position: absolute; left: 5px; top: 0.6em; width: 8px; height: 8px; border-radius: 50%;
@@ -2371,12 +2557,22 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       notesElement.appendChild(lineElement);
       // Hidden until the pen writes it, left to right.
       queuePenLeaves([lineElement]);
-      notesElement.scrollTop = notesElement.scrollHeight;
     }
 
-    function hideWritingIndicatorIfComplete() {
+    // The page follows the pen, not the build: lines are built as soon as
+    // they arrive, so scrolling to the newest one would hide the line the
+    // pen is writing (the title, at first) off the top of the page.
+    onPenLeafStart = (leafElement) => {
+      const notesRect = notesElement.getBoundingClientRect(), leafRect = leafElement.getBoundingClientRect();
+      if (leafRect.bottom > notesRect.bottom - 24) {
+        notesElement.scrollTop += leafRect.bottom - notesRect.bottom + 48;
+      } else if (leafRect.top < notesRect.top) {
+        notesElement.scrollTop += leafRect.top - notesRect.top - 12;
+      }
+    };
+
+    function markFinishedIfComplete() {
       if (isStreamFinished && !isWritingLine && commandQueue.length === 0 && !pendingPenLeaves.length) {
-        document.getElementById('drawing-indicator').classList.add('finished');
         isPenStreamFinished = true;
         return true;
       }
@@ -2386,7 +2582,7 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     // Lines are built as they arrive; the pen paces how fast they appear.
     function writeNextQueuedLine() {
       if (isWritingLine) { return; }
-      if (commandQueue.length === 0) { hideWritingIndicatorIfComplete(); return; }
+      if (commandQueue.length === 0) { markFinishedIfComplete(); return; }
       isWritingLine = true;
       try { writeLine(commandQueue.shift()); } catch (writeError) { console.log(writeError); }
       setTimeout(() => { isWritingLine = false; writeNextQueuedLine(); }, 60);
@@ -2402,8 +2598,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
       done() {
         isStreamFinished = true;
         // The pen may still be writing; check until it has finished.
-        const completionCheckTimer = setInterval(() => { if (hideWritingIndicatorIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
-      }
+        const completionCheckTimer = setInterval(() => { if (markFinishedIfComplete()) { clearInterval(completionCheckTimer); } }, 300);
+      },
+      stopDrawing: stopPenDrawing
     };
     """
 }
