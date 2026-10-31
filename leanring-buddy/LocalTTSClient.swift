@@ -89,11 +89,11 @@ final class LocalTTSClient: ObservableObject {
         self.onSpeakingStateChanged = onSpeakingStateChanged
         let userDefaults = UserDefaults.standard
         selectedEngine = userDefaults.string(forKey: Self.selectedEngineUserDefaultsKey)
-            .flatMap(TTSEngine.init(rawValue:)) ?? .kokoro
+            .flatMap(TTSEngine.init(rawValue:)) ?? .supertonic
         selectedKokoroVoice = userDefaults.string(forKey: Self.kokoroVoiceUserDefaultsKey)
             .flatMap { Self.availableKokoroVoices.contains($0) ? $0 : nil } ?? "af_heart"
         selectedSupertonicVoice = userDefaults.string(forKey: Self.supertonicVoiceUserDefaultsKey)
-            .flatMap(Supertonic3Voice.init(rawValue:)) ?? .f1
+            .flatMap(Supertonic3Voice.init(rawValue:)) ?? .f2
 
         // Supertonic first: it is small, loads fast, and is the only Hindi path.
         Task { await loadSupertonic() }
