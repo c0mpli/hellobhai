@@ -20,7 +20,7 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 |-------|-----|
 | AI | `claude -p` (Claude Code CLI) as a subprocess, using your existing Claude Code login. No API keys. |
 | Speech-to-text | WhisperKit (Whisper large-v3 turbo) on-device, with Apple Speech as the fallback |
-| Text-to-speech | Supertonic-3 on-device: one voice for English and Hindi, with the macOS voice as the fallback |
+| Text-to-speech | On-device: Kokoro-82M for English, Supertonic-3 for Hindi (and as fallback), then the macOS voice |
 | Actions | `CGEvent` clicks and keystrokes, plus an allowlist of Mac commands (`osascript`, `open`, `mdfind`, `shortcuts`, `ls`) |
 | Visuals | Claude streams narration plus JSON drawing commands; each step is drawn with a gold pen in the Patrick Hand marker font while its sentence is spoken |
 
@@ -48,7 +48,7 @@ No servers, no analytics, no auto-updater. Network use is `claude -p` itself plu
 1. A triangle appears in the menu bar and the setup panel opens.
 2. Grant **Microphone**, **Accessibility** and **Screen Recording**. Screen Recording needs one app restart; just run the script again.
 3. Click **Start**.
-4. Give it a couple of minutes: Whisper and Supertonic download (~1GB), and macOS compiles Whisper for the Neural Engine once. Until then it uses Apple's speech recognition (this needs **Dictation** turned on in System Settings → Keyboard) and the system voice.
+4. Give it a couple of minutes: Whisper, Kokoro and Supertonic download (~1.2GB), and macOS compiles Whisper for the Neural Engine once. Until then it uses Apple's speech recognition (this needs **Dictation** turned on in System Settings → Keyboard) and the system voice.
 
 ## Using it
 
@@ -68,7 +68,7 @@ leanring-buddy/                          # Swift source (legacy folder name)
   CompanionManager.swift                    # Central state machine + agent loop + prompts
   ClaudeCLI.swift                           # `claude -p` subprocess client (stream-json in/out)
   WhisperTranscriptionProvider.swift        # On-device STT
-  LocalTTSClient.swift                      # On-device TTS (Supertonic-3)
+  LocalTTSClient.swift                      # On-device TTS (Kokoro + Supertonic-3)
   ComputerControl.swift                     # [CLICK]/[TYPE]/[KEY] parsing + CGEvents
   VisualExplanationPanel.swift              # Live sketch whiteboard
   OverlayWindow.swift                       # Purple cursor + notch speaking pill

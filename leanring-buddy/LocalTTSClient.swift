@@ -2,26 +2,84 @@
 //  LocalTTSClient.swift
 //  leanring-buddy
 //
-//  On-device neural text-to-speech via FluidAudio's Supertonic-3. One model
-//  and one voice for both English and Hindi — each sentence is tagged "en"
-//  or "hi" by script. The ~400MB model downloads on first launch; until it
-//  loads, or if synthesis fails, the macOS system voice is used instead.
+//  On-device neural text-to-speech via FluidAudio. Two engines:
+//  - Kokoro-82M (default): the most natural English voice. It has no Hindi,
+//    so sentences containing Devanagari always go to Supertonic-3.
+//  - Supertonic-3: one model for English and Hindi, tiny and fast. Always
+//    loaded, because it is the only Hindi path and the fallback when Kokoro
+//    is loading or fails.
+//  The macOS system voice is the last resort. Engine and voices are saved in
+//  UserDefaults and can be switched at runtime from the menu bar panel.
 //
 
 import AVFoundation
+import Combine
 import FluidAudio
 import NaturalLanguage
 
-@MainActor
-final class LocalTTSClient {
-    private static let supertonicVoice: Supertonic3Voice = .f1
+enum TTSEngine: String, CaseIterable {
+    case kokoro
+    case supertonic
 
+    var displayName: String {
+        switch self {
+        case .kokoro: return "Kokoro"
+        case .supertonic: return "Supertonic"
+        }
+    }
+
+    var modelDisplayName: String {
+        switch self {
+        case .kokoro: return "Kokoro-82M"
+        case .supertonic: return "Supertonic-3"
+        }
+    }
+}
+
+enum NeuralVoiceLoadState {
+    case notLoaded
+    case loading
+    case ready
+    case failed
+}
+
+@MainActor
+final class LocalTTSClient: ObservableObject {
+    private static let selectedEngineUserDefaultsKey = "selectedTTSEngine"
+    private static let kokoroVoiceUserDefaultsKey = "selectedKokoroVoice"
+    private static let supertonicVoiceUserDefaultsKey = "selectedSupertonicVoice"
+
+    /// American and British English Kokoro voices. The other packs (Hindi,
+    /// Japanese, ...) only change the accent of English text in the English
+    /// variant, and Devanagari input comes out garbled.
+    static let availableKokoroVoices = KokoroAneConstants.englishVoices
+        .filter { $0.hasPrefix("af_") || $0.hasPrefix("am_") || $0.hasPrefix("bf_") || $0.hasPrefix("bm_") }
+
+    /// Kokoro's model chain is kept next to the Whisper model. Its shared G2P
+    /// files always live in ~/.cache/fluidaudio (FluidAudio pins that path).
+    private static let kokoroModelsDirectory = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("hellobhai/Models", isDirectory: true)
+
+    @Published private(set) var selectedEngine: TTSEngine
+    @Published private(set) var selectedKokoroVoice: String
+    @Published private(set) var selectedSupertonicVoice: Supertonic3Voice
+    @Published private(set) var kokoroLoadState: NeuralVoiceLoadState = .notLoaded
+    @Published private(set) var supertonicLoadState: NeuralVoiceLoadState = .notLoaded
+    /// Lets the panel's preview buttons show a stop state while audio plays.
+    @Published private(set) var isSpeaking = false
+
+    private var kokoroManager: KokoroAneManager?
     private var supertonicManager: Supertonic3Manager?
     private var supertonicVoiceStyle: Supertonic3VoiceStyle?
 
     private let systemSpeechSynthesizer = AVSpeechSynthesizer()
     private var audioPlayer: AVAudioPlayer?
     private var playbackTask: Task<Void, Never>?
+    /// The clip being synthesized ahead of playback. Unstructured, so
+    /// cancelling playbackTask does not reach it; stopPlayback and
+    /// unloadKokoro cancel it so a dropped sentence stops using Kokoro.
+    private var pendingClipSynthesisTask: Task<Data, Error>?
     /// Bumped on every speakText so a cancelled playback finishing late
     /// can't clear the speaking flag for the playback that replaced it.
     private var playbackGeneration = 0
@@ -29,20 +87,115 @@ final class LocalTTSClient {
 
     init(onSpeakingStateChanged: @escaping (Bool) -> Void) {
         self.onSpeakingStateChanged = onSpeakingStateChanged
-        Task { await loadNeuralVoices() }
+        let userDefaults = UserDefaults.standard
+        selectedEngine = userDefaults.string(forKey: Self.selectedEngineUserDefaultsKey)
+            .flatMap(TTSEngine.init(rawValue:)) ?? .supertonic
+        selectedKokoroVoice = userDefaults.string(forKey: Self.kokoroVoiceUserDefaultsKey)
+            .flatMap { Self.availableKokoroVoices.contains($0) ? $0 : nil } ?? "af_heart"
+        selectedSupertonicVoice = userDefaults.string(forKey: Self.supertonicVoiceUserDefaultsKey)
+            .flatMap(Supertonic3Voice.init(rawValue:)) ?? .f2
+
+        // Supertonic first: it is small, loads fast, and is the only Hindi path.
+        Task { await loadSupertonic() }
+        if selectedEngine == .kokoro {
+            Task { await loadKokoroIfNeeded() }
+        }
     }
 
-    private func loadNeuralVoices() async {
+    // MARK: - Settings
+
+    func setSelectedEngine(_ engine: TTSEngine) {
+        guard engine != selectedEngine else { return }
+        selectedEngine = engine
+        UserDefaults.standard.set(engine.rawValue, forKey: Self.selectedEngineUserDefaultsKey)
+        if engine == .kokoro {
+            Task { await loadKokoroIfNeeded() }
+        } else {
+            unloadKokoro()
+        }
+    }
+
+    func setSelectedKokoroVoice(_ voice: String) {
+        selectedKokoroVoice = voice
+        UserDefaults.standard.set(voice, forKey: Self.kokoroVoiceUserDefaultsKey)
+    }
+
+    func setSelectedSupertonicVoice(_ voice: Supertonic3Voice) {
+        selectedSupertonicVoice = voice
+        UserDefaults.standard.set(voice.rawValue, forKey: Self.supertonicVoiceUserDefaultsKey)
+        Task {
+            do {
+                let loadedVoiceStyle = try await Supertonic3ResourceDownloader.loadVoiceStyle(voice)
+                // Ignore a slow load that finishes after the user picked yet another voice.
+                if selectedSupertonicVoice == voice {
+                    supertonicVoiceStyle = loadedVoiceStyle
+                }
+            } catch {
+                print("⚠️ Supertonic-3: failed to load voice \(voice.rawValue): \(error)")
+            }
+        }
+    }
+
+    // MARK: - Loading
+
+    private func loadSupertonic() async {
+        supertonicLoadState = .loading
         do {
             print("🔊 Supertonic-3: downloading/loading model")
             let loadedSupertonicManager = try await Supertonic3Manager.downloadAndCreate()
-            supertonicVoiceStyle = try await Supertonic3ResourceDownloader.loadVoiceStyle(Self.supertonicVoice)
+            supertonicVoiceStyle = try await Supertonic3ResourceDownloader.loadVoiceStyle(selectedSupertonicVoice)
             supertonicManager = loadedSupertonicManager
+            supertonicLoadState = .ready
             print("🔊 Supertonic-3: ready")
         } catch {
-            print("⚠️ Supertonic-3: failed to load, using system voice: \(error)")
+            supertonicLoadState = .failed
+            print("⚠️ Supertonic-3: failed to load: \(error)")
         }
     }
+
+    private func loadKokoroIfNeeded() async {
+        guard kokoroLoadState == .notLoaded || kokoroLoadState == .failed else { return }
+        kokoroLoadState = .loading
+        // Legacy runtime on purpose: the v3 runtime crashed on macOS 27 (MPSGraph assertion).
+        let newKokoroManager = KokoroAneManager(
+            variant: .english,
+            defaultVoice: selectedKokoroVoice,
+            directory: Self.kokoroModelsDirectory
+        )
+        do {
+            print("🔊 Kokoro: downloading/loading model (first launch downloads ~140MB and compiles for ~1 min)")
+            try await newKokoroManager.initialize(preloadVoices: [selectedKokoroVoice])
+            // The first synthesis after load is ~10x slower than the rest, so
+            // pay it here instead of on the user's first spoken sentence.
+            _ = try await newKokoroManager.synthesize(text: "Hello.", voice: selectedKokoroVoice)
+        } catch {
+            kokoroLoadState = .failed
+            print("⚠️ Kokoro: failed to load, using Supertonic-3: \(error)")
+            return
+        }
+        // The user may have switched away from Kokoro while it was loading.
+        guard selectedEngine == .kokoro else {
+            await newKokoroManager.cleanup()
+            kokoroLoadState = .notLoaded
+            return
+        }
+        kokoroManager = newKokoroManager
+        kokoroLoadState = .ready
+        print("🔊 Kokoro: ready")
+    }
+
+    /// Frees Kokoro's memory (~450-800MB) when the user picks Supertonic.
+    private func unloadKokoro() {
+        guard let kokoroManagerToUnload = kokoroManager else { return }
+        kokoroManager = nil
+        kokoroLoadState = .notLoaded
+        // A cancelled Kokoro clip retries on Supertonic-3 instead of
+        // reloading the model chain we are about to free.
+        pendingClipSynthesisTask?.cancel()
+        Task { await kokoroManagerToUnload.cleanup() }
+    }
+
+    // MARK: - Speaking
 
     /// Starts speaking `text` and returns immediately. Synthesizes one
     /// sentence at a time and prepares the next sentence while the current
@@ -52,11 +205,11 @@ final class LocalTTSClient {
         playbackGeneration += 1
         let thisPlaybackGeneration = playbackGeneration
 
-        onSpeakingStateChanged(true)
+        setSpeaking(true)
         playbackTask = Task {
             await speakSentences(Self.splitIntoSentences(text), fullText: text)
             if playbackGeneration == thisPlaybackGeneration {
-                onSpeakingStateChanged(false)
+                setSpeaking(false)
             }
         }
     }
@@ -68,13 +221,18 @@ final class LocalTTSClient {
         await playbackTask?.value
     }
 
+    private var isAnyNeuralEngineReady: Bool {
+        kokoroManager != nil || (supertonicManager != nil && supertonicVoiceStyle != nil)
+    }
+
     private func speakSentences(_ sentences: [String], fullText: String) async {
-        guard let supertonicManager, let supertonicVoiceStyle, !sentences.isEmpty else {
+        guard isAnyNeuralEngineReady, !sentences.isEmpty else {
             await speakWithSystemVoiceUntilFinished(fullText)
             return
         }
 
-        var nextClipSynthesisTask: Task<Data, Error>? = makeClipSynthesisTask(for: sentences[0], supertonicManager: supertonicManager, supertonicVoiceStyle: supertonicVoiceStyle)
+        var nextClipSynthesisTask: Task<Data, Error>? = makeClipSynthesisTask(for: sentences[0])
+        pendingClipSynthesisTask = nextClipSynthesisTask
 
         for sentenceIndex in sentences.indices {
             guard let clipSynthesisTask = nextClipSynthesisTask else { break }
@@ -92,9 +250,12 @@ final class LocalTTSClient {
 
             let nextSentenceIndex = sentenceIndex + 1
             nextClipSynthesisTask = nextSentenceIndex < sentences.count
-                ? makeClipSynthesisTask(for: sentences[nextSentenceIndex], supertonicManager: supertonicManager, supertonicVoiceStyle: supertonicVoiceStyle)
+                ? makeClipSynthesisTask(for: sentences[nextSentenceIndex])
                 : nil
+            pendingClipSynthesisTask = nextClipSynthesisTask
 
+            // Each clip is its own WAV (24 kHz from Kokoro, 44.1 kHz from
+            // Supertonic), so AVAudioPlayer handles the rate per clip.
             guard let clipPlayer = try? AVAudioPlayer(data: clipWavData) else { continue }
             audioPlayer = clipPlayer
             clipPlayer.play()
@@ -108,23 +269,50 @@ final class LocalTTSClient {
     func stopPlayback() {
         playbackTask?.cancel()
         playbackTask = nil
+        pendingClipSynthesisTask?.cancel()
+        pendingClipSynthesisTask = nil
         audioPlayer?.stop()
         audioPlayer = nil
         systemSpeechSynthesizer.stopSpeaking(at: .immediate)
-        onSpeakingStateChanged(false)
+        setSpeaking(false)
     }
 
-    private func makeClipSynthesisTask(
-        for sentence: String,
-        supertonicManager: Supertonic3Manager,
-        supertonicVoiceStyle: Supertonic3VoiceStyle
-    ) -> Task<Data, Error> {
-        let sentenceLanguageCode = Self.containsDevanagari(sentence) ? "hi" : "en"
+    private func setSpeaking(_ isSpeakingNow: Bool) {
+        isSpeaking = isSpeakingNow
+        onSpeakingStateChanged(isSpeakingNow)
+    }
+
+    private enum NeuralSynthesisError: Error {
+        case supertonicNotLoaded
+    }
+
+    /// Routes one sentence: Devanagari always goes to Supertonic-3 ("hi"),
+    /// since Kokoro has no Hindi. Other sentences go to Kokoro when it is the
+    /// selected engine and loaded; if Kokoro throws (including when cancelled
+    /// by unloadKokoro), that sentence is retried on Supertonic-3 ("en").
+    private func makeClipSynthesisTask(for sentence: String) -> Task<Data, Error> {
+        let sentenceContainsDevanagari = Self.containsDevanagari(sentence)
+        let kokoroManagerForSentence = (selectedEngine == .kokoro && !sentenceContainsDevanagari) ? kokoroManager : nil
+        let kokoroVoiceForSentence = selectedKokoroVoice
+        let supertonicManagerForSentence = supertonicManager
+        let supertonicVoiceStyleForSentence = supertonicVoiceStyle
+        let supertonicLanguageCode = sentenceContainsDevanagari ? "hi" : "en"
+
         return Task {
-            let (samples, _) = try await supertonicManager.synthesize(
+            if let kokoroManagerForSentence {
+                do {
+                    return try await kokoroManagerForSentence.synthesize(text: sentence, voice: kokoroVoiceForSentence)
+                } catch {
+                    print("⚠️ Kokoro failed on a sentence, retrying with Supertonic-3: \(error)")
+                }
+            }
+            guard let supertonicManagerForSentence, let supertonicVoiceStyleForSentence else {
+                throw NeuralSynthesisError.supertonicNotLoaded
+            }
+            let (samples, _) = try await supertonicManagerForSentence.synthesize(
                 text: sentence,
-                language: sentenceLanguageCode,
-                style: supertonicVoiceStyle
+                language: supertonicLanguageCode,
+                style: supertonicVoiceStyleForSentence
             )
             return try AudioWAV.data(from: samples, sampleRate: Double(Supertonic3Constants.sampleRate))
         }

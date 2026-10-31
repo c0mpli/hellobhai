@@ -24,6 +24,18 @@ private class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+/// Tells the panel manager when the SwiftUI content's size changes (e.g. the
+/// permission list expands or the Start button goes away) so the panel can
+/// be re-fitted to it while open.
+private final class PanelHostingView<Content: View>: NSHostingView<Content> {
+    var onIntrinsicContentSizeInvalidated: (() -> Void)?
+
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onIntrinsicContentSizeInvalidated?()
+    }
+}
+
 @MainActor
 final class MenuBarPanelManager: NSObject {
     private var statusItem: NSStatusItem?
@@ -32,7 +44,7 @@ final class MenuBarPanelManager: NSObject {
     private var dismissPanelObserver: NSObjectProtocol?
 
     private let companionManager: CompanionManager
-    private let panelWidth: CGFloat = 320
+    private let panelWidth: CGFloat = 340
     private let panelHeight: CGFloat = 380
 
     init(companionManager: CompanionManager) {
@@ -147,7 +159,14 @@ final class MenuBarPanelManager: NSObject {
         let companionPanelView = CompanionPanelView(companionManager: companionManager)
             .frame(width: panelWidth)
 
-        let hostingView = NSHostingView(rootView: companionPanelView)
+        let hostingView = PanelHostingView(rootView: companionPanelView)
+        hostingView.onIntrinsicContentSizeInvalidated = { [weak self] in
+            // Async so the re-fit doesn't run in the middle of SwiftUI's layout pass.
+            DispatchQueue.main.async {
+                guard let self, let panel = self.panel, panel.isVisible else { return }
+                self.positionPanelBelowStatusItem()
+            }
+        }
         hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear
@@ -185,16 +204,20 @@ final class MenuBarPanelManager: NSObject {
         // Calculate the panel's content height from the hosting view's fitting size
         // so the panel snugly wraps the SwiftUI content instead of using a fixed height.
         let fittingSize = panel.contentView?.fittingSize ?? CGSize(width: panelWidth, height: panelHeight)
-        let actualPanelHeight = fittingSize.height
-
-        // Horizontally center the panel beneath the status item icon
-        let panelOriginX = statusItemFrame.midX - (panelWidth / 2)
-        let panelOriginY = statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar
-
-        panel.setFrame(
-            NSRect(x: panelOriginX, y: panelOriginY, width: panelWidth, height: actualPanelHeight),
-            display: true
+        // On short screens, cap the height; the panel content then switches
+        // to its scrolling layout.
+        let screenVisibleHeight = buttonWindow.screen?.visibleFrame.height ?? fittingSize.height
+        let maximumPanelHeight = screenVisibleHeight - gapBelowMenuBar - 12
+        let actualPanelHeight = min(fittingSize.height, maximumPanelHeight)
+        let newPanelFrame = NSRect(
+            x: statusItemFrame.midX - (panelWidth / 2),
+            y: statusItemFrame.minY - actualPanelHeight - gapBelowMenuBar,
+            width: panelWidth,
+            height: actualPanelHeight
         )
+        // Skipping no-op frame changes avoids a resize -> invalidate -> resize loop.
+        guard panel.frame != newPanelFrame else { return }
+        panel.setFrame(newPanelFrame, display: true)
     }
 
     // MARK: - Click Outside Dismissal

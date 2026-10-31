@@ -12,4 +12,6 @@ Bundled in `leanring-buddy/VisualToolkit/` for the live whiteboard and notes pan
 | `PatrickHand.woff2` | [Patrick Hand](https://fonts.google.com/specimen/Patrick+Hand) by Patrick Wagesreiter (Copyright (c) 2010-2012 Patrick Wagesreiter), converted from TTF to WOFF2 | SIL Open Font License 1.1 (https://openfontlicense.org) |
 | `three.min.js` | [three.js r159](https://github.com/mrdoob/three.js) (0.159.0 UMD build), used by the 3D model overlay | MIT, Copyright © 2010-2023 three.js authors |
 
+Models downloaded on first launch (not bundled): Kokoro-82M ([FluidInference/kokoro-82m-coreml](https://huggingface.co/FluidInference/kokoro-82m-coreml), Apache-2.0), Supertonic-3 (BigScience OpenRAIL-M), Whisper large-v3 via WhisperKit (MIT).
+
 Swift packages: [FluidAudio](https://github.com/FluidInference/FluidAudio) and [WhisperKit](https://github.com/argmaxinc/WhisperKit) (see their repositories for licenses).

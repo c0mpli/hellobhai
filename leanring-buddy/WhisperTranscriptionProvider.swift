@@ -23,6 +23,8 @@ final class WhisperTranscriptionProvider: BuddyTranscriptionProvider {
     }
 
     private static var loadedWhisperKit: WhisperKit?
+    /// Shown in the menu bar panel: Whisper vs the Apple Speech fallback.
+    static var isWhisperModelLoaded: Bool { loadedWhisperKit != nil }
     private static var hasStartedLoadingModel = false
     private let appleSpeechFallbackProvider = AppleSpeechTranscriptionProvider()
 

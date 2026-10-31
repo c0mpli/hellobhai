@@ -57,10 +57,15 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stop()
     }
 
-    /// Registers the app as a login item so it launches automatically on
-    /// startup. Uses SMAppService which shows the app in System Settings >
-    /// General > Login Items, letting the user toggle it off if they want.
+    /// Registers the app as a login item on first launch only, so it launches
+    /// automatically on startup. After that the "Launch at login" switch in
+    /// the panel (or System Settings > General > Login Items) owns it, and
+    /// re-registering here on every launch would undo the user's choice.
+    static let hasRegisteredLoginItemOnceUserDefaultsKey = "hasRegisteredLoginItemOnce"
+
     private func registerAsLoginItemIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.hasRegisteredLoginItemOnceUserDefaultsKey) else { return }
+        UserDefaults.standard.set(true, forKey: Self.hasRegisteredLoginItemOnceUserDefaultsKey)
         let loginItemService = SMAppService.mainApp
         if loginItemService.status != .enabled {
             do {

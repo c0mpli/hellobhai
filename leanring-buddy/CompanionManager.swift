@@ -68,8 +68,9 @@ final class CompanionManager: ObservableObject {
     /// Runs the local `claude -p` CLI — uses your Claude Code login, no API keys.
     private lazy var claudeCLI = ClaudeCLI(model: selectedModel)
 
-    /// On-device neural text-to-speech (Supertonic-3, one voice for English and Hindi).
-    private lazy var localTTSClient = LocalTTSClient { [weak self] isSpeaking in
+    /// On-device neural text-to-speech (Kokoro for English, Supertonic-3 for
+    /// Hindi and as fallback). Exposed so the panel can switch engine and voice.
+    private(set) lazy var localTTSClient = LocalTTSClient { [weak self] isSpeaking in
         self?.isSpeakingAloud = isSpeaking
     }
 
@@ -108,7 +109,7 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
-    /// The Claude Code model alias ("sonnet" or "opus") used for voice responses. Persisted to UserDefaults.
+    /// The Claude Code model alias ("fable", "opus", "sonnet" or "haiku") used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "sonnet"
 
     func setSelectedModel(_ model: String) {
