@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/305cff8a-7777-4671-906f-11a68852630f
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your spoken "haan".
 - **Explains the simple way.** Every explanation starts from something you have already lived, like a chai tapri, a dabbawala or your phone's contact list, maps the idea onto it piece by piece, and only then gives the real term.
 - **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: groups, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows, all laid out automatically so nothing overlaps, on an infinite canvas you can pan and zoom. Narration follows your language; the board is always in English.
-- **Builds 3D models.** Ask how a machine, gadget or device works and it builds a 3D model right over it on your screen, part by part, with labels pointing at each piece. Drag to rotate.
+- **Builds 3D models.** Ask how a machine, gadget or device works and it builds a true-to-size 3D model that lines up with the real thing on your screen (same angle, same spot), part by part, with labels pointing at each piece and arrows for airflow or force. Drag to rotate.
 - **Circles things.** It circles the exact text or values it's talking about on your screen, in gold. You can circle things too: hold Control + Option, drag around something and ask "what is this?".
 - **Draws real math.** Exact geometry, plotted functions, shaded integrals, tangents, vectors, number lines and properly typeset equations, built up step by step as it explains.
 - **Writes live notes.** "Notes bana do" or "summarize this page" and it writes notes beside your cursor as it talks: headings, highlighted key terms, syntax-highlighted code, comparison tables, sketch charts, and to-dos. Say "save kar do" to put them in Apple Notes.
@@ -98,7 +98,7 @@ When Claude decides a picture would help, the app asks Claude a second, focused 
 
 - **Narration and drawing stay in step.** Each sentence is spoken while the shapes that belong to it are drawn. The blue cursor moves along every stroke as if it were holding the pen, with a soft pencil sound.
 - **The whiteboard** is a small, locked-down web page inside the app. It draws hand-drawn shapes with **rough.js**, lays out diagrams automatically with **dagre** so nothing overlaps, and renders math with **KaTeX**.
-- **3D models** use **three.js**. Claude describes the object as simple parts (boxes, cylinders, repeated pins) with labels, and the app builds it part by part over the thing on your screen. You can drag to rotate it.
+- **3D models** use **three.js**. Claude describes the object in real millimeters as simple parts (boxes, cylinders, repeated pins, ready-made ports and connectors) with labels, reads the object's position and angle off the screenshot, and the app builds it part by part right over the thing on your screen. You can drag to rotate it.
 - **Claude never writes code that runs.** It only sends simple instructions as data. The pages can't load anything from the internet.
 
 ### The pieces, and where they live in the code
