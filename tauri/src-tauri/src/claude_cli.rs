@@ -1,7 +1,7 @@
 //! Spawns the local `claude -p` CLI with stream-json in and out, the same flags
 //! and lockdown as the Mac (`ClaudeCLI.swift`), except `--system-prompt-file`
 //! instead of `--system-prompt` (Windows command-line length and quoting).
-//! Dropping/aborting the owning task kills the child (`kill_on_drop`).
+//! Dropping/aborting the owning task kills the child and its process tree.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -63,7 +63,7 @@ fn claude_arguments(request: &ClaudeRequest<'_>, home_directory: &Path) -> Vec<S
     arguments
 }
 
-fn home_directory() -> PathBuf {
+pub fn home_directory() -> PathBuf {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
@@ -92,13 +92,12 @@ pub async fn run_claude_streaming(
         .stderr(Stdio::piped())
         // Aborting the owning task drops the child, which kills claude (Mac: process.terminate()).
         .kill_on_drop(true);
-    if request.allows_computer_tools {
-        command.envs(platform::voice_turn_environment());
-    }
     platform::configure_background_command(&mut command);
 
     let mut child = command.spawn().map_err(|spawn_error| format!("couldn't start claude: {spawn_error}"))?;
-    platform::attach_child_to_app_lifetime(&child);
+    // Dropped with this future (hotkey cancel, or the app exiting): kills claude's whole
+    // process tree, including node.exe behind an npm `claude.cmd` shim that kill_on_drop misses.
+    let _claude_process_tree = platform::kill_process_tree_when_dropped(&child);
     eprintln!(
         "claude -p: sent {:.1}MB, {} image(s), model {}",
         stdin_message.len() as f64 / 1_048_576.0,

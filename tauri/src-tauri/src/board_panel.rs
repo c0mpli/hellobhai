@@ -213,10 +213,17 @@ fn place_board_window_beside_cursor(app: &AppHandle, board_window: &WebviewWindo
     let Ok(cursor_position) = app.cursor_position() else { return };
     let monitors = monitors_from_tauri(app);
     let Some(cursor_monitor) = monitor_containing_point(&monitors, cursor_position.x, cursor_position.y) else { return };
-    let Ok(board_size) = board_window.outer_size() else { return };
+    let (Ok(board_size), Ok(current_scale_factor)) = (board_window.outer_size(), board_window.scale_factor()) else { return };
+    // outer_size is in the board's current monitor's pixels; Windows rescales the
+    // board when it moves to a monitor with another DPI, so place it at that size.
+    let scale_change = cursor_monitor.scale_factor / current_scale_factor.max(0.1);
+    let board_size_on_cursor_monitor = (
+        (board_size.width as f64 * scale_change).round() as u32,
+        (board_size.height as f64 * scale_change).round() as u32,
+    );
     let (board_x, board_y) = board_origin_beside_cursor(
         (cursor_position.x, cursor_position.y),
-        (board_size.width, board_size.height),
+        board_size_on_cursor_monitor,
         cursor_monitor.work_area,
         cursor_monitor.scale_factor,
     );

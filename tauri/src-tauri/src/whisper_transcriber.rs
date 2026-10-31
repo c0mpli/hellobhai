@@ -16,6 +16,7 @@ const WHISPER_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin";
 const WHISPER_MODEL_FILE_NAME: &str = "ggml-large-v3-turbo-q5_0.bin";
 const WHISPER_MODEL_SIZE_BYTES: u64 = 574_041_195;
+const WHISPER_MODEL_SHA256: &str = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
 const WHISPER_SERVER_FOLDER_NAME: &str = "whisper-server";
 const WHISPER_SAMPLE_RATE: u32 = 16_000;
 /// Whisper hallucinates on near-empty clips; skip anything under 0.3 s (same as the Mac).
@@ -37,6 +38,8 @@ pub struct WhisperTranscriber {
     server_base_url: Mutex<Option<String>>,
     /// Held so `kill_on_drop` only fires when the app exits.
     server_process: Mutex<Option<tokio::process::Child>>,
+    /// Held for the app's lifetime: closing it (at exit) kills whisper-server.
+    server_process_tree: Mutex<Option<crate::platform::ProcessTreeKillGuard>>,
     http_client: reqwest::Client,
 }
 
@@ -47,7 +50,8 @@ impl WhisperTranscriber {
             state: Mutex::new(SpeechModelState::Downloading { fraction: 0.0 }),
             server_base_url: Mutex::new(None),
             server_process: Mutex::new(None),
-            http_client: reqwest::Client::new(),
+            server_process_tree: Mutex::new(None),
+            http_client: local_http_client(),
         });
         let models_directory = crate::app_paths::models_directory(&app);
         let transcriber_for_startup = whisper_transcriber.clone();
@@ -80,11 +84,16 @@ impl WhisperTranscriber {
         let total_download_size_bytes = (whisper_server_download.size_bytes + WHISPER_MODEL_SIZE_BYTES) as f32;
         let runtime_share = whisper_server_download.size_bytes as f32 / total_download_size_bytes;
 
+        // The folder only appears once extraction has finished (extract_zip_entries renames it into place).
         if !whisper_server_executable.exists() {
             let runtime_zip_path = models_directory.join("whisper-bin-x64.zip");
-            download_file_if_missing(whisper_server_download.url, &runtime_zip_path, whisper_server_download.size_bytes, |fraction| {
-                self.set_state(SpeechModelState::Downloading { fraction: fraction * runtime_share })
-            })
+            download_file_if_missing(
+                whisper_server_download.url,
+                &runtime_zip_path,
+                whisper_server_download.size_bytes,
+                whisper_server_download.sha256,
+                |fraction| self.set_state(SpeechModelState::Downloading { fraction: fraction * runtime_share }),
+            )
             .await?;
             // Keep Release/whisper-server.exe and every Release/*.dll (unused DLLs are harmless).
             extract_zip_entries(
@@ -99,7 +108,7 @@ impl WhisperTranscriber {
             let _ = std::fs::remove_file(&runtime_zip_path);
         }
 
-        download_file_if_missing(WHISPER_MODEL_URL, &whisper_model_path, WHISPER_MODEL_SIZE_BYTES, |fraction| {
+        download_file_if_missing(WHISPER_MODEL_URL, &whisper_model_path, WHISPER_MODEL_SIZE_BYTES, WHISPER_MODEL_SHA256, |fraction| {
             self.set_state(SpeechModelState::Downloading { fraction: runtime_share + fraction * (1.0 - runtime_share) })
         })
         .await?;
@@ -112,6 +121,7 @@ impl WhisperTranscriber {
             .arg(&whisper_model_path)
             .args(["--host", "127.0.0.1", "--port", &server_port.to_string(), "-nt", "-l", "auto"])
             .current_dir(&whisper_server_directory)
+            .env("PATH", path_with_app_directory_first())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -120,7 +130,7 @@ impl WhisperTranscriber {
         let server_child = server_command
             .spawn()
             .map_err(|spawn_error| format!("cannot start whisper-server: {spawn_error}"))?;
-        crate::platform::attach_child_to_app_lifetime(&server_child);
+        *self.server_process_tree.lock().unwrap() = Some(crate::platform::kill_process_tree_when_dropped(&server_child));
         *self.server_process.lock().unwrap() = Some(server_child);
 
         let server_base_url = format!("http://127.0.0.1:{server_port}");
@@ -241,6 +251,22 @@ fn encode_16_bit_mono_wav(samples_16k: &[f32]) -> Result<Vec<u8>, String> {
     Ok(wav_bytes.into_inner())
 }
 
+/// Never the system proxy: corporate proxy settings without a `<local>` bypass
+/// would send requests for 127.0.0.1 to the proxy.
+fn local_http_client() -> reqwest::Client {
+    reqwest::Client::builder().no_proxy().build().unwrap_or_default()
+}
+
+/// whisper-server.exe needs the Visual C++ runtime DLLs (msvcp140, vcruntime140).
+/// The installer puts app-local copies next to hellobhai.exe; Windows searches
+/// PATH for a child's DLLs, so a PC without the VC++ redistributable still works.
+fn path_with_app_directory_first() -> std::ffi::OsString {
+    let app_directory = std::env::current_exe().ok().and_then(|app_executable| app_executable.parent().map(Path::to_path_buf));
+    let existing_path = std::env::var_os("PATH").unwrap_or_default();
+    let directories = app_directory.into_iter().chain(std::env::split_paths(&existing_path));
+    std::env::join_paths(directories).unwrap_or(existing_path)
+}
+
 /// Binds port 0 to let the OS pick, then frees it for whisper-server.
 fn pick_free_local_port() -> Result<u16, String> {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -282,7 +308,8 @@ mod tests {
             state: Mutex::new(SpeechModelState::Starting),
             server_base_url: Mutex::new(None),
             server_process: Mutex::new(None),
-            http_client: reqwest::Client::new(),
+            server_process_tree: Mutex::new(None),
+            http_client: local_http_client(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         assert_eq!(runtime.block_on(whisper_transcriber.transcribe(vec![0.0; 4_000])), Ok(String::new()));

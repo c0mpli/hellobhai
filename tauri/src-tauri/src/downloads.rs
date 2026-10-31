@@ -5,13 +5,28 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-/// Streams to `<destination>.partial`, checks the size, renames. Skips when the
-/// file already exists with the expected size.
+use sha2::{Digest, Sha256};
+
+/// https only, gives up on a stalled connection instead of "downloading" forever.
+fn download_http_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("cannot set up downloads: {error}"))
+}
+
+/// Streams to `<destination>.partial`, checks the size and SHA-256, renames.
+/// Skips when the file already exists with the expected size: only a verified
+/// download is ever renamed to `destination`.
 pub async fn download_file_if_missing(
     url: &str,
     destination: &Path,
     expected_size_bytes: u64,
+    expected_sha256: &str,
     on_progress: impl Fn(f32),
 ) -> Result<(), String> {
     let already_downloaded = std::fs::metadata(destination)
@@ -27,7 +42,9 @@ pub async fn download_file_if_missing(
     }
     let partial_destination = partial_path_for(destination);
 
-    let mut response = reqwest::get(url)
+    let mut response = download_http_client()?
+        .get(url)
+        .send()
         .await
         .and_then(|response| response.error_for_status())
         .map_err(|error| format!("download of {url} failed: {error}"))?;
@@ -37,11 +54,16 @@ pub async fn download_file_if_missing(
     let mut partial_file = File::create(&partial_destination)
         .map_err(|error| format!("cannot create {}: {error}", partial_destination.display()))?;
     let mut downloaded_size_bytes: u64 = 0;
+    let mut content_hasher = Sha256::new();
     while let Some(chunk) = response.chunk().await.map_err(|error| format!("download of {url} failed: {error}"))? {
+        downloaded_size_bytes += chunk.len() as u64;
+        if downloaded_size_bytes > expected_size_bytes {
+            break; // already wrong; reported below
+        }
+        content_hasher.update(&chunk);
         partial_file
             .write_all(&chunk)
             .map_err(|error| format!("cannot write {}: {error}", partial_destination.display()))?;
-        downloaded_size_bytes += chunk.len() as u64;
         on_progress((downloaded_size_bytes as f32 / expected_size_bytes.max(1) as f32).min(1.0));
     }
     drop(partial_file);
@@ -52,8 +74,17 @@ pub async fn download_file_if_missing(
             "download of {url} has {downloaded_size_bytes} bytes, expected {expected_size_bytes}"
         ));
     }
+    let downloaded_sha256 = hex_string(&content_hasher.finalize());
+    if !downloaded_sha256.eq_ignore_ascii_case(expected_sha256) {
+        let _ = std::fs::remove_file(&partial_destination);
+        return Err(format!("download of {url} has SHA-256 {downloaded_sha256}, expected {expected_sha256}"));
+    }
     std::fs::rename(&partial_destination, destination)
         .map_err(|error| format!("cannot move {} into place: {error}", partial_destination.display()))
+}
+
+fn hex_string(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn partial_path_for(destination: &Path) -> PathBuf {
@@ -62,9 +93,25 @@ fn partial_path_for(destination: &Path) -> PathBuf {
     destination.with_file_name(partial_file_name)
 }
 
-/// Extracts the entries for which `keep_entry(entry_name)` is true; `flatten`
-/// drops their folders.
+/// Extracts the entries for which `keep_entry(entry_name)` is true into
+/// `<destination_dir>.partial`, then renames it to `destination_dir`, so a crash
+/// or full disk midway never leaves a half-filled folder that looks finished.
+/// `flatten` drops the entries' folders.
 pub fn extract_zip_entries(
+    zip_path: &Path,
+    destination_dir: &Path,
+    keep_entry: impl Fn(&str) -> bool,
+    flatten: bool,
+) -> Result<(), String> {
+    let partial_destination_dir = partial_path_for(destination_dir);
+    let _ = std::fs::remove_dir_all(&partial_destination_dir);
+    extract_zip_entries_into(zip_path, &partial_destination_dir, keep_entry, flatten)?;
+    let _ = std::fs::remove_dir_all(destination_dir);
+    std::fs::rename(&partial_destination_dir, destination_dir)
+        .map_err(|error| format!("cannot move {} into place: {error}", partial_destination_dir.display()))
+}
+
+fn extract_zip_entries_into(
     zip_path: &Path,
     destination_dir: &Path,
     keep_entry: impl Fn(&str) -> bool,
@@ -123,9 +170,22 @@ mod tests {
 
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         // An unroutable URL: reaching the network would fail the test.
-        let result = runtime.block_on(download_file_if_missing("http://127.0.0.1:9/never", &destination, 5, |_| {}));
+        let result = runtime.block_on(download_file_if_missing("http://127.0.0.1:9/never", &destination, 5, "unused", |_| {}));
         assert_eq!(result, Ok(()));
         assert_eq!(std::fs::read(&destination).unwrap(), b"12345");
+    }
+
+    #[test]
+    fn plain_http_downloads_are_refused() {
+        let directory = fresh_temporary_directory("http");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let result = runtime.block_on(download_file_if_missing("http://127.0.0.1:9/never", &directory.join("x.bin"), 5, "unused", |_| {}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn sha256_is_lowercase_hex() {
+        assert_eq!(hex_string(&Sha256::digest(b"abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[test]

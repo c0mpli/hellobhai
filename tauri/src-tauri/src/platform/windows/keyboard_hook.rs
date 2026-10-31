@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_ESCAPE,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_ESCAPE,
     VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -84,6 +84,24 @@ fn physical_key_for_virtual_key(virtual_key: VIRTUAL_KEY) -> PhysicalKey {
         VK_ESCAPE => PhysicalKey::Escape,
         _ => PhysicalKey::Other,
     }
+}
+
+/// Whether the key is physically down right now (GetAsyncKeyState); None for `Other`.
+pub fn is_key_held_now(physical_key: PhysicalKey) -> Option<bool> {
+    let virtual_key = match physical_key {
+        PhysicalKey::LeftCtrl => VK_LCONTROL,
+        PhysicalKey::RightCtrl => VK_RCONTROL,
+        PhysicalKey::LeftAlt => VK_LMENU,
+        PhysicalKey::RightAlt => VK_RMENU,
+        PhysicalKey::LeftWin => VK_LWIN,
+        PhysicalKey::RightWin => VK_RWIN,
+        PhysicalKey::LeftShift => VK_LSHIFT,
+        PhysicalKey::RightShift => VK_RSHIFT,
+        PhysicalKey::Space => VK_SPACE,
+        PhysicalKey::Escape => VK_ESCAPE,
+        PhysicalKey::Other => return None,
+    };
+    Some(unsafe { GetAsyncKeyState(virtual_key.0 as i32) } as u16 & 0x8000 != 0)
 }
 
 /// Taps VK 0xE8 (unassigned) once so releasing Win after the shortcut does not

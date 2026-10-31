@@ -59,6 +59,22 @@ impl SupertonicVoice {
             SupertonicVoice::M5 => 291_469,
         }
     }
+
+    /// SHA-256 of the voice file in the pinned revision.
+    pub fn file_sha256(self) -> &'static str {
+        match self {
+            SupertonicVoice::F1 => "bbdec6ee00231c2c742ad05483df5334cab3b52fda3ba38e6a07059c4563dbc2",
+            SupertonicVoice::F2 => "7c722c6a72707b1a77f035d67f0d1351ba187738e06f7683e8c72b1df3477fc6",
+            SupertonicVoice::F3 => "12f6ef2573baa2defa1128069cb59f203e3ab67c92af77b42df8a0e3a2f7c6ab",
+            SupertonicVoice::F4 => "c2fa764c1225a76dfc3e2c73e8aa4f70d9ee48793860eb34c295fff01c2e032b",
+            SupertonicVoice::F5 => "45966e73316415626cf41a7d1c6f3b4c70dbc1ba2bee5c1978ef0ce33244fc8d",
+            SupertonicVoice::M1 => "e35604687f5d23694b8e91593a93eec0e4eca6c0b02bb8ed69139ab2ea6b0a5b",
+            SupertonicVoice::M2 => "b76cbf62bac707c710cf0ae5aba5e31eea1a6339a9734bfae33ab98499534a50",
+            SupertonicVoice::M3 => "ea1ac35ccb91b0d7ecad533a2fbd0eec10c91513d8951e3b25fbba99954e159b",
+            SupertonicVoice::M4 => "ca8eefad4fcd989c9379032ff3e50738adc547eeb5e221b82593a6d7b3bac303",
+            SupertonicVoice::M5 => "dd22b92740314321f8ae11c5e87f8dd60d060f15dd3a632b5adf77f471f77af2",
+        }
+    }
 }
 
 /// The two style tensors of a voice json: style_ttl [1,50,256], style_dp [1,8,16].

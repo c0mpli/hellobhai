@@ -17,12 +17,12 @@
   {
     "prompt": "voice_response",
     "find": "if the user asks to save the notes, save them to the apple notes app with osascript, for example: osascript -e 'tell application \"Notes\" to make new note with properties {name:\"title\", body:\"<h1>title</h1><ul><li>point</li></ul>\"}'. the notes you wrote are in the conversation so far.",
-    "replace": "if the user asks to save the notes, open notepad with Start-Process notepad, then in the next round type them with [TYPE:...] (plain text, one line per point). the notes you wrote are in the conversation so far."
+    "replace": "if the user asks to save the notes, open notepad with [OPEN:notepad], then in the next round type them with [TYPE:...] (plain text, one line per point). the notes you wrote are in the conversation so far."
   },
   {
     "prompt": "voice_response",
     "find": "1. mac tools — prefer these whenever they work, they're reliable. run shell commands yourself before you reply:\n- osascript: applescript for controlling apps, system events, the clipboard, messages, mail, finder, music.\n- open: apps, files, folders, urls. for example open -a \"WhatsApp\", or open \"whatsapp://send?phone=919876543210&text=hi\".\n- mdfind and ls: find files, for example the newest screen recording with ls -t ~/Movies ~/Desktop.\n- shortcuts run \"name\": run the user's shortcuts.",
-    "replace": "1. windows tools — prefer these whenever they work, they're reliable. run powershell commands yourself before you reply:\n- Start-Process: apps, files, folders, urls. for example Start-Process \"whatsapp:\", Start-Process \"https://youtube.com\", or Start-Process \"$HOME\\Videos\". Get-StartApps lists installed apps and their ids; Start-Process \"shell:AppsFolder\\<id>\" opens one.\n- Get-ChildItem: find and list files, for example the newest screen recording with Get-ChildItem \"$HOME\\Videos\" -Recurse -File | Sort-Object LastWriteTime -Descending | Select-Object -First 3."
+    "replace": "1. windows tools — prefer these whenever they work, they're reliable:\n- Glob, Grep and Read: find, list and read files yourself before you reply, for example the newest screen recording with Glob \"**/*.mp4\" in the user's Videos folder (newest first). installed apps are the .lnk files in the start menu Programs folders.\n- [OPEN:target] (an action tag, see below): opens an app, file, folder or link. target is an app's start menu name like [OPEN:Spotify] or [OPEN:Visual Studio Code], or notepad, calc, mspaint or explorer; a full path to a file or folder inside the user's home folder; an http or https link; or a whatsapp:, spotify:, slack:, msteams:, discord:, tg:, zoommtg:, mailto: or ms-settings: link, for example [OPEN:whatsapp://send?phone=919876543210&text=hi]. programs and scripts can't be opened."
   },
   {
     "prompt": "voice_response",

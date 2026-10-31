@@ -84,6 +84,8 @@ fn create_one_overlay_per_monitor(app: &AppHandle, monitors: &[MonitorDescriptio
             .always_on_top(true)
             .focusable(false)
             .resizable(false)
+            // Shown only after it has been moved and sized for its monitor.
+            .visible(false)
             .build();
         let overlay_window = match build_result {
             Ok(overlay_window) => overlay_window,
@@ -92,9 +94,13 @@ fn create_one_overlay_per_monitor(app: &AppHandle, monitors: &[MonitorDescriptio
                 continue;
             }
         };
-        // Physical pixels: the monitors can have different scale factors.
+        // Physical pixels: the monitors can have different scale factors. Size is set
+        // after the move, so a DPI change during the move can't leave it wrong.
+        // 1 px short of the monitor: a topmost borderless window covering a whole
+        // monitor counts as a full-screen app (Focus Assist mutes notifications,
+        // the taskbar drops behind it).
         let _ = overlay_window.set_position(PhysicalPosition::new(monitor.rect.x, monitor.rect.y));
-        let _ = overlay_window.set_size(PhysicalSize::new(monitor.rect.width, monitor.rect.height));
+        let _ = overlay_window.set_size(PhysicalSize::new(monitor.rect.width, monitor.rect.height.saturating_sub(1)));
         let _ = overlay_window.show();
         // Click-through; only the push-to-talk hotkey turns it off, for drawing.
         let _ = overlay_window.set_ignore_cursor_events(true);

@@ -1,6 +1,7 @@
 //! Synthetic mouse and keyboard input with SetCursorPos + SendInput.
 //! Coordinates are global physical pixels (the process is per-monitor DPI aware).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -21,11 +22,22 @@ pub fn click_at_global_point(x: i32, y: i32) -> Result<(), PlatformError> {
 }
 
 /// KEYEVENTF_UNICODE per UTF-16 unit (Devanagari works, surrogate pairs kept together),
-/// '\n' as Enter, 8 ms between chunks of 20 units.
-pub fn type_text(text: &str) -> Result<(), PlatformError> {
+/// '\n' as Enter, 8 ms between chunks of 20 units. Stops before the next chunk once
+/// `should_stop_typing` is set (the hotkey cancelled the reply) or while the user
+/// holds ctrl, alt or win: typed letters would arrive as shortcuts (ctrl+w, ctrl+a).
+pub fn type_text(text: &str, should_stop_typing: &AtomicBool) -> Result<(), PlatformError> {
     const MAXIMUM_UTF16_UNITS_PER_CHUNK: usize = 20;
     let mut current_chunk_inputs = Vec::new();
     let mut current_chunk_utf16_unit_count = 0;
+    let send_chunk_unless_stopped = |chunk_inputs: &[INPUT]| -> Result<(), PlatformError> {
+        if should_stop_typing.load(Ordering::SeqCst) {
+            return Err(PlatformError::Failed("typing cancelled".into()));
+        }
+        if is_any_shortcut_modifier_held() {
+            return Err(PlatformError::Failed("typing stopped: ctrl, alt or win is held".into()));
+        }
+        send_inputs(chunk_inputs)
+    };
 
     // Splitting on chars (not UTF-16 units) keeps a surrogate pair in one chunk.
     for character in text.chars() {
@@ -33,7 +45,7 @@ pub fn type_text(text: &str) -> Result<(), PlatformError> {
             continue;
         }
         if current_chunk_utf16_unit_count + character.len_utf16() > MAXIMUM_UTF16_UNITS_PER_CHUNK {
-            send_inputs(&current_chunk_inputs)?;
+            send_chunk_unless_stopped(&current_chunk_inputs)?;
             sleep(Duration::from_millis(8));
             current_chunk_inputs.clear();
             current_chunk_utf16_unit_count = 0;
@@ -52,10 +64,17 @@ pub fn type_text(text: &str) -> Result<(), PlatformError> {
         current_chunk_utf16_unit_count += character.len_utf16();
     }
     if !current_chunk_inputs.is_empty() {
-        send_inputs(&current_chunk_inputs)?;
+        send_chunk_unless_stopped(&current_chunk_inputs)?;
         sleep(Duration::from_millis(8));
     }
     Ok(())
+}
+
+/// Physical state right now (GetAsyncKeyState's high bit), not this thread's queue state.
+fn is_any_shortcut_modifier_held() -> bool {
+    [VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|virtual_key| unsafe { GetAsyncKeyState(virtual_key.0 as i32) } as u16 & 0x8000 != 0)
 }
 
 /// Modifiers down, key down/up, modifiers up in reverse.

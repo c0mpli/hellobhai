@@ -5,7 +5,7 @@ pub fn click_at_global_point(x: i32, y: i32) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }
 
-pub fn type_text(text: &str) -> Result<(), PlatformError> {
+pub fn type_text(text: &str, should_stop_typing: &std::sync::atomic::AtomicBool) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }
 

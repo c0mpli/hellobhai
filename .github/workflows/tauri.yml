@@ -24,7 +24,19 @@ jobs:
       - run: cargo test --locked
         working-directory: tauri/src-tauri
       - run: npm ci
-      - run: npx tauri build --bundles nsis
+      # whisper-server.exe and onnxruntime.dll need the Visual C++ runtime, which a
+      # clean Windows lacks. Ship app-local copies next to hellobhai.exe (Microsoft's
+      # supported app-local deployment); whisper-server finds them through PATH.
+      - name: Copy the Visual C++ runtime DLLs
+        shell: pwsh
+        run: |
+          $visualStudioPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $runtimeFolder = Get-ChildItem "$visualStudioPath\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" | Sort-Object FullName | Select-Object -Last 1
+          New-Item -ItemType Directory -Force src-tauri/vc-runtime | Out-Null
+          foreach ($dllName in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item (Join-Path $runtimeFolder.FullName $dllName) src-tauri/vc-runtime/
+          }
+      - run: npx tauri build --bundles nsis --config src-tauri/tauri.vc-runtime.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: hellobhai-windows-installer

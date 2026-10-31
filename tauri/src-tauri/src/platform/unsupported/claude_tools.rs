@@ -9,6 +9,6 @@ pub fn voice_turn_tool_arguments(home_directory: &Path) -> Vec<String> {
     vec!["--tools".to_string(), String::new()]
 }
 
-pub fn voice_turn_environment() -> Vec<(String, String)> {
+pub fn start_menu_shortcut_directories() -> Vec<PathBuf> {
     Vec::new()
 }

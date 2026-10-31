@@ -7,6 +7,8 @@
 //! `CtrlLeftAlt` needs the LEFT alt, so AltGr never triggers it.
 
 use std::collections::HashSet;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
@@ -87,20 +89,30 @@ pub enum ShortcutTransition {
     None,
     Pressed,
     Released,
+    /// Another key joined a modifier-only chord: it was a Windows shortcut, not push-to-talk.
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HotkeyEvent {
     PushToTalkPressed,
     PushToTalkReleased,
+    /// Drop the recording without transcribing (see `ShortcutTransition::Cancelled`).
+    PushToTalkCancelled,
     EscapePressed,
 }
+
+/// A modifier-only chord must be held this long with no other key before it counts,
+/// so win+ctrl+left/right/d/f4/enter/o/c never reach the brain at all.
+const MODIFIER_CHORD_CONFIRMATION_DELAY: Duration = Duration::from_millis(150);
 
 /// Tracks held keys and whether the shortcut is currently pressed.
 #[derive(Default)]
 pub struct PushToTalkShortcutTracker {
     held_keys: HashSet<PhysicalKey>,
     is_shortcut_pressed: bool,
+    /// A non-modifier key went down while the chord was held; cleared once the chord is let go.
+    is_chord_part_of_another_shortcut: bool,
 }
 
 impl PushToTalkShortcutTracker {
@@ -108,9 +120,23 @@ impl PushToTalkShortcutTracker {
         Self::default()
     }
 
+    /// Key-ups are lost while Windows shows the lock screen, UAC or an elevated
+    /// window (low-level hooks see nothing there), which would leave a key "held"
+    /// forever. Drops every tracked key the OS says is up, except `key_being_handled`
+    /// (the OS state for the event in flight may not be updated yet).
+    pub fn forget_keys_released_without_an_event(
+        &mut self,
+        key_being_handled: PhysicalKey,
+        is_key_held_now: impl Fn(PhysicalKey) -> Option<bool>,
+    ) {
+        self.held_keys
+            .retain(|held_key| *held_key == key_being_handled || is_key_held_now(*held_key) != Some(false));
+    }
+
     /// Modifier-only options: Pressed when all required modifiers are held (either side
-    /// counts for ctrl/shift/win), Released when any is let go. Space options: Pressed on
-    /// Space down with the modifiers held, Released on Space up.
+    /// counts for ctrl/shift/win), Released when any is let go, Cancelled when another
+    /// (non-modifier) key goes down meanwhile. Space options: Pressed on Space down with
+    /// the modifiers held, Released on Space up.
     pub fn handle_key_event(&mut self, option: PushToTalkShortcutOption, event: RawKeyEvent) -> ShortcutTransition {
         if event.is_injected {
             return ShortcutTransition::None;
@@ -136,8 +162,17 @@ impl PushToTalkShortcutTracker {
             PushToTalkShortcutOption::CtrlAltSpace | PushToTalkShortcutOption::ShiftCtrlSpace => None,
         };
 
-        if let Some(is_shortcut_currently_held) = required_modifiers_for_modifier_only_option {
-            return self.transition_to(is_shortcut_currently_held);
+        if let Some(are_required_modifiers_held) = required_modifiers_for_modifier_only_option {
+            if !are_required_modifiers_held {
+                self.is_chord_part_of_another_shortcut = false;
+            } else if event.is_key_down && event.physical_key == PhysicalKey::Other {
+                self.is_chord_part_of_another_shortcut = true;
+                if self.is_shortcut_pressed {
+                    self.is_shortcut_pressed = false;
+                    return ShortcutTransition::Cancelled;
+                }
+            }
+            return self.transition_to(are_required_modifiers_held && !self.is_chord_part_of_another_shortcut);
         }
 
         if event.physical_key != PhysicalKey::Space {
@@ -171,6 +206,10 @@ fn shortcut_uses_win_key(option: PushToTalkShortcutOption) -> bool {
     option == PushToTalkShortcutOption::CtrlWin
 }
 
+fn shortcut_is_modifier_only(option: PushToTalkShortcutOption) -> bool {
+    !matches!(option, PushToTalkShortcutOption::CtrlAltSpace | PushToTalkShortcutOption::ShiftCtrlSpace)
+}
+
 /// Starts the platform keyboard hook and sends `HotkeyEvent`s for the shortcut in
 /// `settings` (read on every event so a changed shortcut applies at once).
 pub fn start_push_to_talk_listener(settings: SharedSettings, hotkey_sender: UnboundedSender<HotkeyEvent>) {
@@ -189,19 +228,53 @@ pub fn start_push_to_talk_listener(settings: SharedSettings, hotkey_sender: Unbo
         .name("push-to-talk-tracker".into())
         .spawn(move || {
             let mut shortcut_tracker = PushToTalkShortcutTracker::new();
-            for raw_key_event in raw_key_event_receiver {
+            // Set while a modifier-only chord waits out MODIFIER_CHORD_CONFIRMATION_DELAY.
+            let mut pending_press_deadline: Option<Instant> = None;
+            loop {
+                let next_raw_key_event = match pending_press_deadline {
+                    Some(deadline) => raw_key_event_receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+                    None => raw_key_event_receiver.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                };
+                let raw_key_event = match next_raw_key_event {
+                    Ok(raw_key_event) => raw_key_event,
+                    Err(RecvTimeoutError::Timeout) => {
+                        // Held long enough with no other key: it really is push-to-talk.
+                        pending_press_deadline = None;
+                        if hotkey_sender.send(HotkeyEvent::PushToTalkPressed).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                };
+
                 if raw_key_event.physical_key == PhysicalKey::Escape && raw_key_event.is_key_down && !raw_key_event.is_injected {
                     let _ = hotkey_sender.send(HotkeyEvent::EscapePressed);
                 }
+                if !raw_key_event.is_injected {
+                    shortcut_tracker.forget_keys_released_without_an_event(raw_key_event.physical_key, crate::platform::is_key_held_now);
+                }
                 let current_shortcut_option = settings.read().unwrap().push_to_talk_shortcut;
-                let hotkey_event = match shortcut_tracker.handle_key_event(current_shortcut_option, raw_key_event) {
+                let transition = shortcut_tracker.handle_key_event(current_shortcut_option, raw_key_event);
+                let hotkey_event = match transition {
                     ShortcutTransition::Pressed => {
+                        // Right away, even before the press is confirmed: a quick tap must not open Start either.
                         if shortcut_uses_win_key(current_shortcut_option) {
                             crate::platform::inject_start_menu_suppression_key();
                         }
+                        if shortcut_is_modifier_only(current_shortcut_option) {
+                            pending_press_deadline = Some(Instant::now() + MODIFIER_CHORD_CONFIRMATION_DELAY);
+                            continue;
+                        }
                         HotkeyEvent::PushToTalkPressed
                     }
+                    // The press never reached the brain, so neither does its end.
+                    ShortcutTransition::Released | ShortcutTransition::Cancelled if pending_press_deadline.is_some() => {
+                        pending_press_deadline = None;
+                        continue;
+                    }
                     ShortcutTransition::Released => HotkeyEvent::PushToTalkReleased,
+                    ShortcutTransition::Cancelled => HotkeyEvent::PushToTalkCancelled,
                     ShortcutTransition::None => continue,
                 };
                 if hotkey_sender.send(hotkey_event).is_err() {
@@ -230,7 +303,7 @@ mod tests {
     }
 
     use PhysicalKey::*;
-    use ShortcutTransition::{None as NoChange, Pressed, Released};
+    use ShortcutTransition::{Cancelled, None as NoChange, Pressed, Released};
 
     #[test]
     fn ctrl_win_presses_with_either_side_and_releases_when_one_is_let_go() {
@@ -279,6 +352,44 @@ mod tests {
     fn injected_events_are_ignored() {
         let injected_win_down = RawKeyEvent { physical_key: LeftWin, is_key_down: true, is_injected: true };
         assert_eq!(run_sequence(PushToTalkShortcutOption::CtrlWin, &[key_down(LeftCtrl), injected_win_down]), vec![NoChange, NoChange]);
+    }
+
+    #[test]
+    fn another_key_during_the_chord_cancels_it_until_the_chord_is_let_go() {
+        // win+ctrl+right (switch desktop) after the press was already reported.
+        assert_eq!(
+            run_sequence(
+                PushToTalkShortcutOption::CtrlWin,
+                &[key_down(LeftCtrl), key_down(LeftWin), key_down(Other), key_up(Other), key_down(Other), key_up(LeftWin), key_up(LeftCtrl)]
+            ),
+            vec![NoChange, Pressed, Cancelled, NoChange, NoChange, NoChange, NoChange]
+        );
+        // A key pressed before the chord was complete doesn't count (only keys joining a held chord do).
+        assert_eq!(
+            run_sequence(PushToTalkShortcutOption::CtrlWin, &[key_down(LeftCtrl), key_down(Other), key_down(LeftWin), key_up(Other), key_up(LeftWin)]),
+            vec![NoChange, NoChange, Pressed, NoChange, Released]
+        );
+        // After letting go, the chord works again.
+        assert_eq!(
+            run_sequence(
+                PushToTalkShortcutOption::CtrlWin,
+                &[key_down(LeftCtrl), key_down(LeftWin), key_down(Other), key_up(LeftWin), key_down(LeftWin), key_up(LeftWin)]
+            ),
+            vec![NoChange, Pressed, Cancelled, NoChange, Pressed, Released]
+        );
+    }
+
+    #[test]
+    fn keys_released_while_windows_hid_the_event_are_forgotten() {
+        let mut shortcut_tracker = PushToTalkShortcutTracker::new();
+        let option = PushToTalkShortcutOption::CtrlWin;
+        assert_eq!(shortcut_tracker.handle_key_event(option, key_down(LeftWin)), NoChange);
+        // Win+L locked the screen and Win's key-up was never seen; later ctrl alone must not record.
+        shortcut_tracker.forget_keys_released_without_an_event(LeftCtrl, |physical_key| Some(physical_key == LeftCtrl));
+        assert_eq!(shortcut_tracker.handle_key_event(option, key_down(LeftCtrl)), NoChange);
+        // Without OS state (None) nothing is dropped.
+        shortcut_tracker.forget_keys_released_without_an_event(LeftWin, |_| None);
+        assert_eq!(shortcut_tracker.handle_key_event(option, key_down(LeftWin)), Pressed);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Parses the tags Claude appends to a reply ([CLICK]/[TYPE]/[KEY], [CLOSE_DRAWING],
+//! Parses the tags Claude appends to a reply ([CLICK]/[TYPE]/[KEY]/[OPEN], [CLOSE_DRAWING],
 //! [SHOW], [NOTES], [MODEL3D], [CIRCLE], [POINT]) in the Mac's order. Coordinates
 //! stay in screenshot pixels here; `screen_mapping` turns them into global ones.
 //! Screen numbers are 1-based; `None` means the cursor screen.
@@ -25,6 +25,10 @@ pub enum ComputerAction {
     PressKey {
         key_combo: String,
     },
+    /// Not in the Mac grammar (the Mac runs `open` as a tool): an app, file, folder or link (`computer_control::allowed_open_target`).
+    Open {
+        target: String,
+    },
 }
 
 impl ComputerAction {
@@ -34,6 +38,7 @@ impl ComputerAction {
             ComputerAction::Click { label, .. } => format!("clicked {}", label.as_deref().unwrap_or("something")),
             ComputerAction::Type { text } => format!("typed \"{text}\""),
             ComputerAction::PressKey { key_combo } => format!("pressed {key_combo}"),
+            ComputerAction::Open { target } => format!("opened {target}"),
         }
     }
 }
@@ -80,7 +85,7 @@ pub struct ParsedReply {
 /// The ":label:screenN" tail shared by the [POINT] and [CIRCLE] tag patterns.
 const TAG_LABEL_AND_SCREEN_PATTERN: &str = r"(?::([^\]:\s][^\]:]*?))?(?::screen(\d+))?";
 
-static ACTION_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[(CLICK|TYPE|KEY):([^\]]*)\]").unwrap());
+static ACTION_TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[(CLICK|TYPE|KEY|OPEN):([^\]]*)\]").unwrap());
 static CLICK_PAYLOAD_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*(\d+)\s*,\s*(\d+)(?::([^:]*?))?(?::screen(\d+))?\s*$").unwrap());
 static BARE_SCREEN_LABEL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^screen(\d+)\s*$").unwrap());
@@ -118,7 +123,7 @@ fn parse_click_payload(click_payload: &str) -> Option<ComputerAction> {
     Some(ComputerAction::Click { screenshot_x, screenshot_y, label, screen_number })
 }
 
-/// Removes every [CLICK]/[TYPE]/[KEY] tag; returns the remaining text and the actions in order.
+/// Removes every [CLICK]/[TYPE]/[KEY]/[OPEN] tag; returns the remaining text and the actions in order.
 pub fn extract_computer_actions(text: &str) -> (String, Vec<ComputerAction>) {
     let mut parsed_actions = Vec::new();
     for captures in ACTION_TAG_REGEX.captures_iter(text) {
@@ -131,6 +136,7 @@ pub fn extract_computer_actions(text: &str) -> (String, Vec<ComputerAction>) {
             }
             "TYPE" => parsed_actions.push(ComputerAction::Type { text: action_payload.to_string() }),
             "KEY" => parsed_actions.push(ComputerAction::PressKey { key_combo: trim_spaces_but_not_newlines(action_payload).to_string() }),
+            "OPEN" => parsed_actions.push(ComputerAction::Open { target: action_payload.trim().to_string() }),
             _ => {}
         }
     }
@@ -289,7 +295,7 @@ mod tests {
     #[test]
     fn click_type_and_key_actions_are_extracted_in_order() {
         let (remaining_text, actions) = extract_computer_actions(
-            "searching for it. [CLICK:640,40:search bar][TYPE:लाल किला दिल्ली][KEY: cmd+enter ][CLICK:10,20:screen2][CLICK:5,6][CLICK:7,8:send:screen3][CLICK:oops] done",
+            "searching for it. [CLICK:640,40:search bar][TYPE:लाल किला दिल्ली][KEY: cmd+enter ][CLICK:10,20:screen2][CLICK:5,6][CLICK:7,8:send:screen3][CLICK:oops][OPEN: Spotify ] done",
         );
         assert_eq!(remaining_text, "searching for it.  done");
         assert_eq!(
@@ -301,11 +307,13 @@ mod tests {
                 ComputerAction::Click { screenshot_x: 10.0, screenshot_y: 20.0, label: None, screen_number: Some(2) },
                 ComputerAction::Click { screenshot_x: 5.0, screenshot_y: 6.0, label: None, screen_number: None },
                 ComputerAction::Click { screenshot_x: 7.0, screenshot_y: 8.0, label: Some("send".to_string()), screen_number: Some(3) },
+                ComputerAction::Open { target: "Spotify".to_string() },
             ]
         );
         assert_eq!(actions[0].summary(), "clicked search bar");
         assert_eq!(actions[1].summary(), "typed \"लाल किला दिल्ली\"");
         assert_eq!(actions[2].summary(), "pressed cmd+enter");
+        assert_eq!(actions[6].summary(), "opened Spotify");
         assert_eq!(actions[3].summary(), "clicked something");
     }
 

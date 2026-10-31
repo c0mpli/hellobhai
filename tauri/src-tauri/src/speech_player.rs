@@ -26,14 +26,14 @@ use crate::supertonic::{language_code_for_sentence, load_voice_style, Supertonic
 /// Pinned Hugging Face revision of Supertone/supertonic-3.
 const SUPERTONIC_DOWNLOAD_BASE_URL: &str =
     "https://huggingface.co/Supertone/supertonic-3/resolve/3cadd1ee6394adea1bd021217a0e650ede09a323/";
-/// `onnx/` files and their exact sizes.
-const SUPERTONIC_MODEL_FILES: [(&str, u64); 6] = [
-    ("duration_predictor.onnx", 3_700_147),
-    ("text_encoder.onnx", 36_416_150),
-    ("vector_estimator.onnx", 256_534_781),
-    ("vocoder.onnx", 101_424_195),
-    ("tts.json", 8_253),
-    ("unicode_indexer.json", 277_676),
+/// `onnx/` files with their exact sizes and SHA-256.
+const SUPERTONIC_MODEL_FILES: [(&str, u64, &str); 6] = [
+    ("duration_predictor.onnx", 3_700_147, "c3eb91414d5ff8a7a239b7fe9e34e7e2bf8a8140d8375ffb14718b1c639325db"),
+    ("text_encoder.onnx", 36_416_150, "c7befd5ea8c3119769e8a6c1486c4edc6a3bc8365c67621c881bbb774b9902ff"),
+    ("vector_estimator.onnx", 256_534_781, "883ac868ea0275ef0e991524dc64f16b3c0376efd7c320af6b53f5b780d7c61c"),
+    ("vocoder.onnx", 101_424_195, "085de76dd8e8d5836d6ca66826601f615939218f90e519f70ee8a36ed2a4c4ba"),
+    ("tts.json", 8_253, "42078d3aef1cd43ab43021f3c54f47d2d75ceb4e75f627f118890128b06a0d09"),
+    ("unicode_indexer.json", 277_676, "9bf7346e43883a81f8645c81224f786d43c5b57f3641f6e7671a7d6c493cb24f"),
 ];
 /// Same line as the Mac panel's preview button.
 const PREVIEW_SENTENCE: &str = "Hi, I'm bhai. Hold the shortcut and ask me anything.";
@@ -213,29 +213,38 @@ impl SpeechPlayer {
         let onnxruntime_zip = models_directory.join("onnxruntime.zip");
         let supertonic_directory = supertonic_directory(&models_directory);
 
-        let mut files_to_download: Vec<(String, PathBuf, u64)> = Vec::new();
+        // (url, destination, size, sha256)
+        let mut files_to_download: Vec<(String, PathBuf, u64, &str)> = Vec::new();
+        // The folder only appears once extraction has finished (extract_zip_entries renames it into place).
         if !onnxruntime_dll.exists() {
-            files_to_download.push((onnxruntime_download.url.to_string(), onnxruntime_zip.clone(), onnxruntime_download.size_bytes));
+            files_to_download.push((
+                onnxruntime_download.url.to_string(),
+                onnxruntime_zip.clone(),
+                onnxruntime_download.size_bytes,
+                onnxruntime_download.sha256,
+            ));
         }
-        for (model_file_name, size_bytes) in SUPERTONIC_MODEL_FILES {
+        for (model_file_name, size_bytes, sha256) in SUPERTONIC_MODEL_FILES {
             files_to_download.push((
                 format!("{SUPERTONIC_DOWNLOAD_BASE_URL}onnx/{model_file_name}"),
                 supertonic_directory.join("onnx").join(model_file_name),
                 size_bytes,
+                sha256,
             ));
         }
         files_to_download.push((
             format!("{SUPERTONIC_DOWNLOAD_BASE_URL}voice_styles/{}", initial_voice.file_name()),
             voice_style_path(&supertonic_directory, initial_voice),
             initial_voice.file_size_bytes(),
+            initial_voice.file_sha256(),
         ));
 
         // One after another: the connection is the limit, and progress stays simple.
-        let total_bytes: u64 = files_to_download.iter().map(|(_, _, size_bytes)| size_bytes).sum();
+        let total_bytes: u64 = files_to_download.iter().map(|(_, _, size_bytes, _)| size_bytes).sum();
         let mut finished_bytes = 0u64;
         self.set_load_state(NeuralVoiceLoadState::Downloading { fraction: 0.0 });
-        for (url, destination, size_bytes) in &files_to_download {
-            download_file_if_missing(url, destination, *size_bytes, |file_fraction| {
+        for (url, destination, size_bytes, sha256) in &files_to_download {
+            download_file_if_missing(url, destination, *size_bytes, sha256, |file_fraction| {
                 let overall_fraction = (finished_bytes as f32 + file_fraction * *size_bytes as f32) / total_bytes as f32;
                 self.set_load_state(NeuralVoiceLoadState::Downloading { fraction: overall_fraction });
             })
@@ -393,7 +402,7 @@ async fn download_voice_style_if_missing(app: &AppHandle, voice: SupertonicVoice
     }
     let destination = voice_style_path(&supertonic_directory(&app_paths::models_directory(app)), voice);
     let url = format!("{SUPERTONIC_DOWNLOAD_BASE_URL}voice_styles/{}", voice.file_name());
-    download_file_if_missing(&url, &destination, voice.file_size_bytes(), |_| {}).await
+    download_file_if_missing(&url, &destination, voice.file_size_bytes(), voice.file_sha256(), |_| {}).await
 }
 
 /// Queues the whole text in the system voice (Hindi voice when it has Devanagari).

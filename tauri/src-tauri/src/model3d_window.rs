@@ -88,6 +88,8 @@ impl Model3DWindow {
             .always_on_top(true)
             .focusable(false)
             .resizable(false)
+            // Shown only after it has been moved and sized for its monitor.
+            .visible(false)
             .incognito(true)
             .initialization_script(PAGE_HOST_BRIDGE_SCRIPT)
             .on_page_load(move |model3d_webview_window, page_load_payload| {
@@ -118,9 +120,9 @@ impl Model3DWindow {
                 return;
             }
         };
-        // The screenshot covers the whole monitor, so the overlay does too.
+        // The screenshot covers the whole monitor, so the overlay does too (1 px short, see overlay_windows).
         let _ = model3d_webview_window.set_position(PhysicalPosition::new(monitor.rect.x, monitor.rect.y));
-        let _ = model3d_webview_window.set_size(PhysicalSize::new(monitor.rect.width, monitor.rect.height));
+        let _ = model3d_webview_window.set_size(PhysicalSize::new(monitor.rect.width, monitor.rect.height.saturating_sub(1)));
         let _ = model3d_webview_window.show();
         let _ = model3d_webview_window.set_ignore_cursor_events(true);
         self.state.lock().unwrap().window = Some(model3d_webview_window);
@@ -165,8 +167,13 @@ impl Model3DWindow {
         self.state.lock().unwrap().on_user_closed = Some(Arc::from(callback));
     }
 
-    /// On `HotkeyEvent::EscapePressed`: if visible, close and call the user-closed callback.
+    /// On `HotkeyEvent::EscapePressed` (from a global hook, so Esc in any app):
+    /// only counts when the pointer is over the model or its labels, like the Mac's
+    /// "Esc aimed at the overlay". The window is non-focusable, so the pointer is the aim.
     pub fn handle_escape_pressed(&self) {
+        if !self.state.lock().unwrap().is_mouse_over_hit_region {
+            return;
+        }
         self.close_because_user_asked_to();
     }
 

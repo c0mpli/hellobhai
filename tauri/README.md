@@ -16,7 +16,7 @@ Hold **ctrl + win** and talk (Hindi, English or Hinglish); let go to send. Press
 
 ## First-launch downloads
 
-Into `%LOCALAPPDATA%\ai.hellobhai.desktop\Models`, once, each size-checked:
+Into `%LOCALAPPDATA%\ai.hellobhai.desktop\Models`, once, https only, each checked against a pinned size and SHA-256 before it is used (zips are extracted into a `.partial` folder that is renamed when complete):
 
 | What | Size | From |
 |------|------|------|
@@ -31,7 +31,7 @@ Until Whisper is ready bhai says its ears are still downloading; until Supertoni
 
 Verified from a Mac: `cargo check` on the host, `cargo check --target x86_64-pc-windows-msvc` (including tests), `cargo test` (tag parsing, stream-json, history folding, narrated step ordering, screen mapping, key combos, shortcut tracking incl. AltGr, sentence splitting, Supertonic text cleanup, downloads and zip safety, window placement), the overlay page against stubbed browser APIs in Node, and the settings page in Chrome. `tauri/generated/` matches the Mac sources.
 
-Not verified (no Windows machine): anything at runtime on Windows, including the keyboard hook and the Start-menu suppression, WASAPI mic capture, the whisper-server and ONNX Runtime downloads, startup and inference, Supertonic and WinRT speech output, GDI capture (black windows, mixed DPI), `SendInput` clicks/typing/keys (Devanagari, elevated apps), the pointer-hidden check, finding `claude.exe` and whether Claude Code honours the PowerShell allow/deny rules, `--system-prompt-file` with Windows paths, the job object, WebView2 transparency + click-through + non-focusable windows, `content_protected` keeping our windows out of screenshots, tray toggle timing, the 3D window's hit regions and Esc, and the NSIS installer itself (built only in CI). The two Windows-only unit tests (`input.rs` key codes, `claude_tools.rs` arguments) run only in CI.
+Not verified (no Windows machine): anything at runtime on Windows, including the keyboard hook and the Start-menu suppression, WASAPI mic capture, the whisper-server and ONNX Runtime downloads, startup and inference, Supertonic and WinRT speech output, GDI capture (black windows, mixed DPI), `SendInput` clicks/typing/keys (Devanagari, elevated apps), the pointer-hidden check, finding `claude.exe`, Claude Code's Glob/Grep/Read with Windows paths, `--system-prompt-file` with Windows paths, `[OPEN]` through ShellExecute (Start menu shortcuts, app links), the per-child job objects (cancelling an npm `claude.cmd` must kill node.exe), whether whisper-server and onnxruntime.dll start on a clean PC with the app-local Visual C++ DLLs, the 150 ms chord confirmation that lets win+ctrl+arrow etc. pass through, WebView2 transparency + click-through + non-focusable windows, `content_protected` keeping our windows out of screenshots, tray toggle timing, the 3D window's hit regions and Esc, and the NSIS installer itself (built only in CI). The two Windows-only unit tests (`input.rs` key codes, `claude_tools.rs` arguments) run only in CI.
 
 ## Layout
 
@@ -75,5 +75,7 @@ cd tauri
 npm install
 npx tauri build --bundles nsis
 ```
+
+CI also copies `msvcp140.dll`, `vcruntime140.dll` and `vcruntime140_1.dll` from Visual Studio into `src-tauri/vc-runtime/` and builds with `--config src-tauri/tauri.vc-runtime.conf.json`, so the installer carries the Visual C++ runtime that whisper-server and ONNX Runtime need. A local build without that step works on PCs that already have the VC++ redistributable.
 
 For a dev run with logs in the terminal: `npx tauri dev`. The installer lands in `src-tauri/target/release/bundle/nsis/`; CI (`.github/workflows/tauri.yml`) builds the same one on every push to `tauri/` and uploads it as the `hellobhai-windows-installer` artifact. The installer is unsigned, so SmartScreen warns on first run.

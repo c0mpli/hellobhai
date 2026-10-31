@@ -102,7 +102,7 @@ The Windows app (`tauri/`, Tauri 2: Rust + WebView2) follows the same flow and t
 | Eyes | ScreenCaptureKit | GDI capture of every monitor (`screen_capture.rs`) |
 | Brain | `claude -p` | `claude -p`, same flags (`claude_cli.rs`) |
 | Mouth | Supertonic-3 via FluidAudio | Supertonic-3 via ONNX Runtime, Windows voice as fallback (`speech_player.rs`, `supertonic.rs`) |
-| Hands | `CGEvent`; `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `SendInput`; PowerShell limited to `Start-Process` (never a shell), `Get-ChildItem`, `Get-StartApps` and sorting/filtering (`computer_control.rs`, `platform/windows/claude_tools.rs`) |
+| Hands | `CGEvent`; `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `SendInput`; read-only Read/Glob/Grep tools plus an `[OPEN:target]` tag checked in Rust and run with ShellExecuteW (`computer_control.rs`, `platform/windows/claude_tools.rs`) |
 | Pointer, circles, speaking pill | `OverlayWindow.swift` | one transparent window per monitor (`overlay_windows.rs`, `ui/overlay.js`) |
 | Whiteboard, notes, 3D | WKWebView | WebView2 windows showing the exported pages (`board_panel.rs`, `model3d_window.rs`) |
 | Settings | menu bar panel | tray icon panel (`tray_and_settings.rs`, `ui/settings.html`) |

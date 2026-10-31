@@ -1,7 +1,7 @@
 //! Where claude.exe lives on Windows and which tools a voice turn may use: the
-//! Windows counterpart of the Mac's osascript/open/mdfind/shortcuts/ls allowlist.
-//! Anything not allowed is denied in print mode; the prompt still demands a
-//! spoken yes before anything that sends, posts, deletes or buys.
+//! Windows counterpart of the Mac's osascript/open/mdfind/shortcuts/ls allowlist
+//! (read-only tools here; opening things is the `[OPEN]` tag). The prompt still
+//! demands a spoken yes before anything that sends, posts, deletes or buys.
 
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -42,42 +42,36 @@ pub fn claude_executable_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// `--tools PowerShell,Read`, the PowerShell allowlist (Start-Process, Get-ChildItem,
-/// Get-StartApps, Sort-Object, Select-Object, Where-Object, Read), the Start-Process
-/// deny list for shell interpreters, and `--add-dir <home>`. One argv element per rule.
+/// `--tools Read,Glob,Grep` (all read-only, allowed without asking) plus `--add-dir`
+/// for the home folder and the shared Start menu folder, so Glob can list
+/// installed apps. No shell tool on purpose: a PowerShell allowlist can't be
+/// made tight (`Start-Process` runs any program, `Where-Object { }` runs any
+/// script block). Opening apps, files and links is the `[OPEN:target]` tag,
+/// checked in Rust (`computer_control::allowed_open_target`).
 pub fn voice_turn_tool_arguments(home_directory: &Path) -> Vec<String> {
-    // Start-Process opens apps, files and URLs (the Mac's `open`/osascript), Get-ChildItem
-    // lists folders and searches files (`ls`/`mdfind`), Get-StartApps finds installed apps.
-    let allowed_tools = [
-        "PowerShell(Start-Process *)",
-        "PowerShell(Get-ChildItem *)",
-        "PowerShell(Get-StartApps *)",
-        "PowerShell(Sort-Object *)",
-        "PowerShell(Select-Object *)",
-        "PowerShell(Where-Object *)",
-        "Read",
-    ];
-    // Start-Process could launch a shell and run anything; deny the interpreters outright.
-    let disallowed_start_process_targets = [
-        "powershell", "pwsh", "cmd", "wscript", "cscript", "mshta", "rundll32", "regsvr32", "wsl", "bash",
-    ];
-
-    let mut arguments = vec!["--tools".to_string(), "PowerShell,Read".to_string(), "--allowedTools".to_string()];
-    arguments.extend(allowed_tools.iter().map(|rule| rule.to_string()));
-    arguments.push("--disallowedTools".to_string());
-    arguments.extend(
-        disallowed_start_process_targets
-            .iter()
-            .map(|program_name| format!("PowerShell(Start-Process {program_name}*)")),
-    );
-    arguments.push("--add-dir".to_string());
+    let mut arguments: Vec<String> = ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir"]
+        .iter()
+        .map(|argument| argument.to_string())
+        .collect();
     arguments.push(home_directory.to_string_lossy().into_owned());
+    for start_menu_directory in start_menu_shortcut_directories() {
+        if !start_menu_directory.starts_with(home_directory) {
+            arguments.push("--add-dir".to_string());
+            arguments.push(start_menu_directory.to_string_lossy().into_owned());
+        }
+    }
     arguments
 }
 
-/// CLAUDE_CODE_USE_POWERSHELL_TOOL=1 keeps the PowerShell tool on in every session type.
-pub fn voice_turn_environment() -> Vec<(String, String)> {
-    vec![("CLAUDE_CODE_USE_POWERSHELL_TOOL".to_string(), "1".to_string())]
+/// The user's and the shared Start menu Programs folders; their .lnk files are
+/// the installed desktop apps `[OPEN:app name]` may start.
+pub fn start_menu_shortcut_directories() -> Vec<PathBuf> {
+    let start_menu_programs_path = Path::new("Microsoft").join("Windows").join("Start Menu").join("Programs");
+    ["APPDATA", "ProgramData"]
+        .iter()
+        .filter_map(|environment_variable_name| std::env::var_os(environment_variable_name))
+        .map(|base_directory| Path::new(&base_directory).join(&start_menu_programs_path))
+        .collect()
 }
 
 #[cfg(test)]
@@ -85,10 +79,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_one_argv_element_per_rule() {
+    fn voice_turns_get_only_read_only_tools() {
         let arguments = voice_turn_tool_arguments(Path::new(r"C:\Users\bhai"));
-        assert_eq!(&arguments[..3], ["--tools", "PowerShell,Read", "--allowedTools"]);
-        assert!(arguments.contains(&"PowerShell(Start-Process cmd*)".to_string()));
-        assert_eq!(&arguments[arguments.len() - 2..], ["--add-dir", r"C:\Users\bhai"]);
+        assert_eq!(&arguments[..8], ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir", r"C:\Users\bhai"]);
+        assert!(!arguments.iter().any(|argument| argument.contains("PowerShell")));
     }
 }

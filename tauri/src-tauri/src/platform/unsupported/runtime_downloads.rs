@@ -3,6 +3,7 @@
 pub struct RuntimeDownload {
     pub url: &'static str,
     pub size_bytes: u64,
+    pub sha256: &'static str,
     pub executable_or_library_file_name: &'static str,
 }
 

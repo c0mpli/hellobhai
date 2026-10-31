@@ -20,7 +20,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::app_paths;
 use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
-use crate::claude_cli::{run_claude_streaming, ClaudeRequest};
+use crate::claude_cli::{home_directory, run_claude_streaming, ClaudeRequest};
 use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
 use crate::model3d_window::Model3DWindow;
@@ -236,6 +236,7 @@ impl CompanionBrain {
             match hotkey_event {
                 HotkeyEvent::PushToTalkPressed => self.handle_push_to_talk_pressed(),
                 HotkeyEvent::PushToTalkReleased => self.handle_push_to_talk_released(),
+                HotkeyEvent::PushToTalkCancelled => self.handle_push_to_talk_cancelled(),
                 HotkeyEvent::EscapePressed => self.model3d_window.handle_escape_pressed(),
             }
         }
@@ -276,6 +277,24 @@ impl CompanionBrain {
                 self.set_voice_state(VoiceState::Idle);
             }
         }
+    }
+
+    /// The chord turned out to be part of a Windows shortcut (win+ctrl+left, ...):
+    /// drop the recording and the strokes, nothing is transcribed or sent.
+    fn handle_push_to_talk_cancelled(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if !state.is_recording {
+                return;
+            }
+            state.is_recording = false;
+            state.user_drawn_strokes.clear();
+            state.user_drawn_strokes_awaiting_request = false;
+        }
+        let _discarded_samples = self.push_to_talk_recorder.lock().unwrap().stop_recording();
+        overlay_windows::set_overlays_accept_user_drawing(&self.app, false);
+        emit_to_overlays(&self.app, "clear-annotations", json!({}));
+        self.set_voice_state(VoiceState::Idle);
     }
 
     fn handle_push_to_talk_released(self: &Arc<Self>) {
@@ -527,6 +546,7 @@ impl CompanionBrain {
                 ComputerAction::PressKey { key_combo } => {
                     computer_control::perform_key_combo(key_combo).await;
                 }
+                ComputerAction::Open { target } => computer_control::perform_open(target, &home_directory()).await,
             }
             // Give the target app a moment to react before the next action lands.
             tokio::time::sleep(Duration::from_millis(400)).await;
