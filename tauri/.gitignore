@@ -1,0 +1,5 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+# Copied from Visual Studio by CI (tauri.yml), bundled via tauri.vc-runtime.conf.json.
+src-tauri/vc-runtime/

@@ -1,0 +1,59 @@
+[package]
+name = "hellobhai"
+version = "0.1.0"
+description = "hellobhai: a local-first AI buddy next to your cursor"
+edition = "2021"
+
+[lib]
+name = "hellobhai_lib"
+crate-type = ["rlib"]
+
+[dependencies]
+tauri = { version = "2.12", features = ["tray-icon"] }
+tauri-plugin-autostart = "2.7"
+# Two instances would mean two keyboard hooks and two whisper servers.
+tauri-plugin-single-instance = "2.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1.13"
+tokio = { version = "1", features = ["process", "io-util", "sync", "time", "macros", "rt-multi-thread"] }
+# Supertonic-3 TTS. load-dynamic: onnxruntime.dll is downloaded on first launch
+# and loaded by absolute path (System32 ships an older copy).
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "ndarray", "std"] }
+ndarray = "0.17"
+rand = "0.10"
+rand_distr = "0.6"
+unicode-normalization = "0.1"
+cpal = "0.18"
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
+# 16-bit WAV for whisper-server uploads.
+hound = "3.5"
+# native-tls (SChannel on Windows): rustls pulls in aws-lc-sys, which needs a C
+# toolchain and fails to cross-check from a Mac.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "stream", "multipart"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
+# SHA-256 of every first-launch download (already in the tree via tauri).
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_Graphics_Gdi",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_System_JobObjects",
+  "Win32_Security",
+  "Media_Core",
+  "Media_SpeechSynthesis",
+  "Storage_Streams",
+  "Foundation",
+  "Foundation_Collections",
+] }
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }

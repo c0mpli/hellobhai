@@ -46,7 +46,7 @@ The full walkthrough, diagrams, the pieces and where they live, and exactly what
 | Platform | Status | Folder |
 |----------|--------|--------|
 | macOS (Apple Silicon, 14.2+) | Ready | [`macos/`](macos) |
-| Windows 10/11 | In progress | `windows/` |
+| Windows 10/11 (x64) | Preview: built, not yet tested on a real PC | [`tauri/`](tauri) |
 
 ## Setup (macOS)
 
@@ -77,6 +77,17 @@ cd macos
 3. Click **Start**.
 4. Give it a couple of minutes: Whisper, Kokoro and Supertonic download (~1.2GB), and macOS compiles Whisper for the Neural Engine once. Until then it uses Apple's speech recognition (this needs **Dictation** turned on in System Settings → Keyboard) and the system voice.
 
+## Setup (Windows, preview)
+
+The Windows app does the same things as the Mac app (voice in Hindi/English/Hinglish, screenshots, pointing, circles, your own drawings, clicks and typing, whiteboard, notes, 3D models, on-device Whisper and Supertonic-3) except the orb, the typed chat and Codex. The blue pointer follows your mouse instead. It has only been compile-checked so far; expect rough edges.
+
+1. Windows 10/11 x64 with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (run `claude` once).
+2. Get the installer from the `hellobhai-windows-installer` artifact of the latest `tauri` GitHub Actions run, or build it: `cd tauri && npm install && npx tauri build --bundles nsis`.
+3. Run it (it is unsigned, so SmartScreen warns). A tray icon appears; on first launch it downloads about 1.1 GB of speech models once.
+4. Hold **ctrl + win** and talk. Click the tray icon for settings.
+
+Details: [`tauri/README.md`](tauri/README.md).
+
 ## Using it
 
 | Say | It will |
@@ -106,8 +117,11 @@ macos/                     Mac app (Swift; legacy Xcode name leanring-buddy)
   leanring-buddy.xcodeproj
   scripts/                   create-signing-cert.sh, build-and-run.sh
   CLAUDE.md                  Mac architecture for coding agents
-windows/                   Windows app (Tauri), in progress
-scripts/                   cross-platform scripts
+tauri/                     Windows app (Tauri; Linux later), preview
+  src-tauri/                 Rust crate; OS code only in src/platform/
+  ui/                        overlay and tray settings pages
+  generated/                 Mac pages and prompts, exported (never edit)
+scripts/                   cross-platform scripts (Mac -> tauri/generated exporter)
 docs/                      architecture.md, mobile-plan.md
 CLAUDE.md                  repo map + shared conventions (AGENTS.md links here)
 ```

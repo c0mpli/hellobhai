@@ -1,0 +1,57 @@
+[
+  {
+    "prompt": "voice_response",
+    "find": "lives in the user's menu bar",
+    "replace": "lives in the user's system tray"
+  },
+  {
+    "prompt": "voice_response",
+    "find": "- user asks how to color grade in final cut: \"you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]\"",
+    "replace": "- user asks how to color grade in premiere pro: \"you'll want the lumetri color panel — open the color workspace from the tab bar up top and the wheels and curves are on the right. [POINT:1100,42:color workspace]\""
+  },
+  {
+    "prompt": "voice_response",
+    "find": "- user asks how to commit in xcode: \"see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]\"",
+    "replace": "- user asks how to commit in vs code: \"see that source control icon in the left bar? click it, type a message, and hit commit, or press control enter in the message box. [POINT:24,180:source control]\""
+  },
+  {
+    "prompt": "voice_response",
+    "find": "if the user asks to save the notes, save them to the apple notes app with osascript, for example: osascript -e 'tell application \"Notes\" to make new note with properties {name:\"title\", body:\"<h1>title</h1><ul><li>point</li></ul>\"}'. the notes you wrote are in the conversation so far.",
+    "replace": "if the user asks to save the notes, open notepad with [OPEN:notepad], then in the next round type them with [TYPE:...] (plain text, one line per point). the notes you wrote are in the conversation so far."
+  },
+  {
+    "prompt": "voice_response",
+    "find": "1. mac tools — prefer these whenever they work, they're reliable. run shell commands yourself before you reply:\n- osascript: applescript for controlling apps, system events, the clipboard, messages, mail, finder, music.\n- open: apps, files, folders, urls. for example open -a \"WhatsApp\", or open \"whatsapp://send?phone=919876543210&text=hi\".\n- mdfind and ls: find files, for example the newest screen recording with ls -t ~/Movies ~/Desktop.\n- shortcuts run \"name\": run the user's shortcuts.",
+    "replace": "1. windows tools — prefer these whenever they work, they're reliable:\n- Glob, Grep and Read: find, list and read files yourself before you reply, for example the newest screen recording with Glob \"**/*.mp4\" in the user's Videos folder (newest first). installed apps are the .lnk files in the start menu Programs folders.\n- [OPEN:target] (an action tag, see below): opens an app, file, folder or link. target is an app's start menu name like [OPEN:Spotify] or [OPEN:Visual Studio Code], or notepad, calc, mspaint or explorer; a full path to a file or folder inside the user's home folder; an http or https link; or a whatsapp:, spotify:, slack:, msteams:, discord:, tg:, zoommtg:, mailto: or ms-settings: link, for example [OPEN:whatsapp://send?phone=919876543210&text=hi]. programs and scripts can't be opened."
+  },
+  {
+    "prompt": "voice_response",
+    "find": "[KEY:cmd+v], [KEY:cmd+t]",
+    "replace": "[KEY:ctrl+v], [KEY:ctrl+t]"
+  },
+  {
+    "prompt": "voice_response",
+    "find": "about something on this mac are requests",
+    "replace": "about something on this pc are requests"
+  },
+  {
+    "prompt": "voice_response",
+    "find": "- to start a screen recording: [KEY:cmd+shift+5] opens the macos screenshot toolbar. in the next round, click \"record entire screen\" (or \"record selected portion\" if they asked for part of the screen), then click \"record\". to stop, the user can press cmd+control+escape, or you can click the stop button in the menu bar.",
+    "replace": "- to start a screen recording: [KEY:win+shift+r] opens the snipping tool recorder. in the next round, drag across the area to record (or the whole screen if they asked for everything), then click \"start\". to stop, click the stop button in the snipping tool bar at the top of the screen."
+  },
+  {
+    "prompt": "voice_response",
+    "find": "- to attach a file in a chat app like whatsapp or slack: the most reliable way is the app's attach button (paperclip or plus), then the document/file option. that opens the standard mac file picker — press [KEY:cmd+shift+g], [TYPE:/full/path/to/file], [KEY:return], then [KEY:return] again to open it. pasting (copy with osascript -e 'set the clipboard to (POSIX file \"/full/path\")', then [KEY:cmd+v] in the message box) is a faster option in desktop apps, but browsers often ignore pasted files and video previews take a few seconds to appear.",
+    "replace": "- to attach a file in a chat app like whatsapp or slack: the most reliable way is the app's attach button (paperclip or plus), then the document/file option. that opens the windows file dialog with the file name box focused — [TYPE:C:\\full\\path\\to\\file] then [KEY:enter]. video previews take a few seconds to appear."
+  },
+  {
+    "prompt": "voice_response",
+    "find": "\"opening a new tab. [KEY:cmd+t][POINT:none]\"",
+    "replace": "\"opening a new tab. [KEY:ctrl+t][POINT:none]\""
+  },
+  {
+    "prompt": "onboarding_demo",
+    "find": "no menu bar items, no dock icons, no sidebar items",
+    "replace": "no taskbar items, no title bar items, no sidebar items"
+  }
+]

@@ -11,8 +11,8 @@ hellobhai is a local-first AI buddy that lives in a small draggable orb on scree
 | Path | What it is |
 |------|------------|
 | `macos/` | The Mac app (Swift, SwiftUI + AppKit, Xcode project `leanring-buddy`). Details: `macos/CLAUDE.md`. |
-| `windows/` | The Windows app (Tauri 2: Rust + WebView2), being built. Details: `windows/CLAUDE.md` once it exists. |
-| `scripts/` | Scripts that span platforms (e.g. exporting the Mac app's web pages and prompts for the other platforms). Mac-only scripts are in `macos/scripts/`. |
+| `tauri/` | The Windows app (Tauri 2: Rust + WebView2, plain HTML/JS; Linux may follow from the same crate). Ported feature for feature except the orb, typed chat and Codex; compile-checked and unit-tested from a Mac, not yet run on Windows. Details: `tauri/CLAUDE.md` and `tauri/README.md`. CI: `.github/workflows/tauri.yml`. |
+| `scripts/` | Scripts that span platforms. `export-mac-web-assets-for-tauri.sh` (with `export-mac-web-assets/main.swift`) dumps the Mac app's generated board, notes and 3D pages and its system prompts into `tauri/generated/`; run it on a Mac after changing those and commit the result. Mac-only scripts are in `macos/scripts/`. |
 | `docs/` | `architecture.md` (how it works, the tag protocol, what leaves your machine), `mobile-plan.md` (future phone port). |
 
 **The Mac app is the source of truth** for the whiteboard, notes and 3D pages (built inside `macos/leanring-buddy/VisualExplanationPanel.swift` and `VisualToolkit/model3d.html`) and for every system prompt (`CompanionManager.swift`). Other platforms use generated copies; regenerate them after changing those, never edit the copies by hand.
