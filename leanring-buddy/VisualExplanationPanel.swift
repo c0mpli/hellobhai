@@ -321,8 +321,13 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     """
 
     /// The gold rounded "play" triangle that travels with the drawing head.
+    /// Shared with the 3D model overlay so both pens look the same.
+    static let penTriangleSVGPath = """
+    <path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#d9b02e"/>
+    """
+
     private static let penElementHTML = """
-    <svg id="pen" viewBox="0 0 16 16"><path d="M4.4 2.2 Q2.8 1.5 2.8 3.3 V12.7 Q2.8 14.5 4.4 13.8 L13.4 9.1 Q14.9 8 13.4 6.9 Z" fill="#d9b02e"/></svg>
+    <svg id="pen" viewBox="0 0 16 16">\(penTriangleSVGPath)</svg>
     """
 
     private static let boardStylesheet = """
@@ -343,23 +348,9 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
     @keyframes hb-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
     """
 
-    /// The live-drawing engine shared by the board and notes. Elements handed
-    /// to queuePenLeaves start hidden and are revealed one at a time, in
-    /// order: strokes trace along their path (duration proportional to their
-    /// length), fills fade in after their outline, and text writes left to
-    /// right with a clip reveal. The gold triangle pen follows the drawing
-    /// head and glides between elements, and a WebAudio pencil scratch plays
-    /// only while the pen is actually drawing.
-    private static let penAndScratchSoundScript = """
-    const penElement = document.getElementById('pen');
-    const pendingPenLeaves = [];
-    const penPosition = { x: 0, y: 0, hasBeenPlaced: false };
-    // Seconds since the previous animation frame; the pen program reads it.
-    let penFrameDelta = 0;
-    let penIdleSeconds = 0;
-    // Set by the page once its stream has ended, so the pen can rest out of view.
-    let isPenStreamFinished = false;
-
+    /// Defines `scratchSound`, the soft pencil-on-paper scratch the pen makes.
+    /// Shared with the 3D model overlay so both pens sound the same.
+    static let pencilScratchSoundScript = """
     // Soft pencil-on-paper scratch: looping white noise through a band-pass
     // filter, with its loudness jittered every frame while a stroke draws and
     // short ticks while text writes. Silent while the pen glides or idles.
@@ -415,6 +406,26 @@ final class VisualExplanationPanelManager: NSObject, WKNavigationDelegate {
         }
       };
     })();
+    """
+
+    /// The live-drawing engine shared by the board and notes. Elements handed
+    /// to queuePenLeaves start hidden and are revealed one at a time, in
+    /// order: strokes trace along their path (duration proportional to their
+    /// length), fills fade in after their outline, and text writes left to
+    /// right with a clip reveal. The gold triangle pen follows the drawing
+    /// head and glides between elements, and a WebAudio pencil scratch plays
+    /// only while the pen is actually drawing.
+    private static let penAndScratchSoundScript = """
+    const penElement = document.getElementById('pen');
+    const pendingPenLeaves = [];
+    const penPosition = { x: 0, y: 0, hasBeenPlaced: false };
+    // Seconds since the previous animation frame; the pen program reads it.
+    let penFrameDelta = 0;
+    let penIdleSeconds = 0;
+    // Set by the page once its stream has ended, so the pen can rest out of view.
+    let isPenStreamFinished = false;
+
+    \(pencilScratchSoundScript)
 
     // How a leaf is revealed: 'stroke' traces along its outline, 'fill'
     // fades in, 'write' unclips left to right.

@@ -1,0 +1,1460 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  3D model overlay page (loaded by Model3DOverlay.swift).
+  Claude streams one JSON command per line (parts, arrays, cutaways, labels,
+  focus...). Each command is parsed with JSON.parse and built with three.js
+  primitives; nothing from the model is ever evaluated as code, and all label
+  text is inserted as text nodes. The two placeholders below are filled in by
+  Swift with the bundled three.js source and the handwriting font.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:">
+<style>
+@font-face { font-family: HandwritingFont; src: url(data:font/woff2;base64,__HANDWRITING_FONT_BASE64__) format("woff2"); }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; -webkit-user-select: none; user-select: none; }
+#stage { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+#stage.is-dragging { cursor: grabbing; }
+#annotation-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.callout-tag {
+  position: absolute; left: 0; top: 0; pointer-events: none; white-space: nowrap;
+  font-family: HandwritingFont, "Chalkboard SE", "Marker Felt", sans-serif; font-size: 21px; line-height: 1;
+  color: #262626; padding: 8px 12px 7px 15px; border-radius: 3px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12), 0 3px 10px rgba(0, 0, 0, 0.08);
+}
+.callout-tag::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 6px; border-radius: 3px 0 0 3px; background: var(--stripe-color); }
+.callout-tag .callout-text { display: inline-block; clip-path: inset(-30% 100% -30% 0); }
+#pen-cursor {
+  position: absolute; left: 0; top: 0; width: 17px; height: 17px; pointer-events: none; opacity: 0;
+  transition: opacity 0.25s ease; filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.35)) drop-shadow(0 2px 5px rgba(120, 80, 0, 0.25));
+}
+#close-button {
+  position: absolute; left: 0; top: 0; width: 22px; height: 22px; border-radius: 11px; border: none; padding: 0;
+  background: rgba(30, 30, 30, 0.78); color: #f4f1e8; font: 600 13px -apple-system, sans-serif; line-height: 22px;
+  cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 0.18s ease, background 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+#close-button.is-visible { opacity: 1; pointer-events: auto; }
+#close-button:hover { background: rgba(214, 72, 64, 0.95); }
+</style>
+<script>/*__THREE_JS_SOURCE__*/</script>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<svg id="annotation-layer"></svg>
+<div id="tag-layer"></div>
+<svg id="pen-cursor" viewBox="0 0 16 16"><!--__PEN_TRIANGLE_SVG_PATH__--></svg>
+<button id="close-button" title="Close">&#x2715;</button>
+<script>
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Constants and palettes
+// ---------------------------------------------------------------------------
+
+const CALLOUT_COLORS = {
+  yellow: { fill: '#fbf2c6', stripe: '#ebc544' },
+  green: { fill: '#dcf2e0', stripe: '#76c78c' },
+  blue: { fill: '#dde8f8', stripe: '#77a3e6' },
+  pink: { fill: '#f8dee7', stripe: '#e48db0' },
+};
+const CALLOUT_COLOR_ORDER = ['yellow', 'green', 'blue', 'pink'];
+
+// Material presets so Claude can say "steel" or "pcb" instead of tuning numbers.
+const MATERIAL_PRESETS = {
+  plastic: { color: '#d9d6cf', roughness: 0.55, metalness: 0 },
+  paint: { color: '#8a8f99', roughness: 0.42, metalness: 0.1 },
+  steel: { color: '#b9bdc4', roughness: 0.34, metalness: 0.85 },
+  aluminum: { color: '#d3d6db', roughness: 0.4, metalness: 0.8 },
+  darkmetal: { color: '#5d6169', roughness: 0.45, metalness: 0.7 },
+  titanium: { color: '#8f949b', roughness: 0.38, metalness: 0.8 },
+  copper: { color: '#c47a4c', roughness: 0.32, metalness: 0.9 },
+  brass: { color: '#b8913f', roughness: 0.3, metalness: 0.9 },
+  gold: { color: '#d8b04a', roughness: 0.25, metalness: 1 },
+  pcb: { color: '#2f8040', roughness: 0.68, metalness: 0 },
+  chip: { color: '#2c2e33', roughness: 0.5, metalness: 0.1 },
+  rubber: { color: '#2b2b2b', roughness: 0.92, metalness: 0 },
+  ceramic: { color: '#f1efe9', roughness: 0.6, metalness: 0 },
+  glass: { color: '#bfe1f0', roughness: 0.05, metalness: 0, opacity: 0.3 },
+  glow: { color: '#ff9a3c', roughness: 0.5, metalness: 0, emissive: 1.6 },
+  tissue: { color: '#e79a92', roughness: 0.55, metalness: 0 },
+  bone: { color: '#efe6d2', roughness: 0.65, metalness: 0 },
+  wood: { color: '#b98a5a', roughness: 0.75, metalness: 0 },
+  concrete: { color: '#bdbab2', roughness: 0.9, metalness: 0 },
+};
+
+const OUTLINE_WIDTH_IN_PIXELS = 1.1;
+const OUTLINE_COLOR = 0xf6f4ee;
+const LABEL_ROW_MARGIN_IN_PIXELS = 100;
+const SIDE_MARGIN_IN_PIXELS = 14;
+const CAMERA_FIELD_OF_VIEW_IN_DEGREES = 30;
+
+// ---------------------------------------------------------------------------
+// Renderer, scene, lights
+// ---------------------------------------------------------------------------
+
+const stageCanvas = document.getElementById('stage');
+const annotationLayer = document.getElementById('annotation-layer');
+const tagLayer = document.getElementById('tag-layer');
+const penCursorElement = document.getElementById('pen-cursor');
+const closeButtonElement = document.getElementById('close-button');
+
+const renderer = new THREE.WebGLRenderer({
+  canvas: stageCanvas, alpha: true, premultipliedAlpha: true, antialias: true, stencil: true,
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setClearColor(0x000000, 0);
+renderer.localClippingEnabled = true;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(CAMERA_FIELD_OF_VIEW_IN_DEGREES, 1, 0.01, 10000);
+
+// modelRoot carries the view rotation (azimuth, idle sway, user drag);
+// modelContent is shifted so the model's center sits on the rotation pivot.
+const modelRoot = new THREE.Group();
+const modelContent = new THREE.Group();
+modelRoot.add(modelContent);
+scene.add(modelRoot);
+
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9d978b, 0.55));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
+keyLight.position.set(-4, 8, 6);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0xfff3e2, 0.55);
+fillLight.position.set(6, 2.5, 4);
+scene.add(fillLight);
+const rimLight = new THREE.DirectionalLight(0xffffff, 0.8);
+rimLight.position.set(0, 4, -8);
+scene.add(rimLight);
+
+// A tiny procedural "photo studio" reflected by metals (a soft box above,
+// two side panels), so steel and brass don't render black.
+function buildStudioEnvironmentTexture() {
+  const environmentScene = new THREE.Scene();
+  const roomMesh = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10), new THREE.MeshBasicMaterial({ color: 0x7a7874, side: THREE.BackSide }));
+  environmentScene.add(roomMesh);
+  const addLightPanel = (panelWidth, panelHeight, panelPosition, brightness) => {
+    const panelMaterial = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    panelMaterial.color.setRGB(brightness, brightness, brightness);
+    const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(panelWidth, panelHeight), panelMaterial);
+    panelMesh.position.set(panelPosition[0], panelPosition[1], panelPosition[2]);
+    panelMesh.lookAt(0, 0, 0);
+    environmentScene.add(panelMesh);
+  };
+  addLightPanel(6, 3, [0, 4.9, 0], 3.2);
+  addLightPanel(3, 4, [-4.9, 1, 1], 2.2);
+  addLightPanel(3, 4, [4.9, 1, -1], 1.6);
+  addLightPanel(6, 1.2, [0, -1, 4.9], 1.1);
+  const environmentGenerator = new THREE.PMREMGenerator(renderer);
+  const environmentTexture = environmentGenerator.fromScene(environmentScene, 0.04).texture;
+  environmentGenerator.dispose();
+  return environmentTexture;
+}
+scene.environment = buildStudioEnvironmentTexture();
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+function finiteNumberOr(value, fallbackValue) {
+  const parsedNumber = Number(value);
+  return Number.isFinite(parsedNumber) ? parsedNumber : fallbackValue;
+}
+
+function vector3Or(value, fallbackArray) {
+  if (!Array.isArray(value)) return fallbackArray.slice();
+  return [0, 1, 2].map((componentIndex) => finiteNumberOr(value[componentIndex], fallbackArray[componentIndex]));
+}
+
+function pointListOrNull(value) {
+  if (!Array.isArray(value)) return null;
+  const pointList = value
+    .filter((point) => Array.isArray(point) && point.length >= 2)
+    .map((point) => new THREE.Vector2(finiteNumberOr(point[0], 0), finiteNumberOr(point[1], 0)));
+  return pointList.length >= 2 ? pointList : null;
+}
+
+function degreesToRadians(degrees) {
+  return finiteNumberOr(degrees, 0) * Math.PI / 180;
+}
+
+function safeColor(colorValue, fallbackColor) {
+  const resolvedColor = new THREE.Color(fallbackColor);
+  if (typeof colorValue === 'string' && /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(colorValue.trim())) {
+    resolvedColor.set(colorValue.trim());
+  } else if (typeof colorValue === 'string' && /^[a-z]{3,20}$/i.test(colorValue.trim())) {
+    // CSS color names; three.js leaves the color unchanged for unknown names.
+    const namedColor = colorValue.trim().toLowerCase();
+    if (THREE.Color.NAMES && Object.prototype.hasOwnProperty.call(THREE.Color.NAMES, namedColor)) resolvedColor.set(namedColor);
+  }
+  return resolvedColor;
+}
+
+function easeOutCubic(progress) { return 1 - Math.pow(1 - progress, 3); }
+function easeInOutCubic(progress) { return progress < 0.5 ? 4 * progress * progress * progress : 1 - Math.pow(-2 * progress + 2, 3) / 2; }
+function easeOutBack(progress) { const overshoot = 1.5; return 1 + (overshoot + 1) * Math.pow(progress - 1, 3) + overshoot * Math.pow(progress - 1, 2); }
+
+// Tweens run inside the render loop so they stay in sync with the frames.
+const activeTweens = new Set();
+let animationSpeedMultiplier = 1;
+function animateOverDuration(durationInMilliseconds, onProgress) {
+  const scaledDuration = Math.max(16, durationInMilliseconds / animationSpeedMultiplier);
+  return new Promise((resolve) => {
+    activeTweens.add({ startTime: performance.now(), duration: scaledDuration, onProgress, resolve });
+  });
+}
+function waitMilliseconds(durationInMilliseconds) {
+  return animateOverDuration(durationInMilliseconds, () => {});
+}
+function advanceTweens(now) {
+  for (const tween of Array.from(activeTweens)) {
+    const progress = Math.min(1, (now - tween.startTime) / tween.duration);
+    tween.onProgress(progress);
+    if (progress >= 1) { activeTweens.delete(tween); tween.resolve(); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Geometry builders (all centered on their own origin)
+// ---------------------------------------------------------------------------
+
+// A box whose every edge is rounded with radius cornerRadius. Built from a
+// segmented box: each vertex is pulled onto the surface of an inner box
+// "inflated" by the radius, and its normal is the inflation direction, so
+// the shading is perfectly smooth across the rounded edges.
+function buildRoundedBoxGeometry(boxWidth, boxHeight, boxDepth, cornerRadius) {
+  const halfExtents = [boxWidth / 2, boxHeight / 2, boxDepth / 2];
+  const clampedRadius = Math.max(0, Math.min(cornerRadius, ...halfExtents.map((halfExtent) => halfExtent * 0.98)));
+  if (clampedRadius < 1e-6) return new THREE.BoxGeometry(boxWidth, boxHeight, boxDepth);
+
+  const cornerSegmentCount = 4;
+  const segmentsPerAxis = cornerSegmentCount * 2 + 1;
+  const geometry = new THREE.BoxGeometry(2, 2, 2, segmentsPerAxis, segmentsPerAxis, segmentsPerAxis);
+  const positionAttribute = geometry.attributes.position;
+  const normalAttribute = geometry.attributes.normal;
+  const vertexPosition = new THREE.Vector3();
+  const innerPoint = new THREE.Vector3();
+  const inflationDirection = new THREE.Vector3();
+
+  // Grid index 0..cornerSegmentCount spans the rounded band on the negative
+  // side, the middle segment is the flat face, and the rest the positive band.
+  const remapGridCoordinate = (unitCoordinate, halfExtent) => {
+    const gridIndex = Math.round((unitCoordinate + 1) / 2 * segmentsPerAxis);
+    if (gridIndex <= cornerSegmentCount) return -halfExtent + clampedRadius * (gridIndex / cornerSegmentCount);
+    return halfExtent - clampedRadius + clampedRadius * ((gridIndex - cornerSegmentCount - 1) / cornerSegmentCount);
+  };
+
+  for (let vertexIndex = 0; vertexIndex < positionAttribute.count; vertexIndex++) {
+    vertexPosition.fromBufferAttribute(positionAttribute, vertexIndex);
+    vertexPosition.set(
+      remapGridCoordinate(vertexPosition.x, halfExtents[0]),
+      remapGridCoordinate(vertexPosition.y, halfExtents[1]),
+      remapGridCoordinate(vertexPosition.z, halfExtents[2]),
+    );
+    innerPoint.set(
+      THREE.MathUtils.clamp(vertexPosition.x, -halfExtents[0] + clampedRadius, halfExtents[0] - clampedRadius),
+      THREE.MathUtils.clamp(vertexPosition.y, -halfExtents[1] + clampedRadius, halfExtents[1] - clampedRadius),
+      THREE.MathUtils.clamp(vertexPosition.z, -halfExtents[2] + clampedRadius, halfExtents[2] - clampedRadius),
+    );
+    inflationDirection.subVectors(vertexPosition, innerPoint);
+    if (inflationDirection.lengthSq() < 1e-12) inflationDirection.fromBufferAttribute(normalAttribute, vertexIndex);
+    inflationDirection.normalize();
+    vertexPosition.copy(innerPoint).addScaledVector(inflationDirection, clampedRadius);
+    positionAttribute.setXYZ(vertexIndex, vertexPosition.x, vertexPosition.y, vertexPosition.z);
+    normalAttribute.setXYZ(vertexIndex, inflationDirection.x, inflationDirection.y, inflationDirection.z);
+  }
+  positionAttribute.needsUpdate = true;
+  normalAttribute.needsUpdate = true;
+  return geometry;
+}
+
+// Turns a y-axis primitive so its main axis points along x, y or z.
+function orientGeometryAlongAxis(geometry, axisName) {
+  if (axisName === 'x') geometry.rotateZ(-Math.PI / 2);
+  else if (axisName === 'z') geometry.rotateX(Math.PI / 2);
+  return geometry;
+}
+
+function buildPartGeometry(partSpec) {
+  const shapeName = String(partSpec.shape || 'box');
+  const radius = Math.max(0.0001, finiteNumberOr(partSpec.r, 0.5));
+  const height = Math.max(0.0001, finiteNumberOr(partSpec.h, 1));
+  const axisName = partSpec.axis === 'x' || partSpec.axis === 'z' ? partSpec.axis : 'y';
+
+  switch (shapeName) {
+    case 'cylinder': {
+      const topRadius = Math.max(0, finiteNumberOr(partSpec.rTop, radius));
+      return orientGeometryAlongAxis(new THREE.CylinderGeometry(topRadius, radius, height, 48, 1), axisName);
+    }
+    case 'cone': {
+      const topRadius = Math.max(0, finiteNumberOr(partSpec.rTop, 0));
+      return orientGeometryAlongAxis(new THREE.CylinderGeometry(topRadius, radius, height, 48, 1), axisName);
+    }
+    case 'tube': {
+      // A hollow cylinder (casing, pipe, ring) as a closed lathe profile.
+      const innerRadius = THREE.MathUtils.clamp(finiteNumberOr(partSpec.inner, radius * 0.85), 0.0001, radius * 0.995);
+      const innerTopRadius = THREE.MathUtils.clamp(finiteNumberOr(partSpec.innerTop, innerRadius), 0.0001, Math.max(0.0002, finiteNumberOr(partSpec.rTop, radius) * 0.995));
+      const outerTopRadius = Math.max(innerTopRadius * 1.005, finiteNumberOr(partSpec.rTop, radius));
+      const tubeProfile = [
+        new THREE.Vector2(innerRadius, -height / 2), new THREE.Vector2(radius, -height / 2),
+        new THREE.Vector2(outerTopRadius, height / 2), new THREE.Vector2(innerTopRadius, height / 2),
+        new THREE.Vector2(innerRadius, -height / 2),
+      ];
+      return orientGeometryAlongAxis(new THREE.LatheGeometry(tubeProfile, 64), axisName);
+    }
+    case 'sphere':
+      return new THREE.SphereGeometry(radius, 40, 24);
+    case 'torus':
+      return orientGeometryAlongAxis(
+        new THREE.TorusGeometry(radius, Math.max(0.0001, finiteNumberOr(partSpec.tube, radius * 0.2)), 20, 64).rotateX(Math.PI / 2),
+        axisName,
+      );
+    case 'capsule':
+      return orientGeometryAlongAxis(new THREE.CapsuleGeometry(radius, height, 8, 24), axisName);
+    case 'extrude': {
+      // A 2D outline in the x-y plane pushed out along z by "depth".
+      const outlinePoints = pointListOrNull(partSpec.points);
+      if (!outlinePoints || outlinePoints.length < 3) return new THREE.BoxGeometry(1, 1, 1);
+      const extrusionDepth = Math.max(0.0001, finiteNumberOr(partSpec.depth, 1));
+      const bevelSize = Math.max(0, finiteNumberOr(partSpec.bevel, 0));
+      const extrudedGeometry = new THREE.ExtrudeGeometry(new THREE.Shape(outlinePoints), {
+        depth: extrusionDepth, bevelEnabled: bevelSize > 0, bevelSize, bevelThickness: bevelSize, bevelSegments: 3, curveSegments: 24,
+      });
+      extrudedGeometry.translate(0, 0, -extrusionDepth / 2);
+      // "axis" is the extrusion direction here (default z).
+      if (partSpec.axis === 'y') extrudedGeometry.rotateX(-Math.PI / 2);
+      else if (partSpec.axis === 'x') extrudedGeometry.rotateY(Math.PI / 2);
+      return extrudedGeometry;
+    }
+    case 'lathe': {
+      // A profile of [radius, y] points spun around the y axis (nozzles, bottles, domes).
+      const profilePoints = pointListOrNull(partSpec.points);
+      if (!profilePoints) return new THREE.SphereGeometry(radius, 24, 16);
+      profilePoints.forEach((profilePoint) => { profilePoint.x = Math.max(0, profilePoint.x); });
+      // "shell" turns the profile into a hollow skin of that thickness (a
+      // fuselage, a bottle wall) so a cutaway shows what is inside.
+      const shellThickness = finiteNumberOr(partSpec.shell, 0);
+      if (shellThickness > 0) {
+        const innerProfile = profilePoints.slice().reverse()
+          .map((profilePoint) => new THREE.Vector2(Math.max(0.0001, profilePoint.x - shellThickness), profilePoint.y));
+        profilePoints.push(...innerProfile, profilePoints[0].clone());
+      }
+      return orientGeometryAlongAxis(new THREE.LatheGeometry(profilePoints, 64), axisName);
+    }
+    case 'box':
+    default: {
+      const [boxWidth, boxHeight, boxDepth] = vector3Or(partSpec.size, [1, 1, 1]).map((extent) => Math.max(0.0001, Math.abs(extent)));
+      const defaultCornerRadius = Math.min(boxWidth, boxHeight, boxDepth) * 0.12;
+      return buildRoundedBoxGeometry(boxWidth, boxHeight, boxDepth, Math.max(0, finiteNumberOr(partSpec.radius, defaultCornerRadius)));
+    }
+  }
+}
+
+function buildPartMaterial(partSpec) {
+  const presetName = typeof partSpec.mat === 'string' && MATERIAL_PRESETS[partSpec.mat] ? partSpec.mat : 'plastic';
+  const preset = MATERIAL_PRESETS[presetName];
+  const partMaterial = new THREE.MeshStandardMaterial({
+    color: safeColor(partSpec.color, preset.color),
+    roughness: THREE.MathUtils.clamp(finiteNumberOr(partSpec.roughness, preset.roughness), 0, 1),
+    metalness: THREE.MathUtils.clamp(finiteNumberOr(partSpec.metalness, preset.metalness), 0, 1),
+    envMapIntensity: 0.55,
+  });
+  const opacity = THREE.MathUtils.clamp(finiteNumberOr(partSpec.opacity, preset.opacity === undefined ? 1 : preset.opacity), 0.05, 1);
+  if (opacity < 1) { partMaterial.transparent = true; partMaterial.opacity = opacity; partMaterial.depthWrite = false; }
+  if (partMaterial.metalness > 0.5) partMaterial.envMapIntensity = 1;
+  if (preset.emissive) { partMaterial.emissive.copy(partMaterial.color); partMaterial.emissiveIntensity = preset.emissive; }
+  partMaterial.userData.baseOpacity = opacity;
+  partMaterial.userData.baseEmissive = partMaterial.emissive.clone();
+  partMaterial.userData.baseEmissiveIntensity = partMaterial.emissiveIntensity;
+  return partMaterial;
+}
+
+// ---------------------------------------------------------------------------
+// Outline: an inverted hull pushed out by a constant number of screen pixels
+// along smoothed normals (smoothing closes cracks at hard edges).
+// ---------------------------------------------------------------------------
+
+const outlineViewportSize = new THREE.Vector2(1, 1);
+const sharedOutlineMaterials = new Set();
+
+function buildSmoothedNormalAttribute(geometry) {
+  const positionAttribute = geometry.attributes.position;
+  const normalAttribute = geometry.attributes.normal;
+  const summedNormalByPositionKey = new Map();
+  const positionKeyForVertex = (vertexIndex) =>
+    `${positionAttribute.getX(vertexIndex).toFixed(4)},${positionAttribute.getY(vertexIndex).toFixed(4)},${positionAttribute.getZ(vertexIndex).toFixed(4)}`;
+  for (let vertexIndex = 0; vertexIndex < positionAttribute.count; vertexIndex++) {
+    const positionKey = positionKeyForVertex(vertexIndex);
+    const summedNormal = summedNormalByPositionKey.get(positionKey) || new THREE.Vector3();
+    summedNormal.x += normalAttribute.getX(vertexIndex);
+    summedNormal.y += normalAttribute.getY(vertexIndex);
+    summedNormal.z += normalAttribute.getZ(vertexIndex);
+    summedNormalByPositionKey.set(positionKey, summedNormal);
+  }
+  const smoothedNormals = new Float32Array(positionAttribute.count * 3);
+  for (let vertexIndex = 0; vertexIndex < positionAttribute.count; vertexIndex++) {
+    const smoothedNormal = summedNormalByPositionKey.get(positionKeyForVertex(vertexIndex)).clone().normalize();
+    smoothedNormals.set([smoothedNormal.x, smoothedNormal.y, smoothedNormal.z], vertexIndex * 3);
+  }
+  return new THREE.BufferAttribute(smoothedNormals, 3);
+}
+
+function buildOutlineMaterial() {
+  const outlineMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      outlineColor: { value: new THREE.Color(OUTLINE_COLOR) },
+      outlineWidthInPixels: { value: OUTLINE_WIDTH_IN_PIXELS },
+      viewportSize: { value: outlineViewportSize },
+      outlineOpacity: { value: 1 },
+    },
+    vertexShader: `
+      attribute vec3 smoothedNormal;
+      uniform float outlineWidthInPixels;
+      uniform vec2 viewportSize;
+      #include <clipping_planes_pars_vertex>
+      void main() {
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        #include <clipping_planes_vertex>
+        vec4 clipPosition = projectionMatrix * mvPosition;
+        vec3 viewNormal = normalize(normalMatrix * smoothedNormal);
+        vec2 screenDirection = length(viewNormal.xy) > 0.0001 ? normalize(viewNormal.xy) : vec2(0.0);
+        clipPosition.xy += screenDirection * outlineWidthInPixels * 2.0 / viewportSize * clipPosition.w;
+        gl_Position = clipPosition;
+      }`,
+    fragmentShader: `
+      uniform vec3 outlineColor;
+      uniform float outlineOpacity;
+      #include <clipping_planes_pars_fragment>
+      void main() {
+        #include <clipping_planes_fragment>
+        gl_FragColor = vec4(outlineColor, outlineOpacity);
+        #include <colorspace_fragment>
+      }`,
+    side: THREE.BackSide,
+    clipping: true,
+    transparent: false,
+  });
+  sharedOutlineMaterials.add(outlineMaterial);
+  return outlineMaterial;
+}
+
+function attachOutline(partMesh) {
+  if (!partMesh.geometry.attributes.smoothedNormal) {
+    partMesh.geometry.setAttribute('smoothedNormal', buildSmoothedNormalAttribute(partMesh.geometry));
+  }
+  const outlineMesh = new THREE.Mesh(partMesh.geometry, buildOutlineMaterial());
+  outlineMesh.userData.isHelper = true;
+  partMesh.add(outlineMesh);
+  partMesh.userData.outlineMesh = outlineMesh;
+}
+
+// ---------------------------------------------------------------------------
+// Scene objects by id, model bounds
+// ---------------------------------------------------------------------------
+
+const sceneObjectsById = new Map(); // id -> { object, bounds (Box3 in content space), materials }
+const modelBoundsInContentSpace = new THREE.Box3();
+let anonymousObjectCounter = 0;
+
+function uniqueObjectId(requestedId, kindPrefix) {
+  if (typeof requestedId === 'string' && requestedId.trim()) return requestedId.trim();
+  anonymousObjectCounter += 1;
+  return `${kindPrefix}_${anonymousObjectCounter}`;
+}
+
+function parentObjectFor(parentId) {
+  const parentEntry = typeof parentId === 'string' ? sceneObjectsById.get(parentId) : null;
+  return parentEntry ? parentEntry.object : modelContent;
+}
+
+function applyPlacement(targetObject, placementSpec) {
+  const [positionX, positionY, positionZ] = vector3Or(placementSpec.pos, [0, 0, 0]);
+  const [rotationX, rotationY, rotationZ] = vector3Or(placementSpec.rot, [0, 0, 0]);
+  targetObject.position.set(positionX, positionY, positionZ);
+  targetObject.rotation.set(degreesToRadians(rotationX), degreesToRadians(rotationY), degreesToRadians(rotationZ));
+}
+
+// Bounds of every real (non-helper) mesh under an object, in content space.
+function boundsInContentSpace(rootObject) {
+  modelRoot.updateMatrixWorld(true);
+  const contentWorldInverse = modelContent.matrixWorld.clone().invert();
+  const combinedBounds = new THREE.Box3();
+  const meshBounds = new THREE.Box3();
+  const meshToContentMatrix = new THREE.Matrix4();
+  rootObject.traverse((childObject) => {
+    if (!childObject.isMesh || childObject.userData.isHelper) return;
+    if (!childObject.geometry.boundingBox) childObject.geometry.computeBoundingBox();
+    // One combined matrix: going through world space would inflate the box
+    // twice whenever the model is turned.
+    meshToContentMatrix.multiplyMatrices(contentWorldInverse, childObject.matrixWorld);
+    meshBounds.copy(childObject.geometry.boundingBox).applyMatrix4(meshToContentMatrix);
+    combinedBounds.union(meshBounds);
+  });
+  return combinedBounds;
+}
+
+function modelSizeSoFar() {
+  if (modelBoundsInContentSpace.isEmpty()) return 1;
+  return modelBoundsInContentSpace.getSize(new THREE.Vector3()).length();
+}
+
+function registerSceneObject(objectId, sceneObject, objectMaterials) {
+  const objectBounds = boundsInContentSpace(sceneObject);
+  sceneObjectsById.set(objectId, { object: sceneObject, bounds: objectBounds, materials: objectMaterials });
+  if (!objectBounds.isEmpty()) modelBoundsInContentSpace.union(objectBounds);
+  updateContactShadow();
+  return objectBounds;
+}
+
+function buildPartMesh(partSpec, partMaterial) {
+  const partMesh = new THREE.Mesh(buildPartGeometry(partSpec), partMaterial);
+  applyPlacement(partMesh, partSpec);
+  return partMesh;
+}
+
+// Tiny parts (pins, screws) skip the outline so they don't turn into white fuzz.
+function shouldOutlinePart(partMesh, partSpec) {
+  if (partSpec.outline === false) return false;
+  if (partSpec.outline === true) return true;
+  if (!partMesh.geometry.boundingBox) partMesh.geometry.computeBoundingBox();
+  const partSize = partMesh.geometry.boundingBox.getSize(new THREE.Vector3()).length();
+  return modelBoundsInContentSpace.isEmpty() || partSize > modelSizeSoFar() * 0.06;
+}
+
+// ---------------------------------------------------------------------------
+// Contact shadow: a soft dark ellipse under the model
+// ---------------------------------------------------------------------------
+
+function buildContactShadowTexture() {
+  const shadowCanvas = document.createElement('canvas');
+  shadowCanvas.width = 128; shadowCanvas.height = 128;
+  const shadowContext = shadowCanvas.getContext('2d');
+  const shadowGradient = shadowContext.createRadialGradient(64, 64, 0, 64, 64, 64);
+  shadowGradient.addColorStop(0, 'rgba(0,0,0,0.5)');
+  shadowGradient.addColorStop(0.6, 'rgba(0,0,0,0.18)');
+  shadowGradient.addColorStop(1, 'rgba(0,0,0,0)');
+  shadowContext.fillStyle = shadowGradient;
+  shadowContext.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(shadowCanvas);
+}
+const contactShadowMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ map: buildContactShadowTexture(), transparent: true, depthWrite: false, opacity: 0 }),
+);
+contactShadowMesh.userData.isHelper = true;
+contactShadowMesh.renderOrder = -1;
+modelContent.add(contactShadowMesh);
+
+function updateContactShadow() {
+  if (modelBoundsInContentSpace.isEmpty()) return;
+  const boundsSize = modelBoundsInContentSpace.getSize(new THREE.Vector3());
+  const boundsCenter = modelBoundsInContentSpace.getCenter(new THREE.Vector3());
+  contactShadowMesh.position.set(boundsCenter.x, modelBoundsInContentSpace.min.y - boundsSize.length() * 0.01, boundsCenter.z);
+  contactShadowMesh.scale.set(boundsSize.x * 1.15 + 0.001, 1, boundsSize.z * 1.25 + 0.001);
+  contactShadowMesh.material.opacity = 0.5;
+}
+
+// ---------------------------------------------------------------------------
+// Cutaway: clip parts with a plane and fill the cut faces with a hatched cap
+// (stencil technique: count back minus front faces per pixel, fill where != 0)
+// ---------------------------------------------------------------------------
+
+function buildHatchTexture() {
+  const hatchCanvas = document.createElement('canvas');
+  hatchCanvas.width = 64; hatchCanvas.height = 64;
+  const hatchContext = hatchCanvas.getContext('2d');
+  hatchContext.fillStyle = '#ffffff';
+  hatchContext.fillRect(0, 0, 64, 64);
+  hatchContext.strokeStyle = '#8f8b84';
+  hatchContext.lineWidth = 2.2;
+  for (let lineOffset = -64; lineOffset <= 128; lineOffset += 16) {
+    hatchContext.beginPath();
+    hatchContext.moveTo(lineOffset, 64);
+    hatchContext.lineTo(lineOffset + 64, 0);
+    hatchContext.stroke();
+  }
+  const hatchTexture = new THREE.CanvasTexture(hatchCanvas);
+  hatchTexture.wrapS = hatchTexture.wrapT = THREE.RepeatWrapping;
+  hatchTexture.colorSpace = THREE.SRGBColorSpace;
+  return hatchTexture;
+}
+const sharedHatchTexture = buildHatchTexture();
+const activeCutaways = []; // { localPlane, worldPlane }
+let stencilRenderOrderCounter = 1000;
+
+const CUTAWAY_DIRECTIONS = {
+  '+x': [1, 0, 0], '-x': [-1, 0, 0], '+y': [0, 1, 0], '-y': [0, -1, 0], '+z': [0, 0, 1], '-z': [0, 0, -1],
+};
+
+function addStencilCap(partMesh, cutaway) {
+  const stencilBaseMaterial = new THREE.MeshBasicMaterial({
+    depthWrite: false, depthTest: false, colorWrite: false, stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc,
+  });
+  const backFaceMaterial = stencilBaseMaterial.clone();
+  backFaceMaterial.side = THREE.BackSide;
+  backFaceMaterial.clippingPlanes = [cutaway.worldPlane];
+  backFaceMaterial.stencilFail = backFaceMaterial.stencilZFail = backFaceMaterial.stencilZPass = THREE.IncrementWrapStencilOp;
+  const frontFaceMaterial = stencilBaseMaterial.clone();
+  frontFaceMaterial.side = THREE.FrontSide;
+  frontFaceMaterial.clippingPlanes = [cutaway.worldPlane];
+  frontFaceMaterial.stencilFail = frontFaceMaterial.stencilZFail = frontFaceMaterial.stencilZPass = THREE.DecrementWrapStencilOp;
+
+  const stencilRenderOrder = stencilRenderOrderCounter;
+  stencilRenderOrderCounter += 2;
+  for (const stencilMaterial of [backFaceMaterial, frontFaceMaterial]) {
+    const stencilMesh = new THREE.Mesh(partMesh.geometry, stencilMaterial);
+    stencilMesh.userData.isHelper = true;
+    stencilMesh.renderOrder = stencilRenderOrder;
+    partMesh.add(stencilMesh);
+  }
+
+  const capColor = partMesh.material.color.clone().lerp(new THREE.Color(0xffffff), 0.55);
+  const capMaterial = new THREE.MeshStandardMaterial({
+    color: capColor, map: sharedHatchTexture, roughness: 0.8, metalness: 0,
+    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc,
+    stencilFail: THREE.ReplaceStencilOp, stencilZFail: THREE.ReplaceStencilOp, stencilZPass: THREE.ReplaceStencilOp,
+  });
+  const capMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), capMaterial);
+  capMesh.userData.isHelper = true;
+  capMesh.renderOrder = stencilRenderOrder + 1;
+  capMesh.onAfterRender = (activeRenderer) => activeRenderer.clearStencil();
+  capMesh.visible = partMesh.visible;
+  cutaway.capMeshes.push({ capMesh, partMesh });
+  modelContent.add(capMesh);
+}
+
+function positionCutawayCaps(cutaway) {
+  const capSize = Math.max(0.001, modelSizeSoFar() * 2.5);
+  const boundsCenter = modelBoundsInContentSpace.isEmpty() ? new THREE.Vector3() : modelBoundsInContentSpace.getCenter(new THREE.Vector3());
+  const planeNormal = cutaway.removedSideDirection;
+  // Point on the plane nearest the model center, so the cap is centered on the model.
+  const pointOnPlane = boundsCenter.clone().addScaledVector(planeNormal, cutaway.planeOffset - boundsCenter.dot(planeNormal));
+  const hatchRepeat = capSize / Math.max(0.0001, modelSizeSoFar() / 45);
+  for (const { capMesh, partMesh } of cutaway.capMeshes) {
+    capMesh.position.copy(pointOnPlane);
+    capMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), planeNormal);
+    capMesh.scale.set(capSize, capSize, 1);
+    capMesh.visible = partMesh.visible && partMesh.scale.x > 0.5;
+    capMesh.material.map.repeat.set(hatchRepeat, hatchRepeat);
+  }
+  cutaway.localPlane.set(planeNormal.clone().negate(), cutaway.planeOffset);
+}
+
+function meshesUnder(rootObject) {
+  const foundMeshes = [];
+  rootObject.traverse((childObject) => { if (childObject.isMesh && !childObject.userData.isHelper) foundMeshes.push(childObject); });
+  return foundMeshes;
+}
+
+// ---------------------------------------------------------------------------
+// Pen cursor (gold triangle) and scratch sound
+// ---------------------------------------------------------------------------
+
+const penState = {
+  x: -100, y: -100, hasPosition: false,
+  targetProvider: null, // () => {x, y} in page pixels, re-evaluated every frame
+  lastActiveTime: 0,
+  isDrawing: false,
+};
+
+function setPenTarget(targetProvider, isDrawing) {
+  penState.targetProvider = targetProvider;
+  penState.isDrawing = isDrawing;
+  penState.lastActiveTime = performance.now();
+  pencilScratchSound.setDrawing(isDrawing);
+}
+
+function updatePenCursor(now) {
+  if (penState.targetProvider) {
+    const penTarget = penState.targetProvider();
+    if (penTarget && Number.isFinite(penTarget.x) && Number.isFinite(penTarget.y)) {
+      if (!penState.hasPosition) { penState.x = penTarget.x; penState.y = penTarget.y; penState.hasPosition = true; }
+      const followStrength = penState.isDrawing ? 0.5 : 0.18;
+      penState.x += (penTarget.x - penState.x) * followStrength;
+      penState.y += (penTarget.y - penState.y) * followStrength;
+    }
+  }
+  const isRecentlyActive = isProcessingCommands || now - penState.lastActiveTime < 1400;
+  penCursorElement.style.opacity = penState.hasPosition && isRecentlyActive ? '1' : '0';
+  // The triangle's left edge sits on the drawing head, like a pen tip.
+  penCursorElement.style.transform = `translate(${penState.x - 3}px, ${penState.y - 8}px)`;
+}
+
+// The scratch sound is the whiteboard's (`scratchSound`, filled in by Swift),
+// so both pens sound the same. This wrapper keeps it scratching on its own
+// timer while a part draws, since 3D reveals don't step per frame.
+/*__PENCIL_SCRATCH_SOUND_SCRIPT__*/
+const pencilScratchSound = (() => {
+  let isDrawingNow = false;
+  let jitterTimer = null;
+  function jitterWhileDrawing() {
+    if (!isDrawingNow) return;
+    scratchSound.scratchWhileStroking();
+    jitterTimer = setTimeout(jitterWhileDrawing, 35 + Math.random() * 30);
+  }
+  return {
+    setDrawing(shouldDraw) {
+      if (shouldDraw === isDrawingNow) return;
+      isDrawingNow = shouldDraw;
+      clearTimeout(jitterTimer);
+      if (isDrawingNow) jitterWhileDrawing();
+      else scratchSound.silence();
+    },
+    // A short stroke for one handwritten letter.
+    tick() { scratchSound.tickWhileWriting(); },
+  };
+})();
+
+// ---------------------------------------------------------------------------
+// Projection helpers
+// ---------------------------------------------------------------------------
+
+let viewportWidth = 1;
+let viewportHeight = 1;
+const projectionScratchVector = new THREE.Vector3();
+
+function projectContentPointToPage(contentPoint) {
+  projectionScratchVector.copy(contentPoint).applyMatrix4(modelContent.matrixWorld).project(camera);
+  return {
+    x: (projectionScratchVector.x + 1) / 2 * viewportWidth,
+    y: (1 - projectionScratchVector.y) / 2 * viewportHeight,
+  };
+}
+
+function boxCorners(bounds) {
+  const cornerPoints = [];
+  for (const cornerX of [bounds.min.x, bounds.max.x]) {
+    for (const cornerY of [bounds.min.y, bounds.max.y]) {
+      for (const cornerZ of [bounds.min.z, bounds.max.z]) cornerPoints.push(new THREE.Vector3(cornerX, cornerY, cornerZ));
+    }
+  }
+  return cornerPoints;
+}
+
+// Corners of every part's own box: much tighter than the corners of the
+// whole model's box once the model is turned.
+function cornersOfAllParts() {
+  const cornerPoints = [];
+  for (const sceneObjectEntry of sceneObjectsById.values()) {
+    if (!sceneObjectEntry.isGroup && !sceneObjectEntry.bounds.isEmpty()) cornerPoints.push(...boxCorners(sceneObjectEntry.bounds));
+  }
+  return cornerPoints;
+}
+
+function projectedBoundsRectangle(bounds, cornerPoints) {
+  if (!cornerPoints && (!bounds || bounds.isEmpty())) return null;
+  if (cornerPoints && !cornerPoints.length) return null;
+  let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+  for (const cornerPoint of cornerPoints || boxCorners(bounds)) {
+    const pagePoint = projectContentPointToPage(cornerPoint);
+    left = Math.min(left, pagePoint.x); right = Math.max(right, pagePoint.x);
+    top = Math.min(top, pagePoint.y); bottom = Math.max(bottom, pagePoint.y);
+  }
+  return { left, top, right, bottom };
+}
+
+// ---------------------------------------------------------------------------
+// View: azimuth/elevation, idle sway, drag to orbit, auto-fit camera
+// ---------------------------------------------------------------------------
+
+const viewState = {
+  azimuthInRadians: degreesToRadians(-28),
+  elevationInRadians: degreesToRadians(24),
+  zoomMultiplier: 1,
+  dragYaw: 0,
+  dragPitch: 0,
+  currentCameraDistance: null,
+  currentContentOffset: null,
+  focusBounds: null,
+  lastDragTime: -Infinity,
+};
+
+function cameraDistanceToFit(boundsToFit, cornerPointsToFit, yaw, pitch) {
+  const viewDirection = new THREE.Vector3(0, Math.sin(viewState.elevationInRadians), Math.cos(viewState.elevationInRadians)); // from target toward camera
+  const forwardDirection = viewDirection.clone().negate();
+  const rightDirection = new THREE.Vector3().crossVectors(forwardDirection, new THREE.Vector3(0, 1, 0)).normalize();
+  const upDirection = new THREE.Vector3().crossVectors(rightDirection, forwardDirection).normalize();
+  const rotation = new THREE.Euler(pitch, yaw, 0, 'YXZ');
+  const boundsCenter = boundsToFit.getCenter(new THREE.Vector3());
+
+  const verticalHalfTangent = Math.tan(degreesToRadians(CAMERA_FIELD_OF_VIEW_IN_DEGREES) / 2);
+  const usableHeightFraction = Math.max(0.25, (viewportHeight - 2 * LABEL_ROW_MARGIN_IN_PIXELS) / viewportHeight);
+  const usableWidthFraction = Math.max(0.25, (viewportWidth - 2 * SIDE_MARGIN_IN_PIXELS) / viewportWidth);
+  const fitVerticalTangent = verticalHalfTangent * usableHeightFraction;
+  const fitHorizontalTangent = verticalHalfTangent * camera.aspect * usableWidthFraction;
+
+  let requiredDistance = 0;
+  for (const cornerPoint of cornerPointsToFit) {
+    const rotatedOffset = cornerPoint.clone().sub(boundsCenter).applyEuler(rotation);
+    const depthBeyondTarget = rotatedOffset.dot(forwardDirection);
+    requiredDistance = Math.max(
+      requiredDistance,
+      Math.abs(rotatedOffset.dot(rightDirection)) / fitHorizontalTangent - depthBeyondTarget,
+      Math.abs(rotatedOffset.dot(upDirection)) / fitVerticalTangent - depthBeyondTarget,
+    );
+  }
+  return Math.max(requiredDistance, 0.01);
+}
+
+function updateView(now) {
+  const isRecentlyDragged = now - viewState.lastDragTime < 2500;
+  const idleSwayWeight = isRecentlyDragged ? 0 : 1;
+  const idleYaw = Math.sin(now / 1000 * 0.38) * 0.11 * idleSwayWeight;
+  const idlePitch = Math.sin(now / 1000 * 0.29) * 0.025 * idleSwayWeight;
+  const baseYaw = viewState.azimuthInRadians + viewState.dragYaw;
+  modelRoot.rotation.set(viewState.dragPitch + idlePitch, baseYaw + idleYaw, 0, 'YXZ');
+
+  const boundsToFit = viewState.focusBounds || (modelBoundsInContentSpace.isEmpty() ? null : modelBoundsInContentSpace);
+  if (!boundsToFit) return;
+  const cornerPointsToFit = viewState.focusBounds ? boxCorners(viewState.focusBounds) : cornersOfAllParts();
+  const targetDistance = cameraDistanceToFit(boundsToFit, cornerPointsToFit, baseYaw, viewState.dragPitch) / viewState.zoomMultiplier;
+  const targetOffset = boundsToFit.getCenter(new THREE.Vector3()).negate();
+  if (viewState.currentCameraDistance === null) {
+    viewState.currentCameraDistance = targetDistance;
+    viewState.currentContentOffset = targetOffset.clone();
+  }
+  viewState.currentCameraDistance += (targetDistance - viewState.currentCameraDistance) * 0.07;
+  viewState.currentContentOffset.lerp(targetOffset, 0.07);
+  modelContent.position.copy(viewState.currentContentOffset);
+
+  const cameraDistance = viewState.currentCameraDistance;
+  camera.position.set(0, Math.sin(viewState.elevationInRadians) * cameraDistance, Math.cos(viewState.elevationInRadians) * cameraDistance);
+  camera.near = cameraDistance / 100;
+  camera.far = cameraDistance * 100;
+  camera.lookAt(0, 0, 0);
+  camera.updateProjectionMatrix();
+}
+
+let activeDrag = null;
+stageCanvas.addEventListener('pointerdown', (pointerEvent) => {
+  activeDrag = { lastX: pointerEvent.clientX, lastY: pointerEvent.clientY };
+  stageCanvas.setPointerCapture(pointerEvent.pointerId);
+  stageCanvas.classList.add('is-dragging');
+});
+stageCanvas.addEventListener('pointermove', (pointerEvent) => {
+  if (!activeDrag) return;
+  viewState.dragYaw += (pointerEvent.clientX - activeDrag.lastX) * 0.009;
+  viewState.dragPitch = THREE.MathUtils.clamp(viewState.dragPitch + (pointerEvent.clientY - activeDrag.lastY) * 0.006, -0.7, 0.9);
+  activeDrag.lastX = pointerEvent.clientX;
+  activeDrag.lastY = pointerEvent.clientY;
+  viewState.lastDragTime = performance.now();
+});
+const endDrag = () => { activeDrag = null; stageCanvas.classList.remove('is-dragging'); };
+stageCanvas.addEventListener('pointerup', endDrag);
+stageCanvas.addEventListener('pointercancel', endDrag);
+
+// ---------------------------------------------------------------------------
+// Callout labels: pastel tag + leader line + ringed dot, stacked in rows
+// above or below the model so they never overlap
+// ---------------------------------------------------------------------------
+
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+const calloutLabels = [];
+
+function createCalloutLabel(labelSpec) {
+  const colorName = CALLOUT_COLORS[labelSpec.color] ? labelSpec.color : CALLOUT_COLOR_ORDER[calloutLabels.length % CALLOUT_COLOR_ORDER.length];
+  const calloutColors = CALLOUT_COLORS[colorName];
+
+  const tagElement = document.createElement('div');
+  tagElement.className = 'callout-tag';
+  tagElement.style.background = calloutColors.fill;
+  tagElement.style.setProperty('--stripe-color', calloutColors.stripe);
+  const textElement = document.createElement('span');
+  textElement.className = 'callout-text';
+  textElement.textContent = String(labelSpec.text || '').slice(0, 40);
+  tagElement.appendChild(textElement);
+  tagElement.style.visibility = 'hidden';
+  tagLayer.appendChild(tagElement);
+
+  const leaderLineElement = document.createElementNS(SVG_NAMESPACE, 'line');
+  leaderLineElement.setAttribute('stroke', '#1e1e1e');
+  leaderLineElement.setAttribute('stroke-width', '2.2');
+  leaderLineElement.setAttribute('stroke-linecap', 'round');
+  const anchorDotElement = document.createElementNS(SVG_NAMESPACE, 'circle');
+  anchorDotElement.setAttribute('r', '0');
+  anchorDotElement.setAttribute('fill', '#1b1b1b');
+  anchorDotElement.setAttribute('stroke', 'rgba(255,255,255,0.85)');
+  anchorDotElement.setAttribute('stroke-width', '1.6');
+  annotationLayer.appendChild(leaderLineElement);
+  annotationLayer.appendChild(anchorDotElement);
+
+  // Anchor: an explicit model point, or the top center of the named part.
+  let anchorInContentSpace = null;
+  let anchorObjectId = null;
+  if (Array.isArray(labelSpec.at)) {
+    anchorInContentSpace = new THREE.Vector3(...vector3Or(labelSpec.at, [0, 0, 0]));
+  } else if (typeof labelSpec.on === 'string' && sceneObjectsById.has(labelSpec.on)) {
+    anchorObjectId = labelSpec.on;
+  } else if (!modelBoundsInContentSpace.isEmpty()) {
+    anchorInContentSpace = modelBoundsInContentSpace.getCenter(new THREE.Vector3());
+  } else {
+    anchorInContentSpace = new THREE.Vector3();
+  }
+
+  const calloutLabel = {
+    side: labelSpec.side === 'bottom' ? 'bottom' : 'top',
+    tagElement, textElement, leaderLineElement, anchorDotElement,
+    anchorInContentSpace, anchorObjectId,
+    tagWidth: 0, tagHeight: 0,
+    currentLeft: null, currentTop: null,
+    textRevealProgress: 0, leaderProgress: 0, dotProgress: 0,
+    isVisible: false,
+    anchorPagePoint: { x: 0, y: 0 },
+  };
+  calloutLabels.push(calloutLabel);
+  return calloutLabel;
+}
+
+// Groups have no bounds of their own (their parts arrive later), so theirs
+// are measured on demand.
+function boundsOfEntry(sceneObjectEntry) {
+  if (!sceneObjectEntry) return new THREE.Box3();
+  return sceneObjectEntry.isGroup ? boundsInContentSpace(sceneObjectEntry.object) : sceneObjectEntry.bounds;
+}
+
+function anchorPointForLabel(calloutLabel) {
+  if (calloutLabel.anchorInContentSpace) return calloutLabel.anchorInContentSpace;
+  const anchorBounds = boundsOfEntry(sceneObjectsById.get(calloutLabel.anchorObjectId));
+  if (anchorBounds.isEmpty()) return new THREE.Vector3();
+  return new THREE.Vector3((anchorBounds.min.x + anchorBounds.max.x) / 2, anchorBounds.max.y, (anchorBounds.min.z + anchorBounds.max.z) / 2);
+}
+
+// Splits labels into rows that fit the width, then slides each row's tags
+// apart left to right (and back from the right edge) so none overlap.
+function layoutCalloutRows(labelsOnSide, modelRectangle, side) {
+  const gapBetweenTags = 4;
+  const gapBetweenRows = 8;
+  const usableWidth = viewportWidth - 12;
+  const sortedLabels = labelsOnSide.slice().sort((firstLabel, secondLabel) => firstLabel.anchorPagePoint.x - secondLabel.anchorPagePoint.x);
+  const labelRows = [[]];
+  let currentRowWidth = 0;
+  for (const calloutLabel of sortedLabels) {
+    if (currentRowWidth + calloutLabel.tagWidth > usableWidth && labelRows[labelRows.length - 1].length) {
+      labelRows.push([]);
+      currentRowWidth = 0;
+    }
+    labelRows[labelRows.length - 1].push(calloutLabel);
+    currentRowWidth += calloutLabel.tagWidth + gapBetweenTags;
+  }
+
+  const tagHeight = sortedLabels.length ? Math.max(...sortedLabels.map((calloutLabel) => calloutLabel.tagHeight)) : 34;
+  labelRows.forEach((rowLabels, rowIndex) => {
+    const rowTop = side === 'top'
+      ? Math.max(6, modelRectangle.top - 34 - tagHeight) - rowIndex * (tagHeight + gapBetweenRows)
+      : Math.min(viewportHeight - tagHeight - 6, modelRectangle.bottom + 34) + rowIndex * (tagHeight + gapBetweenRows);
+    const clampedRowTop = THREE.MathUtils.clamp(rowTop, 4, viewportHeight - tagHeight - 4);
+    let previousRight = 6 - gapBetweenTags;
+    for (const calloutLabel of rowLabels) {
+      calloutLabel.targetLeft = Math.max(calloutLabel.anchorPagePoint.x - calloutLabel.tagWidth / 2, previousRight + gapBetweenTags);
+      calloutLabel.targetTop = clampedRowTop;
+      previousRight = calloutLabel.targetLeft + calloutLabel.tagWidth;
+    }
+    let nextLeft = viewportWidth - 6 + gapBetweenTags;
+    for (let labelIndex = rowLabels.length - 1; labelIndex >= 0; labelIndex--) {
+      const calloutLabel = rowLabels[labelIndex];
+      calloutLabel.targetLeft = Math.min(calloutLabel.targetLeft, nextLeft - gapBetweenTags - calloutLabel.tagWidth);
+      nextLeft = calloutLabel.targetLeft;
+    }
+  });
+}
+
+function updateCalloutLabels(modelRectangle) {
+  const visibleLabels = calloutLabels.filter((calloutLabel) => calloutLabel.isVisible);
+  for (const calloutLabel of visibleLabels) {
+    calloutLabel.anchorPagePoint = projectContentPointToPage(anchorPointForLabel(calloutLabel));
+    // Measured every frame because the handwriting font may finish loading late.
+    calloutLabel.tagWidth = calloutLabel.tagElement.offsetWidth;
+    calloutLabel.tagHeight = calloutLabel.tagElement.offsetHeight;
+  }
+  if (!modelRectangle) return;
+  layoutCalloutRows(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'top'), modelRectangle, 'top');
+  layoutCalloutRows(visibleLabels.filter((calloutLabel) => calloutLabel.side === 'bottom'), modelRectangle, 'bottom');
+
+  for (const calloutLabel of visibleLabels) {
+    if (calloutLabel.currentLeft === null) {
+      calloutLabel.currentLeft = calloutLabel.targetLeft;
+      calloutLabel.currentTop = calloutLabel.targetTop;
+    }
+    calloutLabel.currentLeft += (calloutLabel.targetLeft - calloutLabel.currentLeft) * 0.2;
+    calloutLabel.currentTop += (calloutLabel.targetTop - calloutLabel.currentTop) * 0.2;
+    calloutLabel.tagElement.style.visibility = 'visible';
+    calloutLabel.tagElement.style.transform = `translate(${calloutLabel.currentLeft}px, ${calloutLabel.currentTop}px)`;
+    calloutLabel.textElement.style.clipPath = `inset(-30% ${(1 - calloutLabel.textRevealProgress) * 100}% -30% 0)`;
+
+    // Leader line from the tag's inner edge (nearest the model) to the anchor dot.
+    const lineStartX = THREE.MathUtils.clamp(calloutLabel.anchorPagePoint.x, calloutLabel.currentLeft + 14, calloutLabel.currentLeft + calloutLabel.tagWidth - 10);
+    const lineStartY = calloutLabel.side === 'top' ? calloutLabel.currentTop + calloutLabel.tagHeight : calloutLabel.currentTop;
+    const lineEndX = lineStartX + (calloutLabel.anchorPagePoint.x - lineStartX) * calloutLabel.leaderProgress;
+    const lineEndY = lineStartY + (calloutLabel.anchorPagePoint.y - lineStartY) * calloutLabel.leaderProgress;
+    calloutLabel.leaderLineElement.setAttribute('x1', lineStartX);
+    calloutLabel.leaderLineElement.setAttribute('y1', lineStartY);
+    calloutLabel.leaderLineElement.setAttribute('x2', lineEndX);
+    calloutLabel.leaderLineElement.setAttribute('y2', lineEndY);
+    calloutLabel.leaderLineElement.style.opacity = calloutLabel.leaderProgress > 0 ? '1' : '0';
+    calloutLabel.anchorDotElement.setAttribute('cx', calloutLabel.anchorPagePoint.x);
+    calloutLabel.anchorDotElement.setAttribute('cy', calloutLabel.anchorPagePoint.y);
+    calloutLabel.anchorDotElement.setAttribute('r', 5.5 * calloutLabel.dotProgress);
+    calloutLabel.lineStartPagePoint = { x: lineStartX, y: lineStartY };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Highlights and spinning parts
+// ---------------------------------------------------------------------------
+
+const spinningObjects = []; // { object, axisName, radiansPerSecond }
+const highlightPulses = []; // { materials, startTime }
+
+function updateHighlightsAndSpins(now, secondsSinceLastFrame) {
+  for (const spinningObject of spinningObjects) {
+    spinningObject.object.rotation[spinningObject.axisName] += spinningObject.radiansPerSecond * secondsSinceLastFrame;
+  }
+  for (let pulseIndex = highlightPulses.length - 1; pulseIndex >= 0; pulseIndex--) {
+    const highlightPulse = highlightPulses[pulseIndex];
+    const elapsedSeconds = (now - highlightPulse.startTime) / 1000;
+    const pulseCycleCount = 3;
+    const isFinished = elapsedSeconds > pulseCycleCount * 1.1;
+    const glowStrength = isFinished ? 0 : (1 - Math.cos(elapsedSeconds / 1.1 * Math.PI * 2)) / 2 * 0.55;
+    for (const highlightedMaterial of highlightPulse.materials) {
+      highlightedMaterial.emissive.copy(highlightedMaterial.userData.baseEmissive).lerp(new THREE.Color(0xffc93a), glowStrength > 0 ? 1 : 0);
+      highlightedMaterial.emissiveIntensity = glowStrength > 0 ? Math.max(highlightedMaterial.userData.baseEmissiveIntensity, glowStrength) : highlightedMaterial.userData.baseEmissiveIntensity;
+    }
+    if (isFinished) {
+      highlightPulse.materials.forEach((highlightedMaterial) => {
+        highlightedMaterial.emissive.copy(highlightedMaterial.userData.baseEmissive);
+        highlightedMaterial.emissiveIntensity = highlightedMaterial.userData.baseEmissiveIntensity;
+      });
+      highlightPulses.splice(pulseIndex, 1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+// The pen draws over a part: it scribbles across the part's on-screen box
+// while the part grows in, so it looks sketched into place.
+async function revealObjectWithPen(objectToReveal, objectBounds, durationInMilliseconds) {
+  const finalScale = objectToReveal.scale.clone();
+  objectToReveal.scale.setScalar(0.0001);
+  objectToReveal.visible = true;
+  const scribblePoint = (progress) => {
+    const rectangle = projectedBoundsRectangle(objectBounds);
+    if (!rectangle) return null;
+    const insetX = (rectangle.right - rectangle.left) * 0.18;
+    const insetY = (rectangle.bottom - rectangle.top) * 0.22;
+    return {
+      x: rectangle.left + insetX + (rectangle.right - rectangle.left - 2 * insetX) * progress,
+      y: rectangle.top + insetY + (rectangle.bottom - rectangle.top - 2 * insetY) * (0.5 + 0.5 * Math.sin(progress * Math.PI * 5)),
+    };
+  };
+  // Glide to where this part starts.
+  setPenTarget(() => scribblePoint(0), false);
+  await waitMilliseconds(260);
+  let revealProgress = 0;
+  setPenTarget(() => scribblePoint(revealProgress), true);
+  await animateOverDuration(durationInMilliseconds, (progress) => {
+    revealProgress = progress;
+    const scaleFactor = Math.max(0.0001, easeOutBack(progress));
+    objectToReveal.scale.set(finalScale.x * scaleFactor, finalScale.y * scaleFactor, finalScale.z * scaleFactor);
+  });
+  objectToReveal.scale.copy(finalScale);
+  setPenTarget(penState.targetProvider, false);
+}
+
+async function runPartCommand(partSpec) {
+  const partId = uniqueObjectId(partSpec.id, 'part');
+  const partMaterial = buildPartMaterial(partSpec);
+  const partMesh = buildPartMesh(partSpec, partMaterial);
+  parentObjectFor(partSpec.in).add(partMesh);
+  if (shouldOutlinePart(partMesh, partSpec)) attachOutline(partMesh);
+  const partBounds = registerSceneObject(partId, partMesh, [partMaterial]);
+  await revealObjectWithPen(partMesh, partBounds, 520);
+}
+
+async function runGroupCommand(groupSpec) {
+  const groupId = uniqueObjectId(groupSpec.id, 'group');
+  const groupObject = new THREE.Group();
+  applyPlacement(groupObject, groupSpec);
+  parentObjectFor(groupSpec.in).add(groupObject);
+  sceneObjectsById.set(groupId, { object: groupObject, bounds: new THREE.Box3(), materials: [], isGroup: true });
+}
+
+// Repeats one part: a straight line ("step"), a grid ("step" + "step2"), or
+// a ring around an axis ("radial"), e.g. header pins or compressor blades.
+async function runArrayCommand(arraySpec) {
+  const arrayId = uniqueObjectId(arraySpec.id, 'array');
+  const partSpec = arraySpec.of && typeof arraySpec.of === 'object' ? arraySpec.of : { shape: 'box', size: [1, 1, 1] };
+  const primaryCount = THREE.MathUtils.clamp(Math.round(finiteNumberOr(arraySpec.count, 4)), 1, 120);
+  const secondaryCount = THREE.MathUtils.clamp(Math.round(finiteNumberOr(arraySpec.count2, 1)), 1, 20);
+  const primaryStep = new THREE.Vector3(...vector3Or(arraySpec.step, [1, 0, 0]));
+  const secondaryStep = new THREE.Vector3(...vector3Or(arraySpec.step2, [0, 0, 1]));
+  const radialSpec = arraySpec.radial && typeof arraySpec.radial === 'object' ? arraySpec.radial : null;
+
+  const arrayGroup = new THREE.Group();
+  applyPlacement(arrayGroup, arraySpec);
+  parentObjectFor(arraySpec.in).add(arrayGroup);
+  const sharedMaterial = buildPartMaterial(partSpec);
+  const templateMesh = buildPartMesh(partSpec, sharedMaterial);
+  const copyMeshes = [];
+
+  for (let secondaryIndex = 0; secondaryIndex < (radialSpec ? 1 : secondaryCount); secondaryIndex++) {
+    for (let primaryIndex = 0; primaryIndex < primaryCount; primaryIndex++) {
+      const copyMesh = templateMesh.clone();
+      if (radialSpec) {
+        const radialAxisName = radialSpec.axis === 'x' || radialSpec.axis === 'z' ? radialSpec.axis : 'y';
+        const radialPivot = new THREE.Group();
+        radialPivot.position.set(...vector3Or(radialSpec.center, [0, 0, 0]));
+        radialPivot.rotation[radialAxisName] = primaryIndex / primaryCount * Math.PI * 2;
+        radialPivot.add(copyMesh);
+        arrayGroup.add(radialPivot);
+      } else {
+        copyMesh.position.addScaledVector(primaryStep, primaryIndex).addScaledVector(secondaryStep, secondaryIndex);
+        arrayGroup.add(copyMesh);
+      }
+      copyMeshes.push(copyMesh);
+    }
+  }
+  const outlineCopies = shouldOutlinePart(templateMesh, partSpec);
+  if (outlineCopies) copyMeshes.forEach(attachOutline);
+  const arrayBounds = registerSceneObject(arrayId, arrayGroup, [sharedMaterial]);
+
+  // Copies pop in one after another with the pen running along them.
+  const finalScale = templateMesh.scale.clone();
+  copyMeshes.forEach((copyMesh) => copyMesh.scale.setScalar(0.0001));
+  const copyCenter = (copyMesh) => projectContentPointToPage(boundsInContentSpace(copyMesh).getCenter(new THREE.Vector3()));
+  const arrayRectangleStart = () => {
+    const rectangle = projectedBoundsRectangle(arrayBounds);
+    return rectangle ? { x: rectangle.left, y: (rectangle.top + rectangle.bottom) / 2 } : null;
+  };
+  setPenTarget(arrayRectangleStart, false);
+  await waitMilliseconds(240);
+  const totalDuration = Math.min(1400, 260 + copyMeshes.length * 22);
+  let lastStartedCopyIndex = 0;
+  const copyCenterCache = new Map();
+  setPenTarget(() => {
+    const copyMesh = copyMeshes[lastStartedCopyIndex];
+    if (!copyMeshes.length) return null;
+    if (!copyCenterCache.has(lastStartedCopyIndex)) copyCenterCache.set(lastStartedCopyIndex, copyCenter(copyMesh));
+    return copyCenterCache.get(lastStartedCopyIndex);
+  }, true);
+  await animateOverDuration(totalDuration, (progress) => {
+    copyMeshes.forEach((copyMesh, copyIndex) => {
+      const copyStart = copyIndex / Math.max(1, copyMeshes.length) * 0.75;
+      const copyProgress = THREE.MathUtils.clamp((progress - copyStart) / 0.25, 0, 1);
+      if (copyProgress > 0) lastStartedCopyIndex = copyIndex;
+      const scaleFactor = Math.max(0.0001, easeOutBack(copyProgress));
+      copyMesh.scale.set(finalScale.x * scaleFactor, finalScale.y * scaleFactor, finalScale.z * scaleFactor);
+    });
+    copyCenterCache.clear();
+  });
+  copyMeshes.forEach((copyMesh) => copyMesh.scale.copy(finalScale));
+  setPenTarget(penState.targetProvider, false);
+}
+
+async function runCutawayCommand(cutawaySpec) {
+  const directionVector = CUTAWAY_DIRECTIONS[cutawaySpec.remove] || CUTAWAY_DIRECTIONS['+z'];
+  const removedSideDirection = new THREE.Vector3(...directionVector);
+  const finalPlaneOffset = finiteNumberOr(cutawaySpec.at, 0);
+  const cutaway = {
+    removedSideDirection,
+    planeOffset: finalPlaneOffset,
+    localPlane: new THREE.Plane(removedSideDirection.clone().negate(), finalPlaneOffset),
+    worldPlane: new THREE.Plane(),
+    capMeshes: [],
+  };
+  const targetIds = Array.isArray(cutawaySpec.parts) ? cutawaySpec.parts : [];
+  const targetMeshes = targetIds.flatMap((targetId) => {
+    const targetEntry = sceneObjectsById.get(targetId);
+    return targetEntry ? meshesUnder(targetEntry.object) : [];
+  });
+  if (!targetMeshes.length) return;
+  for (const targetMesh of targetMeshes) {
+    targetMesh.material = targetMesh.material.clone();
+    targetMesh.material.userData = { ...targetMesh.material.userData };
+    targetMesh.material.clippingPlanes = [cutaway.worldPlane];
+    targetMesh.material.side = THREE.DoubleSide;
+    const outlineMesh = targetMesh.userData.outlineMesh;
+    if (outlineMesh) outlineMesh.material.clippingPlanes = [cutaway.worldPlane];
+    addStencilCap(targetMesh, cutaway);
+  }
+  activeCutaways.push(cutaway);
+
+  // Animate the cut sweeping in from outside the model to its final depth.
+  const targetBounds = new THREE.Box3();
+  targetMeshes.forEach((targetMesh) => targetBounds.union(boundsInContentSpace(targetMesh)));
+  const startingPlaneOffset = Math.max(...boxCorners(targetBounds).map((cornerPoint) => cornerPoint.dot(removedSideDirection))) + modelSizeSoFar() * 0.01;
+  const pageCenterOfCut = () => {
+    const cutCenter = targetBounds.getCenter(new THREE.Vector3());
+    cutCenter.addScaledVector(removedSideDirection, cutaway.planeOffset - cutCenter.dot(removedSideDirection));
+    return projectContentPointToPage(cutCenter);
+  };
+  setPenTarget(pageCenterOfCut, false);
+  await waitMilliseconds(250);
+  setPenTarget(pageCenterOfCut, true);
+  await animateOverDuration(900, (progress) => {
+    cutaway.planeOffset = startingPlaneOffset + (finalPlaneOffset - startingPlaneOffset) * easeInOutCubic(progress);
+  });
+  cutaway.planeOffset = finalPlaneOffset;
+  setPenTarget(pageCenterOfCut, false);
+}
+
+async function runLabelCommand(labelSpec) {
+  if (!labelSpec.text) return;
+  const calloutLabel = createCalloutLabel(labelSpec);
+  calloutLabel.isVisible = true;
+  const textHeadPoint = () => calloutLabel.currentLeft === null ? null : {
+    x: calloutLabel.currentLeft + 15 + (calloutLabel.tagWidth - 27) * calloutLabel.textRevealProgress,
+    y: calloutLabel.currentTop + calloutLabel.tagHeight * 0.62,
+  };
+  // Wait one frame so the tag has been measured and placed.
+  await waitMilliseconds(32);
+  setPenTarget(textHeadPoint, false);
+  await waitMilliseconds(240);
+  setPenTarget(textHeadPoint, true);
+  pencilScratchSound.setDrawing(false);
+  const letterCount = Math.max(1, calloutLabel.textElement.textContent.length);
+  let lastTickedLetter = -1;
+  await animateOverDuration(Math.min(1100, 160 + letterCount * 70), (progress) => {
+    calloutLabel.textRevealProgress = progress;
+    const currentLetter = Math.floor(progress * letterCount);
+    if (currentLetter !== lastTickedLetter && currentLetter < letterCount) {
+      lastTickedLetter = currentLetter;
+      pencilScratchSound.tick();
+    }
+  });
+  calloutLabel.textRevealProgress = 1;
+  // Then the leader line runs from the tag down (or up) to the part.
+  const leaderHeadPoint = () => {
+    if (!calloutLabel.lineStartPagePoint) return null;
+    return {
+      x: calloutLabel.lineStartPagePoint.x + (calloutLabel.anchorPagePoint.x - calloutLabel.lineStartPagePoint.x) * calloutLabel.leaderProgress,
+      y: calloutLabel.lineStartPagePoint.y + (calloutLabel.anchorPagePoint.y - calloutLabel.lineStartPagePoint.y) * calloutLabel.leaderProgress,
+    };
+  };
+  setPenTarget(leaderHeadPoint, true);
+  penState.isDrawing = true;
+  pencilScratchSound.setDrawing(true);
+  await animateOverDuration(420, (progress) => { calloutLabel.leaderProgress = easeOutCubic(progress); });
+  calloutLabel.leaderProgress = 1;
+  await animateOverDuration(160, (progress) => { calloutLabel.dotProgress = easeOutBack(progress); });
+  calloutLabel.dotProgress = 1;
+  setPenTarget(leaderHeadPoint, false);
+}
+
+async function runFocusCommand(focusSpec) {
+  const focusBounds = typeof focusSpec.id === 'string' ? boundsOfEntry(sceneObjectsById.get(focusSpec.id)) : new THREE.Box3();
+  if (!focusBounds.isEmpty()) {
+    const paddedBounds = focusBounds.clone();
+    paddedBounds.expandByScalar(focusBounds.getSize(new THREE.Vector3()).length() * 0.25);
+    viewState.focusBounds = paddedBounds;
+  } else {
+    viewState.focusBounds = null;
+  }
+  await waitMilliseconds(600);
+}
+
+async function runHighlightCommand(highlightSpec) {
+  const highlightEntry = typeof highlightSpec.id === 'string' ? sceneObjectsById.get(highlightSpec.id) : null;
+  if (!highlightEntry) return;
+  const highlightMaterials = new Set();
+  meshesUnder(highlightEntry.object).forEach((highlightedMesh) => highlightMaterials.add(highlightedMesh.material));
+  highlightPulses.push({ materials: Array.from(highlightMaterials), startTime: performance.now() });
+  const highlightBounds = boundsOfEntry(highlightEntry);
+  setPenTarget(() => {
+    const rectangle = projectedBoundsRectangle(highlightBounds);
+    return rectangle ? { x: (rectangle.left + rectangle.right) / 2, y: (rectangle.top + rectangle.bottom) / 2 } : null;
+  }, false);
+  await waitMilliseconds(350);
+}
+
+async function runFadeCommand(fadeSpec) {
+  const fadeEntry = typeof fadeSpec.id === 'string' ? sceneObjectsById.get(fadeSpec.id) : null;
+  if (!fadeEntry) return;
+  const targetOpacity = THREE.MathUtils.clamp(finiteNumberOr(fadeSpec.opacity, 0.15), 0, 1);
+  const fadedMaterials = new Set();
+  meshesUnder(fadeEntry.object).forEach((fadedMesh) => {
+    fadedMesh.material = fadedMesh.material.clone();
+    fadedMesh.material.userData = { ...fadedMesh.material.userData };
+    fadedMesh.material.transparent = true;
+    fadedMaterials.add(fadedMesh.material);
+    if (fadedMesh.userData.outlineMesh) fadedMesh.userData.outlineMesh.visible = targetOpacity > 0.6;
+  });
+  const startingOpacities = Array.from(fadedMaterials).map((fadedMaterial) => fadedMaterial.opacity);
+  await animateOverDuration(600, (progress) => {
+    Array.from(fadedMaterials).forEach((fadedMaterial, materialIndex) => {
+      fadedMaterial.opacity = startingOpacities[materialIndex] + (targetOpacity - startingOpacities[materialIndex]) * progress;
+      fadedMaterial.depthWrite = fadedMaterial.opacity > 0.95;
+    });
+  });
+  if (targetOpacity === 0) meshesUnder(fadeEntry.object).forEach((fadedMesh) => { fadedMesh.visible = false; });
+}
+
+function runSpinCommand(spinSpec) {
+  const spinEntry = typeof spinSpec.id === 'string' ? sceneObjectsById.get(spinSpec.id) : null;
+  if (!spinEntry) return;
+  const spinAxisName = spinSpec.axis === 'x' || spinSpec.axis === 'z' ? spinSpec.axis : 'y';
+  const existingSpin = spinningObjects.find((spinningObject) => spinningObject.object === spinEntry.object);
+  const radiansPerSecond = THREE.MathUtils.clamp(finiteNumberOr(spinSpec.speed, 1), -6, 6) * Math.PI;
+  if (existingSpin) { existingSpin.axisName = spinAxisName; existingSpin.radiansPerSecond = radiansPerSecond; }
+  else spinningObjects.push({ object: spinEntry.object, axisName: spinAxisName, radiansPerSecond });
+}
+
+function runCameraCommand(cameraSpec) {
+  const namedViews = {
+    front: [0, 8], back: [180, 8], left: [90, 8], right: [-90, 8], top: [0, 80], iso: [-35, 28], side: [-90, 6],
+  };
+  const namedView = namedViews[cameraSpec.view];
+  if (namedView) { viewState.azimuthInRadians = degreesToRadians(namedView[0]); viewState.elevationInRadians = degreesToRadians(namedView[1]); }
+  if (cameraSpec.azimuth !== undefined) viewState.azimuthInRadians = degreesToRadians(cameraSpec.azimuth);
+  if (cameraSpec.elevation !== undefined) viewState.elevationInRadians = degreesToRadians(THREE.MathUtils.clamp(finiteNumberOr(cameraSpec.elevation, 24), -80, 85));
+  if (cameraSpec.zoom !== undefined) viewState.zoomMultiplier = THREE.MathUtils.clamp(finiteNumberOr(cameraSpec.zoom, 1), 0.4, 4);
+  viewState.dragYaw = 0;
+  viewState.dragPitch = 0;
+}
+
+async function runCommand(command) {
+  switch (command.t) {
+    case 'part': return runPartCommand(command);
+    case 'group': return runGroupCommand(command);
+    case 'array': return runArrayCommand(command);
+    case 'cutaway': return runCutawayCommand(command);
+    case 'label': return runLabelCommand(command);
+    case 'focus': return runFocusCommand(command);
+    case 'highlight': return runHighlightCommand(command);
+    case 'fade': return runFadeCommand(command);
+    case 'spin': return runSpinCommand(command);
+    case 'camera': return runCameraCommand(command);
+    default: return undefined; // title and unknown commands draw nothing
+  }
+}
+
+// Commands play one after another so the pen only ever draws one thing.
+// When a backlog builds up (a step's lines arrive together) it speeds up so
+// the drawing keeps pace with the narration.
+const pendingCommands = [];
+let isProcessingCommands = false;
+
+async function processPendingCommands() {
+  if (isProcessingCommands) return;
+  isProcessingCommands = true;
+  while (pendingCommands.length) {
+    animationSpeedMultiplier = pendingCommands.length > 8 ? 2.6 : pendingCommands.length > 3 ? 1.6 : 1;
+    const nextCommand = pendingCommands.shift();
+    try {
+      await runCommand(nextCommand);
+    } catch (commandError) {
+      console.error('model3d command failed', commandError);
+    }
+  }
+  isProcessingCommands = false;
+  pencilScratchSound.setDrawing(false);
+  penState.isDrawing = false;
+  penState.lastActiveTime = performance.now();
+}
+
+// ---------------------------------------------------------------------------
+// Hit regions: the window is click-through except over the model and its
+// labels, so Swift needs to know where those are.
+// ---------------------------------------------------------------------------
+
+let lastPostedHitRegionsKey = '';
+let lastHitRegionsPostTime = 0;
+let isPointerHovering = false;
+
+function postHitRegions(modelRectangle, now) {
+  if (now - lastHitRegionsPostTime < 120) return;
+  const hitRectangles = [];
+  if (modelRectangle) {
+    hitRectangles.push([modelRectangle.left - 8, modelRectangle.top - 8, modelRectangle.right - modelRectangle.left + 16, modelRectangle.bottom - modelRectangle.top + 16]);
+  }
+  for (const calloutLabel of calloutLabels) {
+    if (calloutLabel.isVisible && calloutLabel.currentLeft !== null) {
+      hitRectangles.push([calloutLabel.currentLeft, calloutLabel.currentTop, calloutLabel.tagWidth, calloutLabel.tagHeight]);
+    }
+  }
+  const roundedRectangles = hitRectangles.map((hitRectangle) => hitRectangle.map((value) => Math.round(value)));
+  const hitRegionsKey = JSON.stringify(roundedRectangles);
+  if (hitRegionsKey === lastPostedHitRegionsKey) return;
+  lastPostedHitRegionsKey = hitRegionsKey;
+  lastHitRegionsPostTime = now;
+  postToHost({ kind: 'hitRegions', rects: roundedRectangles });
+}
+
+function postToHost(message) {
+  try { window.webkit.messageHandlers.model3D.postMessage(message); } catch (postError) { /* no host (harness) */ }
+}
+
+closeButtonElement.addEventListener('click', () => postToHost({ kind: 'close' }));
+
+function updateCloseButton(modelRectangle) {
+  closeButtonElement.classList.toggle('is-visible', isPointerHovering && !!modelRectangle);
+  if (!modelRectangle) return;
+  const buttonLeft = THREE.MathUtils.clamp(modelRectangle.right - 4, 4, viewportWidth - 26);
+  const buttonTop = THREE.MathUtils.clamp(modelRectangle.top - 4, 4, viewportHeight - 26);
+  closeButtonElement.style.transform = `translate(${buttonLeft}px, ${buttonTop}px)`;
+}
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+
+function resizeRendererToWindow() {
+  viewportWidth = Math.max(1, window.innerWidth);
+  viewportHeight = Math.max(1, window.innerHeight);
+  renderer.setSize(viewportWidth, viewportHeight, false);
+  camera.aspect = viewportWidth / viewportHeight;
+  camera.updateProjectionMatrix();
+  renderer.getDrawingBufferSize(outlineViewportSize);
+  outlineViewportSize.divideScalar(renderer.getPixelRatio());
+}
+window.addEventListener('resize', resizeRendererToWindow);
+resizeRendererToWindow();
+
+let previousFrameTime = performance.now();
+function renderFrame(now) {
+  const secondsSinceLastFrame = Math.min(0.1, (now - previousFrameTime) / 1000);
+  previousFrameTime = now;
+  advanceTweens(now);
+  updateView(now);
+  updateHighlightsAndSpins(now, secondsSinceLastFrame);
+  modelRoot.updateMatrixWorld(true);
+  for (const cutaway of activeCutaways) {
+    positionCutawayCaps(cutaway);
+    cutaway.worldPlane.copy(cutaway.localPlane).applyMatrix4(modelContent.matrixWorld);
+  }
+  renderer.render(scene, camera);
+
+  const modelRectangle = projectedBoundsRectangle(null, cornersOfAllParts());
+  updateCalloutLabels(modelRectangle);
+  updatePenCursor(now);
+  updateCloseButton(modelRectangle);
+  postHitRegions(modelRectangle, now);
+  requestAnimationFrame(renderFrame);
+}
+requestAnimationFrame(renderFrame);
+
+// ---------------------------------------------------------------------------
+// API called from Swift (arguments are JSON strings / booleans, never code)
+// ---------------------------------------------------------------------------
+
+window.hb = {
+  add(commandLine) {
+    let parsedCommand;
+    try { parsedCommand = JSON.parse(commandLine); } catch (parseError) { return; }
+    if (!parsedCommand || typeof parsedCommand !== 'object' || Array.isArray(parsedCommand)) return;
+    pendingCommands.push(parsedCommand);
+    processPendingCommands();
+  },
+  done() {},
+  setHover(isHovering) { isPointerHovering = !!isHovering; },
+  isBusy() { return isProcessingCommands || pendingCommands.length > 0; },
+};
+</script>
+</body>
+</html>

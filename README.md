@@ -22,7 +22,7 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 | Speech-to-text | WhisperKit (Whisper large-v3 turbo) on-device, with Apple Speech as the fallback |
 | Text-to-speech | Supertonic-3 on-device: one voice for English and Hindi, with the macOS voice as the fallback |
 | Actions | `CGEvent` clicks and keystrokes, plus an allowlist of Mac commands (`osascript`, `open`, `mdfind`, `shortcuts`, `ls`) |
-| Visuals | Claude streams narration plus JSON drawing commands; each step is drawn with rough.js, Lucide icons and Excalidraw's Virgil font while its sentence is spoken |
+| Visuals | Claude streams narration plus JSON drawing commands; each step is drawn with a gold pen in the Patrick Hand marker font while its sentence is spoken |
 
 No servers, no analytics, no auto-updater. Network use is `claude -p` itself plus a one-time ~1GB model download from Hugging Face on first launch.
 
