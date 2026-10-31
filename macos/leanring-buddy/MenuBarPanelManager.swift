@@ -83,27 +83,34 @@ final class MenuBarPanelManager: NSObject {
         button.target = self
     }
 
-    /// Draws the orb as a template menu bar glyph: a solid ball with a
-    /// crescent highlight cut out of its upper left, so it reads as a glossy
-    /// sphere at 18pt. Template images are tinted by macOS for light and
-    /// dark menu bars.
+    /// Draws the logo (an orb sending out a pointer) as a template menu bar
+    /// glyph: a solid ball at the upper left and a small arrow at the lower
+    /// right, with a thin gap cut around the arrow so the two read apart at
+    /// 18pt. Template images are tinted by macOS for light and dark menu bars.
     static func makeMenuBarIcon() -> NSImage {
         let iconSize: CGFloat = 18
         let image = NSImage(size: NSSize(width: iconSize, height: iconSize), flipped: false) { _ in
             NSGraphicsContext.saveGraphicsState()
             NSColor.black.setFill()
-            NSBezierPath(ovalIn: NSRect(x: 2, y: 2, width: 14, height: 14)).fill()
+            NSBezierPath(ovalIn: NSRect(x: 1, y: 5, width: 12, height: 12)).fill()
 
-            // The crescent is a highlight oval minus a second oval shifted
-            // down-right, erased from the ball (destinationOut) so it shows
-            // the menu bar through it.
+            // Arrow pointing up-left at the orb, like the pointer leaving it.
+            let pointerArrow = NSBezierPath()
+            pointerArrow.move(to: NSPoint(x: 10.2, y: 8.6))
+            pointerArrow.line(to: NSPoint(x: 11.6, y: 1.4))
+            pointerArrow.line(to: NSPoint(x: 13.4, y: 4.2))
+            pointerArrow.line(to: NSPoint(x: 16.8, y: 4.6))
+            pointerArrow.close()
+            pointerArrow.lineJoinStyle = .round
+
+            // Erase a halo around the arrow from the ball, then draw the arrow.
             NSGraphicsContext.current?.compositingOperation = .destinationOut
-            let highlightOval = NSBezierPath(ovalIn: NSRect(x: 4.4, y: 8.0, width: 6.6, height: 5.4))
-            highlightOval.addClip()
-            let highlightCrescent = NSBezierPath(rect: highlightOval.bounds)
-            highlightCrescent.append(NSBezierPath(ovalIn: NSRect(x: 5.6, y: 6.7, width: 6.8, height: 5.2)))
-            highlightCrescent.windingRule = .evenOdd
-            highlightCrescent.fill()
+            pointerArrow.lineWidth = 3.2
+            pointerArrow.stroke()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            pointerArrow.lineWidth = 0.8
+            pointerArrow.fill()
+            pointerArrow.stroke()
             NSGraphicsContext.restoreGraphicsState()
             return true
         }
