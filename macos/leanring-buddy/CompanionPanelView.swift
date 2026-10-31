@@ -25,6 +25,7 @@ struct CompanionPanelView: View {
     @State private var isLaunchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @State private var isCloseButtonHovered = false
     @State private var isQuitButtonHovered = false
+    @State private var isOpenChatButtonHovered = false
 
     private static let panelWidth: CGFloat = 340
 
@@ -79,6 +80,10 @@ struct CompanionPanelView: View {
 
             if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 startButton
+            }
+
+            if companionManager.hasCompletedOnboarding {
+                openChatButton
             }
 
             modelSection
@@ -187,6 +192,35 @@ struct CompanionPanelView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Opens the typed chat, which slides in from the side of the screen.
+    private var openChatButton: some View {
+        Button(action: {
+            NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
+            companionManager.showChatPanel()
+        }) {
+            HStack(spacing: 8) {
+                Image(systemName: "bubble.left.and.text.bubble.right")
+                    .font(.system(size: 12, weight: .semibold))
+                Text("Open chat")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text("Type instead of talking")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .foregroundColor(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(DS.Colors.overlayCursorColor.opacity(isOpenChatButtonHovered ? 0.85 : 1))
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isOpenChatButtonHovered = $0 }
+        .pointerCursor()
     }
 
     private var startButton: some View {

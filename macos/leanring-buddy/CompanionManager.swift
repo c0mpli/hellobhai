@@ -13,6 +13,13 @@ import Foundation
 import ScreenCaptureKit
 import SwiftUI
 
+/// One line in the chat panel: something the user typed or said, or a reply.
+struct CompanionChatMessage: Identifiable, Equatable {
+    let id = UUID()
+    let isFromUser: Bool
+    let text: String
+}
+
 enum CompanionVoiceState {
     case idle
     case listening
@@ -92,6 +99,26 @@ final class CompanionManager: ObservableObject {
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []
+
+    /// Everything said and typed this session, shown in the chat panel.
+    /// Voice turns land here too, so the chat reads as one conversation.
+    @Published private(set) var chatMessages: [CompanionChatMessage] = []
+
+    /// Whether replies to typed messages are also spoken aloud. Off by
+    /// default: someone typing usually doesn't want the voice.
+    @Published var speaksChatReplies: Bool = UserDefaults.standard.bool(forKey: "speaksChatReplies") {
+        didSet { UserDefaults.standard.set(speaksChatReplies, forKey: "speaksChatReplies") }
+    }
+
+    /// The slide-in chat panel, created the first time it opens.
+    private var chatPanelManager: ChatPanelManager?
+
+    func showChatPanel() {
+        if chatPanelManager == nil {
+            chatPanelManager = ChatPanelManager(companionManager: self)
+        }
+        chatPanelManager?.show()
+    }
 
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
@@ -520,6 +547,17 @@ final class CompanionManager: ObservableObject {
     /// Whisper writes Hindi in Devanagari, so a transcript without any
     /// Devanagari means the user spoke English. Saying so explicitly stops
     /// Claude from carrying on in Hindi just because earlier turns were Hindi.
+    /// Typed Hinglish is usually in Latin letters ("ye kya hai"), so the
+    /// Devanagari check used for speech can't tell it from English. Claude
+    /// reads the language itself; the script depends on whether the reply
+    /// is spoken (the voice reads Devanagari as Hindi, Latin as English).
+    static func typedReplyLanguageNote(repliesAreSpoken: Bool) -> String {
+        let hinglishScript = repliesAreSpoken
+            ? "natural hinglish written in devanagari, because the reply is read aloud"
+            : "natural hinglish in the same script the user typed in"
+        return "(the user typed this turn instead of speaking. reply in english if they wrote english; if they wrote hindi or hinglish in any script, reply in \(hinglishScript). the reply is shown in a chat panel.)"
+    }
+
     static func replyLanguageNote(forTranscript transcript: String) -> String {
         let transcriptContainsDevanagari = transcript.unicodeScalars.contains { (0x0900...0x097F).contains($0.value) }
         if transcriptContainsDevanagari {
@@ -528,7 +566,31 @@ final class CompanionManager: ObservableObject {
         return "(the user spoke english this turn: reply and narrate in english only, even if earlier turns were in hindi.)"
     }
 
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
+    /// Sends a message typed in the chat panel through the same pipeline as
+    /// a spoken one (screenshots, agent loop, pointing, drawings, actions).
+    func sendTypedChatMessage(_ typedMessage: String) {
+        let trimmedMessage = typedMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+
+        // Same cleanup as a hotkey press, so the new answer starts fresh.
+        currentVisualTask?.cancel()
+        visualExplanationPanelManager.finishLiveContent()
+        visualExplanationPanelManager.stopDrawing()
+        model3DOverlayManager.close()
+        clearDetectedElementLocation()
+        screenCircleFadeTask?.cancel()
+        screenCircleAnnotations = []
+        userDrawnStrokes = []
+
+        sendTranscriptToClaudeWithScreenshot(transcript: trimmedMessage, isTypedChatMessage: true)
+    }
+
+    private func sendTranscriptToClaudeWithScreenshot(transcript: String, isTypedChatMessage: Bool = false) {
+        chatMessages.append(CompanionChatMessage(isFromUser: true, text: transcript))
+        let repliesAreSpoken = !isTypedChatMessage || speaksChatReplies
+        let languageNote = isTypedChatMessage
+            ? Self.typedReplyLanguageNote(repliesAreSpoken: repliesAreSpoken)
+            : Self.replyLanguageNote(forTranscript: transcript)
         currentResponseTask?.cancel()
         currentVisualTask?.cancel()
         localTTSClient.stopPlayback()
@@ -566,7 +628,7 @@ final class CompanionManager: ObservableObject {
                     // Round one carries what the user said; later rounds just show
                     // Claude the screen after its last actions.
                     var userPromptForThisStep = agentStepNumber == 1
-                        ? transcript + "\n" + Self.replyLanguageNote(forTranscript: transcript)
+                        ? transcript + "\n" + languageNote
                         : Self.agentContinuationPrompt
 
                     // Regions the user drew around while speaking: tell Claude where
@@ -692,11 +754,14 @@ final class CompanionManager: ObservableObject {
                     print("🧠 Step \(agentStepNumber): \(computerActions.count) on-screen action(s), history \(conversationHistory.count)")
 
                     if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        // Let the previous round's narration finish rather than cutting it off.
-                        while isSpeakingAloud {
-                            try await Task.sleep(for: .milliseconds(100))
+                        chatMessages.append(CompanionChatMessage(isFromUser: false, text: spokenText))
+                        if repliesAreSpoken {
+                            // Let the previous round's narration finish rather than cutting it off.
+                            while isSpeakingAloud {
+                                try await Task.sleep(for: .milliseconds(100))
+                            }
+                            localTTSClient.speakText(spokenText)
                         }
-                        localTTSClient.speakText(spokenText)
                         voiceState = .responding
                     }
                     showScreenCirclesWhileSpeaking(circleTags, screenCaptures: screenCaptures)
@@ -713,7 +778,11 @@ final class CompanionManager: ObservableObject {
                         while isSpeakingAloud {
                             try await Task.sleep(for: .milliseconds(100))
                         }
-                        localTTSClient.speakText("that didn't seem to work, so i stopped. can you take a look?")
+                        let stoppedMessage = "that didn't seem to work, so i stopped. can you take a look?"
+                        chatMessages.append(CompanionChatMessage(isFromUser: false, text: stoppedMessage))
+                        if repliesAreSpoken {
+                            localTTSClient.speakText(stoppedMessage)
+                        }
                         break
                     }
                     previousStepActionSummary = currentStepActionSummary
@@ -727,7 +796,10 @@ final class CompanionManager: ObservableObject {
                 // User spoke again — response was interrupted
             } catch {
                 print("⚠️ Companion response error: \(error)")
-                speakErrorFallback()
+                chatMessages.append(CompanionChatMessage(isFromUser: false, text: "couldn't reach claude. make sure claude code is installed and logged in."))
+                if repliesAreSpoken {
+                    speakErrorFallback()
+                }
             }
 
             if !Task.isCancelled {
@@ -1047,6 +1119,8 @@ final class CompanionManager: ObservableObject {
     /// Replays Claude's [CLICK]/[TYPE]/[KEY] actions in order. Runs inside the
     /// response task, so pressing the hotkey again cancels whatever is left.
     private func performComputerActions(_ computerActions: [ComputerAction], screenCaptures: [CompanionScreenCapture]) async {
+        // Typing and key presses must reach the user's app, not the chat box.
+        chatPanelManager?.giveKeyboardFocusBackToFrontmostApp()
         for computerAction in computerActions {
             guard !Task.isCancelled else { return }
 
