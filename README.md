@@ -2,14 +2,28 @@
 
 A local-first AI buddy that lives next to your cursor on macOS. Hold **Control + Option**, talk in **Hindi, English or Hinglish**, and it looks at your screen, talks back, points at things, sketches live explanations, and can click and type to get things done for you.
 
+An open-source, local-first take on HeyClicky, built on top of Farza's open-source [Clicky](https://github.com/farzaa/clicky).
+
+## Demo
+
+**"How do these buses actually work?"** A 3D model built right over the video, then a live whiteboard of the swivel joint.
+
+[![Bus demo: 3D model and whiteboard](docs/media/bus-3d-and-whiteboard.jpg)](docs/media/bus-3d-and-whiteboard.mp4)
+
+**"What is this device?"** A Raspberry Pi hotspot, modelled part by part over the YouTube video.
+
+[![Raspberry Pi demo: 3D model with labels](docs/media/raspberry-pi-3d.jpg)](docs/media/raspberry-pi-3d.mp4)
+
 ## What it does
 
 - **Talks Hinglish.** Speak however you normally do; it auto-detects Hindi or English and replies the same way, in natural Hinglish.
 - **Sees your screen.** Every question comes with a screenshot of all your displays.
-- **Points at things.** A purple cursor flies over to the button or menu it's talking about.
+- **Points at things.** A blue cursor flies over to the button or menu it's talking about.
 - **Does things for you.** "Zen mein naya tab kholo", "meri latest recording Rahul ko WhatsApp pe bhejo". It mixes Mac tools (AppleScript, `open`, Spotlight, Shortcuts) with on-screen clicks and typing, checking the screen after each step. Anything that sends, posts or deletes needs your spoken "haan".
 - **Explains the simple way.** Every explanation starts from something you have already lived, like a chai tapri, a dabbawala or your phone's contact list, maps the idea onto it piece by piece, and only then gives the real term.
 - **Explains like a teacher at a whiteboard.** When a picture helps, an Excalidraw-style board pops up beside your cursor. Claude explains step by step out loud and draws each part as it says it: groups, boxes, hand-drawn icons, labelled arrows, numbered steps, sticky notes, and things travelling along the arrows, all laid out automatically so nothing overlaps, on an infinite canvas you can pan and zoom. Narration follows your language; the board is always in English.
+- **Builds 3D models.** Ask how a machine, gadget or device works and it builds a 3D model right over it on your screen, part by part, with labels pointing at each piece. Drag to rotate.
+- **Circles things.** It circles the exact text or values it's talking about on your screen, in gold. You can circle things too: hold Control + Option, drag around something and ask "what is this?".
 - **Draws real math.** Exact geometry, plotted functions, shaded integrals, tangents, vectors, number lines and properly typeset equations, built up step by step as it explains.
 - **Writes live notes.** "Notes bana do" or "summarize this page" and it writes notes beside your cursor as it talks: headings, highlighted key terms, syntax-highlighted code, comparison tables, sketch charts, and to-dos. Say "save kar do" to put them in Apple Notes.
 - **Shows when it's talking.** A Dynamic-Island-style pill grows out of the notch while it speaks.
@@ -20,9 +34,9 @@ A local-first AI buddy that lives next to your cursor on macOS. Hold **Control +
 |-------|-----|
 | AI | `claude -p` (Claude Code CLI) as a subprocess, using your existing Claude Code login. No API keys. |
 | Speech-to-text | WhisperKit (Whisper large-v3 turbo) on-device, with Apple Speech as the fallback |
-| Text-to-speech | On-device: Kokoro-82M for English, Supertonic-3 for Hindi (and as fallback), then the macOS voice |
+| Text-to-speech | On-device: Supertonic-3 (voice F2) for English and Hindi, optional Kokoro-82M for English, then the macOS voice |
 | Actions | `CGEvent` clicks and keystrokes, plus an allowlist of Mac commands (`osascript`, `open`, `mdfind`, `shortcuts`, `ls`) |
-| Visuals | Claude streams narration plus JSON drawing commands; each step is drawn with a gold pen in the Patrick Hand marker font while its sentence is spoken |
+| Visuals | Claude streams narration plus JSON drawing commands; the buddy's own cursor draws each step in the Patrick Hand marker font while its sentence is spoken; 3D models use a local three.js |
 
 No servers, no analytics, no auto-updater. Network use is `claude -p` itself plus a one-time ~1GB model download from Hugging Face on first launch.
 
