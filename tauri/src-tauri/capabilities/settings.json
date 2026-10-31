@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-panel",
+  "description": "The settings panel sizes its own window to fit its content and hides it from its close button or Esc.",
+  "windows": ["settings"],
+  "permissions": ["core:window:allow-set-size", "core:window:allow-hide"]
+}
