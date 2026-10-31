@@ -87,6 +87,7 @@ struct CompanionPanelView: View {
             }
 
             modelSection
+            orbSection
             chatSection
             PanelVoiceSection(localTTSClient: companionManager.localTTSClient)
             listeningSection
@@ -260,6 +261,28 @@ struct CompanionPanelView: View {
         }
     }
 
+    // MARK: - Orb
+
+    private var orbSection: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Orb")
+
+            PanelSettingsRow(iconName: "circle.circle", label: "Color") {
+                HStack(spacing: 4) {
+                    ForEach(OrbColorVariant.allVariants) { orbColorVariant in
+                        OrbColorSwatchButton(
+                            orbColorVariant: orbColorVariant,
+                            isSelected: companionManager.selectedOrbColor == orbColorVariant.colorInputValue,
+                            onSelect: {
+                                companionManager.setSelectedOrbColor(orbColorVariant.colorInputValue)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Listening
 
     private var listeningSection: some View {
@@ -416,11 +439,7 @@ struct CompanionPanelView: View {
                 )
             }
 
-            PanelSettingsRow(iconName: "mic", label: "When you speak", subtitle: "Always replies out loud") {
-                PanelStatusLabel(statusText: "Voice", statusColor: DS.Colors.success)
-            }
-
-            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "How replies come back") {
+            PanelSettingsRow(iconName: "keyboard", label: "When you type", subtitle: "Spoken questions always get voice") {
                 PanelSegmentedControl(
                     options: [(label: "Text", optionID: "text"), (label: "Text + voice", optionID: "voice")],
                     selectedOptionID: companionManager.speaksChatReplies ? "voice" : "text",
@@ -701,6 +720,44 @@ private struct PanelSectionLabel: View {
 }
 
 /// Icon + label on the left, any control on the right.
+/// One small round preview of an orb color variant. Hover shows a faint
+/// ring; the selected variant gets a solid light ring.
+private struct OrbColorSwatchButton: View {
+    let orbColorVariant: OrbColorVariant
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: orbColorVariant.swatchGradientHexColors.map { Color(hex: $0) },
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 14, height: 14)
+                .padding(2)
+                .overlay(
+                    // White-ish, not accent, so the ring shows on the blue swatches too.
+                    Circle()
+                        .stroke(
+                            isSelected ? DS.Colors.textPrimary : Color.white.opacity(isHovered ? 0.45 : 0),
+                            lineWidth: 1.5
+                        )
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+        .help("Orb color \(orbColorVariant.colorInputValue)")
+    }
+}
+
 private struct PanelSettingsRow<TrailingContent: View>: View {
     let iconName: String
     let label: String
@@ -875,6 +932,8 @@ private struct PanelSegmentButton: View {
         Button(action: action) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .fixedSize()
                 .foregroundColor(isSelected ? DS.Colors.textPrimary : (isHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
