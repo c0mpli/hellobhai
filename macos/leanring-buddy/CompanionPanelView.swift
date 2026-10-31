@@ -301,7 +301,7 @@ struct CompanionPanelView: View {
                     .controlSize(.mini)
                     .tint(DS.Colors.overlayCursorColor)
                     .frame(width: 120)
-                    .pointerCursor()
+                    .pointerCursor(isEnabled: companionManager.voiceBuddyStyle == .orb)
                     Text("\(Int(companionManager.orbSideLength)) pt")
                         .font(.system(size: 11, weight: .medium).monospacedDigit())
                         .foregroundColor(DS.Colors.textSecondary)
@@ -1007,6 +1007,8 @@ private struct PanelMenuPicker<SelectedValueLabel: View>: View {
     @ViewBuilder let selectedValueLabel: () -> SelectedValueLabel
 
     @State private var isHovered = false
+    /// False inside a `.disabled` row, so the dimmed picker keeps the arrow cursor.
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Menu {
@@ -1035,7 +1037,7 @@ private struct PanelMenuPicker<SelectedValueLabel: View>: View {
         .buttonStyle(.plain)
         .fixedSize()
         .onHover { isHovered = $0 }
-        .pointerCursor()
+        .pointerCursor(isEnabled: isEnabled)
     }
 }
 

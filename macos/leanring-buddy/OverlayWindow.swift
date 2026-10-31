@@ -258,6 +258,9 @@ struct BlueCursorView: View {
     /// pointer hides with it so it never floats alone on screen.
     @State private var isPointerHiddenBecauseSystemPointerIsHidden: Bool = false
 
+    /// This screen's id in `companionManager.overlayScreensWithPointerAwayFromHome`.
+    @State private var overlayScreenIdentifier = UUID()
+
     private let fullWelcomeMessage = "hey! i'm hellobhai"
 
     /// Seconds the pen must stay at rest before the pointer flies home.
@@ -407,20 +410,24 @@ struct BlueCursorView: View {
                 .animation(.easeInOut(duration: 0.3), value: isPointerHiddenBecauseSystemPointerIsHidden)
                 .animation(.easeIn(duration: 0.25), value: companionManager.voiceState)
 
-            // Cursor style: blue waveform beside the mouse while listening.
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
-                .opacity(isFollowingPointerShownOnThisScreen && companionManager.voiceState == .listening ? 1 : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+            // Cursor style: blue waveform where the pointer is while
+            // listening. Only mounted while shown, so its 36fps timeline
+            // costs nothing in the orb style.
+            if isCursorStyleIndicatorShownOnThisScreen && companionManager.voiceState == .listening {
+                BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+                    .position(cursorPosition)
+                    .animation(isPointerFollowingSomething ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+            }
 
-            // Cursor style: blue spinner beside the mouse while thinking
+            // Cursor style: blue spinner where the pointer is while thinking
             // (transcription + Claude + waiting for TTS).
-            BlueCursorSpinnerView()
-                .opacity(isFollowingPointerShownOnThisScreen && companionManager.voiceState == .processing ? 1 : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
+            if isCursorStyleIndicatorShownOnThisScreen && companionManager.voiceState == .processing {
+                BlueCursorSpinnerView()
+                    .position(cursorPosition)
+                    .animation(isPointerFollowingSomething ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0) : nil, value: cursorPosition)
+                    .transition(.opacity.animation(.easeIn(duration: 0.15)))
+            }
         }
         .frame(width: screenFrame.width, height: screenFrame.height)
         .ignoresSafeArea()
@@ -441,6 +448,36 @@ struct BlueCursorView: View {
         .onDisappear {
             drawingPenTrackingTimer?.invalidate()
             navigationAnimationTimer?.invalidate()
+            companionManager.overlayScreensWithPointerAwayFromHome.remove(overlayScreenIdentifier)
+        }
+        .onChange(of: buddyNavigationMode) { newNavigationMode in
+            // Shared with the other screens so the mouse's screen hides its
+            // following pointer for as long as this one is out.
+            if newNavigationMode == .restingAtHome {
+                companionManager.overlayScreensWithPointerAwayFromHome.remove(overlayScreenIdentifier)
+            } else {
+                companionManager.overlayScreensWithPointerAwayFromHome.insert(overlayScreenIdentifier)
+            }
+        }
+        .onChange(of: isCursorStyle) { _ in
+            // Style switched live, or chat mode switched to voice mode: move
+            // the resting pointer to its new home without flying it across
+            // the screen, and re-aim a return flight that is underway.
+            switch buddyNavigationMode {
+            case .restingAtHome:
+                isMouseOnThisScreen = screenFrame.contains(NSEvent.mouseLocation)
+                var jumpWithoutAnimation = Transaction()
+                jumpWithoutAnimation.disablesAnimations = true
+                withTransaction(jumpWithoutAnimation) {
+                    cursorPosition = pointerHomePosition
+                }
+            case .returningHome:
+                // Undo a half-done fade into the orb before re-aiming.
+                pointerOpacity = 1.0
+                startFlyingBackHome()
+            case .navigatingToTarget, .pointingAtTarget, .followingDrawingPen:
+                break
+            }
         }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, launch the pointer at
@@ -502,16 +539,26 @@ struct BlueCursorView: View {
         isCursorStyle
             && buddyNavigationMode == .restingAtHome
             && isMouseOnThisScreen
-            && companionManager.detectedElementScreenLocation == nil
-            && companionManager.buddyDrawingPenScreenLocation == nil
+            && companionManager.overlayScreensWithPointerAwayFromHome.isEmpty
+    }
+
+    /// Cursor style: where the waveform/spinner show. Beside the mouse at
+    /// rest, or wherever this screen's pointer is while it is out, so a
+    /// hotkey press mid-pointing still shows that bhai is listening.
+    private var isCursorStyleIndicatorShownOnThisScreen: Bool {
+        isFollowingPointerShownOnThisScreen
+            || (isCursorStyle && buddyNavigationMode != .restingAtHome)
+    }
+
+    /// Cursor style: the arrow gives way to the waveform and spinner.
+    private var isVoiceStateShowingArrow: Bool {
+        companionManager.voiceState == .idle || companionManager.voiceState == .responding
     }
 
     private var pointerDisplayOpacity: Double {
         if buddyNavigationMode != .restingAtHome {
-            return pointerOpacity
+            return isCursorStyle && !isVoiceStateShowingArrow ? 0 : pointerOpacity
         }
-        // At rest the arrow gives way to the waveform and spinner.
-        let isVoiceStateShowingArrow = companionManager.voiceState == .idle || companionManager.voiceState == .responding
         let isShowingFollowingArrow = isFollowingPointerShownOnThisScreen
             && isVoiceStateShowingArrow
             && !isPointerHiddenBecauseSystemPointerIsHidden
@@ -532,8 +579,12 @@ struct BlueCursorView: View {
 
     /// The onboarding bubbles sit by the orb, or by the pointer in the
     /// cursor style.
+    /// In the cursor style they wait while the pointer is out, so they
+    /// never sit on top of the "right here!" bubble or ride its flight.
     private var isBubbleHomeOnThisScreen: Bool {
-        isCursorStyle ? isMouseOnThisScreen : isOrbOnThisScreen
+        isCursorStyle
+            ? isMouseOnThisScreen && buddyNavigationMode == .restingAtHome
+            : isOrbOnThisScreen
     }
 
     private func bubbleCenterNextToHome(bubbleSize: CGSize) -> CGPoint {
@@ -548,6 +599,7 @@ struct BlueCursorView: View {
     private func followMouseWhileResting() {
         let mouseLocation = NSEvent.mouseLocation
         let mouseIsOnThisScreen = screenFrame.contains(mouseLocation)
+        let mouseJustEnteredThisScreen = mouseIsOnThisScreen && !isMouseOnThisScreen
         if mouseIsOnThisScreen != isMouseOnThisScreen {
             isMouseOnThisScreen = mouseIsOnThisScreen
         }
@@ -556,9 +608,22 @@ struct BlueCursorView: View {
         if shouldHideWithSystemPointer != isPointerHiddenBecauseSystemPointerIsHidden {
             isPointerHiddenBecauseSystemPointerIsHidden = shouldHideWithSystemPointer
         }
-        // Tracked even off this screen, so a flight launched here starts
-        // from the mouse's side.
-        cursorPosition = mouseFollowingPosition
+        // Only the mouse's screen moves its pointer (other screens would
+        // redraw at 60fps for nothing); a launch from rest re-reads the
+        // mouse position in placePointerAtHomeReadyToLaunch anyway.
+        guard mouseIsOnThisScreen else { return }
+        let newPointerPosition = mouseFollowingPosition
+        guard newPointerPosition != cursorPosition else { return }
+        if mouseJustEnteredThisScreen {
+            // Jump into place instead of springing in from a stale spot.
+            var jumpWithoutAnimation = Transaction()
+            jumpWithoutAnimation.disablesAnimations = true
+            withTransaction(jumpWithoutAnimation) {
+                cursorPosition = newPointerPosition
+            }
+        } else {
+            cursorPosition = newPointerPosition
+        }
     }
 
     // MARK: - Orb Position

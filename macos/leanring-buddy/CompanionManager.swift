@@ -232,6 +232,12 @@ final class CompanionManager: ObservableObject {
         overlayWindowManager.orbWindowManager.setHiddenForCursorStyle(newVoiceBuddyStyle == .cursor)
     }
 
+    /// Overlay screens (one id per screen's view) whose pointer is out
+    /// pointing, drawing or flying. In the cursor style the mouse's screen
+    /// hides its following pointer while this is non-empty, so only one
+    /// pointer is ever visible.
+    @Published var overlayScreensWithPointerAwayFromHome: Set<UUID> = []
+
     // MARK: - Orb State
 
     /// After this long with nothing happening, the orb dozes off.
