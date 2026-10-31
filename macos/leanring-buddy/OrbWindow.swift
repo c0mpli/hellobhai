@@ -83,6 +83,7 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
     private var currentColorInputValue = OrbColorVariant.defaultColorInputValue
     private var isMouseHoveringOverOrb = false
     private var isHiddenBecauseSystemPointerIsHidden = false
+    private var isClickThroughForComputerActions = false
     private var systemPointerVisibilityTimer: Timer?
 
     private static func bundledResourceData(named resourceName: String, withExtension fileExtension: String) -> Data? {
@@ -140,6 +141,30 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
         systemPointerVisibilityTimer = nil
     }
 
+    /// While the chat is open the orb drops to the chat's level and sits
+    /// under it, so it can't cover the send button. nil puts it back on top.
+    func placeBelowWindow(withNumber windowNumber: Int?) {
+        guard let panel, panel.isVisible else { return }
+        if let windowNumber {
+            panel.level = .floating
+            panel.order(.below, relativeTo: windowNumber)
+        } else {
+            panel.level = .screenSaver
+            panel.orderFrontRegardless()
+        }
+    }
+
+    /// On while Claude clicks for the user, so a click aimed at something
+    /// behind the orb reaches it instead of opening the chat.
+    func setLetsClicksPassThrough(_ letsClicksPassThrough: Bool) {
+        isClickThroughForComputerActions = letsClicksPassThrough
+        updateIgnoresMouseEvents()
+    }
+
+    private func updateIgnoresMouseEvents() {
+        panel?.ignoresMouseEvents = isHiddenBecauseSystemPointerIsHidden || isClickThroughForComputerActions
+    }
+
     // MARK: - State and Color
 
     func setVisualState(_ visualState: OrbVisualState) {
@@ -190,19 +215,42 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// A video player hides the real pointer while it plays fullscreen; the
     /// orb steps out of the way with it, but only while bhai is resting.
+    /// macOS also hides the pointer while the user types, so a hidden
+    /// pointer only counts when the frontmost app is fullscreen.
     private func startWatchingSystemPointerVisibility() {
         guard systemPointerVisibilityTimer == nil else { return }
         systemPointerVisibilityTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 let isResting = self.currentVisualState == .idle || self.currentVisualState == .asleep
-                let shouldHide = isResting && !SystemPointerVisibility.isSystemPointerVisible()
+                let shouldHide = isResting
+                    && !SystemPointerVisibility.isSystemPointerVisible()
+                    && Self.frontmostAppHasFullScreenWindow()
                 guard shouldHide != self.isHiddenBecauseSystemPointerIsHidden else { return }
                 self.isHiddenBecauseSystemPointerIsHidden = shouldHide
                 // A hidden orb must not catch clicks meant for the video.
-                self.panel?.ignoresMouseEvents = shouldHide
+                self.updateIgnoresMouseEvents()
                 self.applyStateToPageAndWindow()
             }
+        }
+    }
+
+    /// True when the frontmost app has an on-screen window exactly the size
+    /// of a display (fullscreen video, a fullscreen app). Window bounds and
+    /// owners don't need Screen Recording permission.
+    private static func frontmostAppHasFullScreenWindow() -> Bool {
+        guard let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+              let windowInfoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        let displaySizes = NSScreen.screens.map(\.frame.size)
+        return windowInfoList.contains { windowInfo in
+            guard windowInfo[kCGWindowOwnerPID as String] as? pid_t == frontmostProcessID,
+                  let windowBoundsDictionary = windowInfo[kCGWindowBounds as String] as? NSDictionary,
+                  let windowBounds = CGRect(dictionaryRepresentation: windowBoundsDictionary) else {
+                return false
+            }
+            return displaySizes.contains(windowBounds.size)
         }
     }
 
@@ -286,6 +334,13 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
         isPageReady = true
         setColorInputValue(currentColorInputValue)
         applyStateToPageAndWindow()
+    }
+
+    /// If the page's web process dies the orb would draw nothing for the
+    /// rest of the session, so load the page again.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        isPageReady = false
+        orbPageNavigation = webView.loadHTMLString(Self.orbPageHTML, baseURL: nil)
     }
 
     /// Only the in-memory page load is allowed; nothing can navigate anywhere.

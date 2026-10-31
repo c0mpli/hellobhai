@@ -47,6 +47,13 @@ final class ChatPanelManager: ObservableObject {
     private var currentScreen: NSScreen = NSScreen.main ?? NSScreen.screens[0]
     private var chatPanelSideCancellable: AnyCancellable?
     private var chatMessagesCancellable: AnyCancellable?
+    /// Set while the close animation runs, so a show() during it cancels
+    /// the pending orderOut.
+    private var isClosingPanel = false
+
+    /// Called with the chat's window number when it appears, and nil when
+    /// it closes, so the orb can sit under it meanwhile.
+    var onChatWindowShownOrHidden: ((Int?) -> Void)?
 
     private var panelSide: ChatPanelSide { companionManager.chatPanelSide }
 
@@ -61,7 +68,9 @@ final class ChatPanelManager: ObservableObject {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] chatMessages in
-                guard let self, self.isMinimized, chatMessages.last?.isFromUser == false else { return }
+                // The empty placeholder row added while a reply is on its way doesn't count.
+                guard let self, self.isMinimized, let lastMessage = chatMessages.last,
+                      !lastMessage.isFromUser, !lastMessage.text.isEmpty else { return }
                 self.hasUnreadReply = true
             }
     }
@@ -85,12 +94,14 @@ final class ChatPanelManager: ObservableObject {
 
         isMinimized = false
         hasUnreadReply = false
+        isClosingPanel = false
         let targetFrame = onScreenFrame(on: currentScreen)
         if !panel.isVisible {
             panel.setFrame(offScreenFrame(for: targetFrame), display: false)
             panel.alphaValue = 0
         }
         panel.makeKeyAndOrderFront(nil)
+        onChatWindowShownOrHidden?(panel.windowNumber)
         NSAnimationContext.runAnimationGroup { animationContext in
             animationContext.duration = 0.28
             animationContext.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.3, 1)
@@ -102,14 +113,19 @@ final class ChatPanelManager: ObservableObject {
     /// Slides the panel back out past the screen edge.
     func hide() {
         guard let panel, panel.isVisible else { return }
+        isClosingPanel = true
         let hiddenFrame = offScreenFrame(for: panel.frame)
         NSAnimationContext.runAnimationGroup({ animationContext in
             animationContext.duration = 0.22
             animationContext.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().setFrame(hiddenFrame, display: true)
             panel.animator().alphaValue = 0
-        }, completionHandler: {
+        }, completionHandler: { [weak self] in
+            // Reopened while it was sliding out: keep it.
+            guard let self, self.isClosingPanel else { return }
+            self.isClosingPanel = false
             panel.orderOut(nil)
+            self.onChatWindowShownOrHidden?(nil)
         })
     }
 
@@ -117,6 +133,9 @@ final class ChatPanelManager: ObservableObject {
     func minimize() {
         guard let panel, panel.isVisible, !isMinimized else { return }
         isMinimized = true
+        refreshCurrentScreenIfDisconnected()
+        // The tab has no text field, so the keyboard goes back to the user's app.
+        giveKeyboardFocusBackToFrontmostApp()
         animate(panel, to: minimizedTabFrame(centeredOn: panel.frame.midY))
     }
 
@@ -124,12 +143,27 @@ final class ChatPanelManager: ObservableObject {
         guard let panel, isMinimized else { return }
         isMinimized = false
         hasUnreadReply = false
+        refreshCurrentScreenIfDisconnected()
         panel.makeKeyAndOrderFront(nil)
         animate(panel, to: onScreenFrame(on: currentScreen))
     }
 
+    /// On while Claude clicks for the user, so a click aimed at something
+    /// behind the chat (screenshots leave the chat out) reaches it.
+    func setLetsClicksPassThrough(_ letsClicksPassThrough: Bool) {
+        panel?.ignoresMouseEvents = letsClicksPassThrough
+    }
+
+    /// After a display is unplugged, the remembered screen's frame points
+    /// off screen; use the screen AppKit moved the panel to instead.
+    private func refreshCurrentScreenIfDisconnected() {
+        guard !NSScreen.screens.contains(currentScreen) else { return }
+        currentScreen = panel?.screen ?? NSScreen.main ?? NSScreen.screens[0]
+    }
+
     private func moveToCurrentSide() {
         guard let panel, panel.isVisible else { return }
+        refreshCurrentScreenIfDisconnected()
         let targetFrame = isMinimized ? minimizedTabFrame(centeredOn: panel.frame.midY) : onScreenFrame(on: currentScreen)
         animate(panel, to: targetFrame)
     }

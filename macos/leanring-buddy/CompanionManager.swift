@@ -129,6 +129,11 @@ final class CompanionManager: ObservableObject {
     func showChatPanel() {
         if chatPanelManager == nil {
             chatPanelManager = ChatPanelManager(companionManager: self)
+            // The orb floats above everything, and by default it sits on the
+            // chat's send button, so it drops below the chat while it is open.
+            chatPanelManager?.onChatWindowShownOrHidden = { [weak self] chatWindowNumber in
+                self?.overlayWindowManager.orbWindowManager.placeBelowWindow(withNumber: chatWindowNumber)
+            }
         }
         chatPanelManager?.show()
     }
@@ -224,8 +229,9 @@ final class CompanionManager: ObservableObject {
             case .processing:
                 orbVisualState = .thinking
             case .responding:
-                // Between spoken sentences, or a typed reply that isn't read aloud.
-                orbVisualState = .speaking
+                // Waiting for the voice, a typed reply that isn't read aloud,
+                // or on-screen actions. Speaking only shows while audio plays.
+                orbVisualState = .thinking
             case .idle:
                 let hasBeenIdleTooLong = Date().timeIntervalSince(lastOrbActivityDate) > Self.orbFallsAsleepAfterIdleSeconds
                 orbVisualState = (!hasCompletedOnboarding || hasBeenIdleTooLong) ? .asleep : .idle
@@ -474,10 +480,28 @@ final class CompanionManager: ObservableObject {
             }
     }
 
+    /// Cancel any in-progress response, on-screen actions, narrated
+    /// explanation, and TTS, so nothing talks over or acts past the user.
+    private func stopEverythingInProgressForHotkeyPress() {
+        currentResponseTask?.cancel()
+        currentVisualTask?.cancel()
+        localTTSClient.stopPlayback()
+        visualExplanationPanelManager.finishLiveContent()
+        visualExplanationPanelManager.stopDrawing()
+        model3DOverlayManager.close()
+        clearDetectedElementLocation()
+        screenCircleFadeTask?.cancel()
+        screenCircleAnnotations = []
+        userDrawnStrokes = []
+        userDrawnStrokesAwaitingRequest = false
+    }
+
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         if isChatInputMode {
             if case .pressed = transition {
                 NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
+                // The hotkey is also the documented way to stop bhai, in both modes.
+                stopEverythingInProgressForHotkeyPress()
                 toggleChatPanelFromHotkey()
             }
             return
@@ -489,19 +513,7 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
 
-            // Cancel any in-progress response, narrated explanation, and TTS
-            // from a previous utterance, so nothing talks over the user.
-            currentResponseTask?.cancel()
-            currentVisualTask?.cancel()
-            localTTSClient.stopPlayback()
-            visualExplanationPanelManager.finishLiveContent()
-            visualExplanationPanelManager.stopDrawing()
-            model3DOverlayManager.close()
-            clearDetectedElementLocation()
-            screenCircleFadeTask?.cancel()
-            screenCircleAnnotations = []
-            userDrawnStrokes = []
-            userDrawnStrokesAwaitingRequest = false
+            stopEverythingInProgressForHotkeyPress()
             // While the hotkey is held, a mouse drag draws on the overlay
             // instead of clicking the app underneath.
             overlayWindowManager.setAcceptsUserDrawing(true)
@@ -668,8 +680,12 @@ final class CompanionManager: ObservableObject {
     /// removed, and a tag that has only half arrived hidden so "[POI" never
     /// flashes on screen.
     static func chatDisplayText(forPartialReply partialReply: String) -> String {
-        var displayText = partialReply.replacingOccurrences(of: "\\[[A-Z0-9_]+(:[^\\]]*)?\\]", with: "", options: .regularExpression)
-        if let unfinishedTagRange = displayText.range(of: "\\[[A-Z0-9_]*(:[^\\]]*)?$", options: .regularExpression) {
+        // Only bhai's own tags, so ordinary brackets like [1] or arr[0] stay.
+        let knownTagNames = "(POINT|CIRCLE|CLICK|TYPE|KEY|SHOW|NOTES|MODEL3D|CLOSE_DRAWING)"
+        var displayText = partialReply.replacingOccurrences(of: "\\[\(knownTagNames)(:[^\\]]*)?\\]", with: "", options: .regularExpression)
+        // A bare "[POI" at the very end is hidden until it closes; if it
+        // turns out to be ordinary text it shows again once the ] arrives.
+        if let unfinishedTagRange = displayText.range(of: "\\[([A-Z0-9_]*|\(knownTagNames):[^\\]]*)$", options: .regularExpression) {
             displayText.removeSubrange(unfinishedTagRange)
         }
         return displayText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -689,9 +705,12 @@ final class CompanionManager: ObservableObject {
         chatMessages[messageIndex].isStreaming = isStreaming
     }
 
-    private func markAllChatMessagesFinishedStreaming() {
-        chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
-        for messageIndex in chatMessages.indices where chatMessages[messageIndex].isStreaming {
+    /// Only touches the given rows: a cancelled request's cleanup runs after
+    /// its claude process exits, when the next request's empty placeholder
+    /// row may already be in the list.
+    private func finishStreamingChatMessages(withIDs chatMessageIDs: [UUID]) {
+        chatMessages.removeAll { chatMessageIDs.contains($0.id) && $0.isStreaming && $0.text.isEmpty }
+        for messageIndex in chatMessages.indices where chatMessageIDs.contains(chatMessages[messageIndex].id) && chatMessages[messageIndex].isStreaming {
             chatMessages[messageIndex].isStreaming = false
         }
     }
@@ -731,6 +750,7 @@ final class CompanionManager: ObservableObject {
         userDrawnStrokesAwaitingRequest = false
 
         currentResponseTask = Task {
+            var replyChatMessageIDsFromThisRequest: [UUID] = []
             do {
                 var previousStepActionSummary: [String] = []
                 for agentStepNumber in 1...Self.maximumAgentSteps {
@@ -779,6 +799,7 @@ final class CompanionManager: ObservableObject {
                     // The reply streams into the chat as it arrives, like a chat app.
                     let streamingReplyMessage = CompanionChatMessage(isFromUser: false, text: "", isStreaming: true)
                     chatMessages.append(streamingReplyMessage)
+                    replyChatMessageIDsFromThisRequest.append(streamingReplyMessage.id)
                     let (fullResponseText, _) = try await claudeCLI.analyzeImageStreaming(
                         images: imagesForThisStep,
                         systemPrompt: Self.companionVoiceResponseSystemPrompt,
@@ -931,11 +952,10 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted. Keep whatever
                 // streamed in, but stop showing it as still typing.
-                markAllChatMessagesFinishedStreaming()
+                finishStreamingChatMessages(withIDs: replyChatMessageIDsFromThisRequest)
             } catch {
                 print("⚠️ Companion response error: \(error)")
-                chatMessages.removeAll { $0.isStreaming && $0.text.isEmpty }
-                markAllChatMessagesFinishedStreaming()
+                finishStreamingChatMessages(withIDs: replyChatMessageIDsFromThisRequest)
                 chatMessages.append(CompanionChatMessage(isFromUser: false, text: "couldn't reach claude. make sure claude code is installed and logged in."))
                 if repliesAreSpoken {
                     speakErrorFallback()
@@ -1261,6 +1281,15 @@ final class CompanionManager: ObservableObject {
     private func performComputerActions(_ computerActions: [ComputerAction], screenCaptures: [CompanionScreenCapture]) async {
         // Typing and key presses must reach the user's app, not the chat box.
         chatPanelManager?.giveKeyboardFocusBackToFrontmostApp()
+        // Screenshots leave out bhai's own windows, so Claude may click
+        // something that sits behind the chat or the orb. Let clicks pass
+        // through both until the actions are done.
+        chatPanelManager?.setLetsClicksPassThrough(true)
+        overlayWindowManager.orbWindowManager.setLetsClicksPassThrough(true)
+        defer {
+            chatPanelManager?.setLetsClicksPassThrough(false)
+            overlayWindowManager.orbWindowManager.setLetsClicksPassThrough(false)
+        }
         for computerAction in computerActions {
             guard !Task.isCancelled else { return }
 
