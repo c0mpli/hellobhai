@@ -302,6 +302,9 @@ function renderStatus(statusSnapshot) {
 /// invisible part of it blocks clicks on the desktop.
 let lastFittedPanelHeight = 0;
 function fitWindowToPanel() {
+  // Never taller than the usable screen (taskbar excluded) minus the corner margin.
+  const panelMaximumHeight = Math.max(240, window.screen.availHeight - 24);
+  document.documentElement.style.setProperty('--panel-max-height', panelMaximumHeight + 'px');
   const panelHeight = Math.ceil(element('settings-panel').getBoundingClientRect().height);
   if (panelHeight === lastFittedPanelHeight) return;
   lastFittedPanelHeight = panelHeight;

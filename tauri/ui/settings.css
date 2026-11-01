@@ -35,6 +35,11 @@ button, select, label.clickable-row, input[type="checkbox"] {
 .settings-panel {
   width: 340px;
   box-sizing: border-box;
+  /* Capped to the screen's work area (set by settings.js) with the sections
+     scrolling inside, like the Mac panel on short screens. */
+  max-height: var(--panel-max-height, none);
+  display: flex;
+  flex-direction: column;
   background: var(--background);
   border: 0.5px solid var(--border-subtle);
   border-radius: 12px;
@@ -358,3 +363,11 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   font-weight: 500;
   color: var(--text-tertiary);
 }
+
+.panel-sections {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.panel-header, .panel-footer { flex: 0 0 auto; }

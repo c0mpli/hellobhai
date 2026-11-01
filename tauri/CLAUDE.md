@@ -71,3 +71,5 @@ Overlay-only (`page_bridge::emit_to_overlays`): `audio-level {level}`, `point-at
 CI: `.github/workflows/tauri.yml` runs `cargo test` and builds the NSIS installer on windows-latest, and `cargo test` plus the .deb and AppImage on ubuntu-22.04. Never run `tauri build` on the Mac.
 
 When something here changes (new or deleted files, architecture, build steps, line counts drifting by more than 50), update this file in the same change.
+
+**Recovery and sizing**: the orb page sends `orb_page_heartbeat` every 2 s; 8 s of silence (checked on the orb's slow watch tick, only after it has reported once) reloads the orb webview, standing in for the Mac's `webViewWebContentProcessDidTerminate` reload since Tauri has no crash hook. The settings panel is capped to the work area (`--panel-max-height` from `screen.availHeight - 24`) with `.panel-sections` scrolling inside, like the Mac panel on short screens.

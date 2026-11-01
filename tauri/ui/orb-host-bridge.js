@@ -35,6 +35,9 @@
     invoke('orb_pointer_released', { wasCancelled: event.type === 'pointercancel' });
   }
 
+  // Tells Rust the page is alive; silence means its web process died and it gets reloaded.
+  setInterval(() => invoke('orb_page_heartbeat'), 2000);
+
   window.addEventListener('DOMContentLoaded', () => {
     const fadeStyle = document.createElement('style');
     // The pointing hand says the orb can be clicked; the fade matches the Mac's 0.3 s window alpha animation.

@@ -73,6 +73,7 @@ pub fn run() {
             orb_window::orb_pointer_moved,
             orb_window::orb_pointer_released,
             orb_window::orb_hover_changed,
+            orb_window::orb_page_heartbeat,
             orb_window::buddy_home_state,
             ui_commands::get_settings,
             ui_commands::get_status,

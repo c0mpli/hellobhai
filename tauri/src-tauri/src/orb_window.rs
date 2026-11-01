@@ -275,7 +275,14 @@ struct OrbState {
     applied_page_state_name: Option<&'static str>,
     applied_opacity: Option<f64>,
     applied_ignores_cursor_events: Option<bool>,
+    /// When the page last said it is alive. Tauri has no "web process died"
+    /// hook (the Mac reloads on webViewWebContentProcessDidTerminate), so a
+    /// page that stops reporting is treated as crashed and reloaded.
+    last_page_heartbeat: Option<Instant>,
 }
+
+/// The page reports every 2 s; this much silence means it died.
+const ORB_PAGE_SILENCE_BEFORE_RELOAD: Duration = Duration::from_secs(8);
 
 pub struct OrbWindow {
     /// For callbacks that must not keep the orb alive (the page-load handler).
@@ -304,6 +311,7 @@ impl OrbWindow {
                 is_hovering: false,
                 is_hidden_for_chat_mode: starts_in_chat_mode,
                 is_hidden_for_fullscreen: false,
+                last_page_heartbeat: None,
                 computer_actions_in_progress: 0,
                 window_label_to_stay_below: None,
                 orb_frame: PhysicalRect { x: 0, y: 0, width: 0, height: 0 },
@@ -548,10 +556,37 @@ impl OrbWindow {
         }
     }
 
+    fn page_heartbeat(&self) {
+        self.state.lock().unwrap().last_page_heartbeat = Some(Instant::now());
+    }
+
+    /// Only after the page has reported at least once, so a slow first load
+    /// is never mistaken for a crash.
+    fn reload_page_if_it_stopped_reporting(&self) {
+        let has_gone_silent = {
+            let mut state = self.state.lock().unwrap();
+            match state.last_page_heartbeat {
+                Some(last_heartbeat) if last_heartbeat.elapsed() > ORB_PAGE_SILENCE_BEFORE_RELOAD => {
+                    // Give the reloaded page the same grace before checking again.
+                    state.last_page_heartbeat = Some(Instant::now());
+                    true
+                }
+                _ => false,
+            }
+        };
+        if has_gone_silent {
+            if let Some(orb_window) = self.app.get_webview_window(ORB_WINDOW_LABEL) {
+                eprintln!("the orb page stopped responding; reloading it");
+                let _ = orb_window.reload();
+            }
+        }
+    }
+
     /// The page starts at idle with color 8; give it the real state and color.
     fn page_did_load(&self) {
         {
             let mut state = self.state.lock().unwrap();
+            state.last_page_heartbeat = Some(Instant::now());
             state.applied_page_state_name = None;
             state.applied_opacity = None;
         }
@@ -629,6 +664,7 @@ impl OrbWindow {
         self.refresh_visual_state();
 
         if is_slow_check_tick {
+            self.reload_page_if_it_stopped_reporting();
             self.keep_window_order();
             let current_frame = self.state.lock().unwrap().orb_frame;
             let monitors = monitors_from_tauri(&self.app);
@@ -791,6 +827,14 @@ pub fn orb_pointer_moved(window: WebviewWindow, state: State<'_, AppState>) {
 pub fn orb_pointer_released(was_cancelled: bool, window: WebviewWindow, state: State<'_, AppState>) {
     if is_orb_window(&window) {
         state.orb_window.pointer_released(was_cancelled);
+    }
+}
+
+/// Sent by the orb page every 2 s so a crashed page can be noticed and reloaded.
+#[tauri::command]
+pub fn orb_page_heartbeat(window: WebviewWindow, state: State<'_, AppState>) {
+    if is_orb_window(&window) {
+        state.orb_window.page_heartbeat();
     }
 }
 
