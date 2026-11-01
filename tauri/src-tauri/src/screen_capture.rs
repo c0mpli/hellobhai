@@ -1,18 +1,114 @@
 //! Screenshots of every monitor (cursor screen first) as downscaled JPEGs, and
 //! native-resolution crops of the regions the user draws around. Our own
-//! windows are hidden from capture by `content_protected(true)`.
+//! windows are left out like on the Mac: on Windows by `content_protected(true)`;
+//! on Linux, which has no such flag, by hiding them (and blanking the
+//! overlays) for the moment of capture.
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
-use tauri::AppHandle;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::time::Duration;
 
+use tauri::{AppHandle, Manager, WebviewWindow};
+
+use crate::app_state::AppState;
+use crate::page_bridge::emit_to_overlays;
 use crate::platform;
 use crate::screen_mapping::{downscaled_screenshot_size, monitors_from_tauri, MonitorDescription, PhysicalRect};
 
 const MAXIMUM_SCREENSHOT_DIMENSION: u32 = 1280;
 const SCREENSHOT_JPEG_QUALITY: u8 = 80;
 const REGION_CROP_JPEG_QUALITY: u8 = 85;
+/// Time for the compositor to repaint after our windows hide (two 60 Hz frames, plus slack).
+const WAIT_FOR_REPAINT_AFTER_HIDING: Duration = Duration::from_millis(60);
+
+/// A window hidden for a screenshot, and whether it had the keyboard.
+struct WindowHiddenForCapture {
+    window: WebviewWindow,
+    was_focused: bool,
+}
+
+/// Labels of the windows a capture has hidden and will show again. Code that
+/// hides a window on purpose goes through `hide_window`, which takes the label
+/// out, so a capture never brings back a window that was put away meanwhile
+/// (the chat closed, the settings panel dismissed by the hotkey).
+static WINDOW_LABELS_HIDDEN_FOR_CAPTURE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Hides one of our windows and keeps it hidden after a screenshot in progress.
+pub fn hide_window(window: &WebviewWindow) {
+    WINDOW_LABELS_HIDDEN_FOR_CAPTURE.lock().unwrap().remove(window.label());
+    let _ = window.hide();
+}
+
+/// Everything hidden or blanked for one capture. Dropping it puts it all back,
+/// also when the turn is cancelled (the hotkey, a second typed message) while
+/// the capture is awaited: the response task's future is dropped there.
+pub struct OwnWindowsHiddenForCapture {
+    app: AppHandle,
+    hidden_windows: Vec<WindowHiddenForCapture>,
+    overlays_are_blanked: bool,
+}
+
+impl Drop for OwnWindowsHiddenForCapture {
+    fn drop(&mut self) {
+        if self.overlays_are_blanked {
+            emit_to_overlays(&self.app, "hidden-for-capture", serde_json::json!({ "hidden": false }));
+        }
+        if self.hidden_windows.is_empty() {
+            return;
+        }
+        for hidden_window in &self.hidden_windows {
+            let was_still_hidden_for_capture = WINDOW_LABELS_HIDDEN_FOR_CAPTURE.lock().unwrap().remove(hidden_window.window.label());
+            if !was_still_hidden_for_capture {
+                continue;
+            }
+            let _ = hidden_window.window.show();
+            if hidden_window.was_focused {
+                let _ = hidden_window.window.set_focus();
+            }
+        }
+        // Re-shown in no particular order: put the chat back over the orb.
+        if let Some(app_state) = self.app.try_state::<AppState>() {
+            app_state.orb_window.keep_window_order();
+        }
+    }
+}
+
+/// Where the OS can't leave our windows out of screenshots (Linux), hides the
+/// visible ones (orb, chat, board, 3D, settings), blanks the overlays (the
+/// spinner beside the mouse, the last round's circles and pointer, the user's
+/// gold strokes over the region being asked about) and waits for the repaint,
+/// so Claude sees the screen without bhai, as on the Mac. The overlays are
+/// blanked rather than hidden so their click-through state is never touched.
+pub async fn hide_own_windows_the_capture_would_see(app: &AppHandle) -> OwnWindowsHiddenForCapture {
+    let mut hidden_for_capture = OwnWindowsHiddenForCapture { app: app.clone(), hidden_windows: Vec::new(), overlays_are_blanked: false };
+    if platform::CAPTURE_EXCLUDES_OWN_WINDOWS {
+        return hidden_for_capture;
+    }
+    hidden_for_capture.hidden_windows = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(window_label, window)| {
+            !window_label.starts_with(crate::page_bridge::OVERLAY_WINDOW_LABEL_PREFIX) && window.is_visible().unwrap_or(false)
+        })
+        .map(|(_, window)| WindowHiddenForCapture { was_focused: window.is_focused().unwrap_or(false), window })
+        .collect();
+    {
+        let mut window_labels_hidden_for_capture = WINDOW_LABELS_HIDDEN_FOR_CAPTURE.lock().unwrap();
+        for hidden_window in &hidden_for_capture.hidden_windows {
+            window_labels_hidden_for_capture.insert(hidden_window.window.label().to_string());
+        }
+    }
+    for hidden_window in &hidden_for_capture.hidden_windows {
+        let _ = hidden_window.window.hide();
+    }
+    emit_to_overlays(app, "hidden-for-capture", serde_json::json!({ "hidden": true }));
+    hidden_for_capture.overlays_are_blanked = true;
+    tokio::time::sleep(WAIT_FOR_REPAINT_AFTER_HIDING).await;
+    hidden_for_capture
+}
 
 #[derive(Clone, Debug)]
 pub struct ScreenCapture {

@@ -1,4 +1,4 @@
-//! Where claude.exe lives on Windows and which tools a voice turn may use: the
+//! Where claude.exe (and codex) lives on Windows and which tools a voice turn may use: the
 //! Windows counterpart of the Mac's osascript/open/mdfind/shortcuts/ls allowlist
 //! (read-only tools here; opening things is the `[OPEN]` tag). The prompt still
 //! demands a spoken yes before anything that sends, posts, deletes or buys.
@@ -13,15 +13,31 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// %LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe, then `where.exe claude`
 /// (preferring .exe over .cmd).
 pub fn claude_executable_candidates() -> Vec<PathBuf> {
+    command_line_tool_candidates("claude", Vec::new())
+}
+
+/// The same places for OpenAI's codex CLI, plus %APPDATA%\npm\codex.cmd (npm's
+/// global folder, the usual install, which may not be on the app's PATH).
+pub fn codex_executable_candidates() -> Vec<PathBuf> {
+    let npm_global_candidates = std::env::var_os("APPDATA")
+        .map(|app_data| vec![Path::new(&app_data).join("npm").join("codex.cmd")])
+        .unwrap_or_default();
+    command_line_tool_candidates("codex", npm_global_candidates)
+}
+
+/// .local\bin and WinGet Links first, then `extra_candidates`, then `where.exe`.
+fn command_line_tool_candidates(command_name: &str, extra_candidates: Vec<PathBuf>) -> Vec<PathBuf> {
+    let executable_file_name = format!("{command_name}.exe");
     let mut candidates = Vec::new();
     if let Some(user_profile) = std::env::var_os("USERPROFILE") {
-        candidates.push(Path::new(&user_profile).join(".local").join("bin").join("claude.exe"));
+        candidates.push(Path::new(&user_profile).join(".local").join("bin").join(&executable_file_name));
     }
     if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(Path::new(&local_app_data).join("Microsoft").join("WinGet").join("Links").join("claude.exe"));
+        candidates.push(Path::new(&local_app_data).join("Microsoft").join("WinGet").join("Links").join(&executable_file_name));
     }
+    candidates.extend(extra_candidates);
 
-    let where_output = std::process::Command::new("where.exe").arg("claude").creation_flags(CREATE_NO_WINDOW).output();
+    let where_output = std::process::Command::new("where.exe").arg(command_name).creation_flags(CREATE_NO_WINDOW).output();
     if let Ok(where_output) = where_output {
         let found_paths: Vec<PathBuf> = String::from_utf8_lossy(&where_output.stdout)
             .lines()

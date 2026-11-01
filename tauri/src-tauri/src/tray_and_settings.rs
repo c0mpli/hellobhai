@@ -46,9 +46,9 @@ pub fn create_tray_icon(app: &AppHandle) -> tauri::Result<()> {
                 toggle_settings_window(tray_icon.app_handle());
             }
         });
-    if let Some(app_icon) = app.default_window_icon() {
-        tray_icon_builder = tray_icon_builder.icon(app_icon.clone());
-    }
+    // The logo (the orb sending out a pointer) cropped to fill the square, from
+    // the Mac's hand-tuned 32 px render whose arrow is drawn larger for small sizes.
+    tray_icon_builder = tray_icon_builder.icon(tauri::include_image!("icons/tray.png"));
     tray_icon_builder.build(app)?;
     Ok(())
 }
@@ -124,8 +124,10 @@ fn create_settings_window(app: &AppHandle) -> Option<WebviewWindow> {
 }
 
 pub fn hide_settings_window(app: &AppHandle) {
+    // Like the Mac recorder's onDisappear: a hidden panel isn't recording a shortcut.
+    crate::push_to_talk::set_recording_new_shortcut(false);
     if let Some(settings_window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        let _ = settings_window.hide();
+        crate::screen_capture::hide_window(&settings_window);
     }
 }
 

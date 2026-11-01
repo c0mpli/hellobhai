@@ -6,6 +6,10 @@ use windows::Win32::Graphics::Gdi::*;
 use crate::platform::PlatformError;
 use crate::screen_mapping::PhysicalRect;
 
+/// Every window is built with `content_protected` (WDA_EXCLUDEFROMCAPTURE),
+/// so BitBlt never sees our own windows.
+pub const CAPTURE_EXCLUDES_OWN_WINDOWS: bool = true;
+
 /// (width, height, RGBA bytes); BGRA from GDI converted to RGBA.
 /// `global_rect` is in virtual-screen physical pixels, which is what the
 /// screen DC uses in a per-monitor DPI aware process.

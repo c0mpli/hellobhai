@@ -2,6 +2,8 @@
 //! per monitor (`ui/overlay.html`): the blue buddy, response bubble, waveform,
 //! spinner, gold circles, user drawing and the speaking pill.
 
+use std::collections::BTreeSet;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -107,7 +109,14 @@ fn create_one_overlay_per_monitor(app: &AppHandle, monitors: &[MonitorDescriptio
     }
 }
 
+/// Monitors whose overlay has its pointer out pointing, drawing or flying. In
+/// the cursor style the mouse's overlay hides its following pointer while any
+/// is out, so only one pointer is ever visible (Mac `overlayScreensWithPointerAwayFromHome`).
+static OVERLAY_MONITORS_WITH_POINTER_AWAY_FROM_HOME: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
 fn destroy_overlay_windows(app: &AppHandle) {
+    // The new overlays start with their pointers at home.
+    OVERLAY_MONITORS_WITH_POINTER_AWAY_FROM_HOME.lock().unwrap().clear();
     for (window_label, window) in app.webview_windows() {
         if window_label.starts_with(OVERLAY_WINDOW_LABEL_PREFIX) {
             let _ = window.destroy();
@@ -166,6 +175,22 @@ pub fn overlay_ready(monitor_index: usize, app: AppHandle) -> OverlayMonitorConf
         // No monitors reported: a zero-size config draws nothing rather than failing.
         None => OverlayMonitorConfig { origin_x: 0, origin_y: 0, width: 0, height: 0, scale_factor: 1.0 },
     }
+}
+
+/// An overlay's pointer left home or came back; every overlay gets
+/// `pointer-away-monitors {monitorIndices}`.
+#[tauri::command]
+pub fn overlay_pointer_away_changed(monitor_index: usize, is_away: bool, app: AppHandle) {
+    let monitor_indices_with_pointer_away: Vec<usize> = {
+        let mut monitors_with_pointer_away = OVERLAY_MONITORS_WITH_POINTER_AWAY_FROM_HOME.lock().unwrap();
+        if is_away {
+            monitors_with_pointer_away.insert(monitor_index);
+        } else {
+            monitors_with_pointer_away.remove(&monitor_index);
+        }
+        monitors_with_pointer_away.iter().copied().collect()
+    };
+    emit_to_overlays(&app, "pointer-away-monitors", serde_json::json!({ "monitorIndices": monitor_indices_with_pointer_away }));
 }
 
 /// A finished freehand stroke in global physical pixels.

@@ -36,6 +36,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
 # SHA-256 of every first-launch download (already in the tree via tauri).
 sha2 = "0.10"
+# The Linux runtimes (whisper.cpp, ONNX Runtime) ship as .tar.gz; flate2 is
+# already in the tree through zip.
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -54,6 +58,18 @@ windows = { version = "0.62", features = [
   "Foundation",
   "Foundation_Collections",
 ] }
+
+# Linux: X11 through x11-dl (dlopen, already in the tree through tao/wry, so no
+# link-time X libraries), the screenshot portal on Wayland through zbus (already
+# in the tree through the single-instance plugin), and libc for process groups.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "2.21"
+zbus = "5"
+png = "0.18"
+libc = "0.2"
+# GTK calls tao doesn't expose (raising and sizing the orb and chat); already in
+# the tree through tauri, same version.
+gtk = "0.18"
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }

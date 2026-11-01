@@ -7,10 +7,11 @@
 <link rel="stylesheet" href="settings.css">
 </head>
 <body>
-<!-- Tray settings panel, the Windows counterpart of the Mac's CompanionPanelView. -->
+<!-- Tray settings panel, the Windows/Linux counterpart of the Mac's CompanionPanelView:
+     General / Voice / Chat / Buddy tabs, the bhai logo in the header. -->
 <main class="settings-panel" id="settings-panel">
   <header class="panel-header">
-    <span class="status-dot" id="status-dot"></span>
+    <img class="panel-logo" src="logo.png" width="22" height="22" alt="">
     <h1>bhai</h1>
     <span class="header-status-text" id="status-line">Ready</span>
     <button class="close-button" id="close-button" type="button" title="Close" aria-label="Close">
@@ -18,74 +19,160 @@
     </button>
   </header>
 
-  <section class="push-to-talk-hint" id="push-to-talk-hint">
-    <span>Hold</span><span class="key-capsules" id="hint-key-capsules"></span><span>to talk.</span>
-  </section>
-
   <div class="divider"></div>
 
-  <section class="settings-section">
-    <h2 class="section-label">Claude</h2>
-    <div class="settings-row">
-      <span class="row-label">Model</span>
-      <div class="segmented-control" id="claude-model-picker" role="radiogroup" aria-label="Claude model"></div>
-    </div>
-    <div class="settings-row">
-      <span class="row-label">claude CLI</span>
-      <span class="status-label" id="claude-status"></span>
-    </div>
-  </section>
+  <div class="panel-sections">
+    <section class="intro" id="push-to-talk-hint" hidden>
+      <span id="hint-verb">Hold</span><span class="key-capsules" id="hint-key-capsules"></span><span id="hint-ending">to talk.</span>
+    </section>
+    <section class="intro intro-welcome" id="welcome-intro" hidden>
+      <p class="intro-title">Hey, this is hellobhai.</p>
+      <p class="intro-body">A local-first buddy that sees your screen, talks back, and points at stuff. Runs on your computer with claude -p.</p>
+      <p class="intro-body intro-body-bright">Nothing runs in the background. hellobhai only takes a screenshot when you use the hotkey, and speech is transcribed on-device.</p>
+      <button class="start-button" id="start-button" type="button">Start</button>
+    </section>
 
-  <section class="settings-section">
-    <h2 class="section-label">Voice</h2>
-    <div class="settings-row">
-      <span class="row-label">Voice</span>
-      <div class="row-controls">
-        <select class="menu-picker" id="voice-picker" aria-label="Voice"></select>
-        <button class="preview-button" id="preview-voice-button" type="button" title="Preview voice" aria-label="Preview voice">
-          <svg viewBox="0 0 10 10" width="8" height="8" aria-hidden="true"><path d="M2 1 9 5 2 9Z" fill="currentColor"/></svg>
+    <p class="platform-note" id="platform-note" hidden></p>
+
+    <div class="tab-bar">
+      <div class="segmented-control" id="settings-tab-picker" role="tablist" aria-label="Settings"></div>
+    </div>
+
+    <!-- General -->
+    <div class="tab-page" data-tab="general">
+      <section class="settings-section">
+        <h2 class="section-label">bhai mode</h2>
+        <div class="settings-row">
+          <span class="row-text"><span class="row-label" id="bhai-mode-label">Voice</span><span class="row-subtitle" id="bhai-mode-subtitle">Hold the shortcut and talk</span></span>
+          <div class="segmented-control" id="bhai-mode-picker" role="radiogroup" aria-label="bhai mode"></div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2 class="section-label">Model</h2>
+        <div class="settings-row">
+          <span class="row-label">Brain</span>
+          <div class="segmented-control" id="brain-engine-picker" role="radiogroup" aria-label="Brain"></div>
+        </div>
+        <div class="settings-row" id="claude-model-row">
+          <span class="row-label">Claude</span>
+          <div class="segmented-control" id="claude-model-picker" role="radiogroup" aria-label="Claude model"></div>
+        </div>
+        <div class="settings-row" id="codex-effort-row" hidden>
+          <span class="row-text"><span class="row-label">Codex default</span><span class="row-subtitle">Reasoning effort</span></span>
+          <select class="menu-picker" id="codex-effort-picker" aria-label="Codex reasoning effort"></select>
+        </div>
+        <div class="settings-row">
+          <span class="row-label">CLI</span>
+          <span class="status-label" id="brain-cli-status"></span>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2 class="section-label">Listening</h2>
+        <div class="settings-row">
+          <span class="row-label">Speech to Text</span>
+          <span class="status-label" id="speech-model-status"></span>
+        </div>
+        <div class="settings-row">
+          <span class="row-text"><span class="row-label">Shortcut</span><span class="row-subtitle">Click, then press 2+ modifier keys</span></span>
+          <div class="row-controls">
+            <button class="icon-button" id="reset-shortcut-button" type="button" title="Back to ctrl + win" aria-label="Back to ctrl + win" hidden>
+              <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M4.5 2 2 4.5 4.5 7M2 4.5h5a3 3 0 0 1 0 6H5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button class="shortcut-recorder" id="shortcut-recorder-button" type="button" title="Click to record a new shortcut"></button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2 class="section-label">Permissions</h2>
+        <div class="settings-row">
+          <span class="row-label">Microphone</span>
+          <div class="row-controls">
+            <span class="status-label" id="microphone-status"></span>
+            <button class="pill-button" id="open-microphone-settings-button" type="button">Open settings</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h2 class="section-label">General</h2>
+        <label class="settings-row clickable-row" for="launch-at-login-toggle">
+          <span class="row-label">Launch at login</span>
+          <input class="toggle" id="launch-at-login-toggle" type="checkbox" role="switch">
+        </label>
+        <button class="settings-row clickable-row row-button" id="replay-onboarding-button" type="button">
+          <span class="row-label">Replay onboarding</span>
         </button>
-      </div>
+      </section>
     </div>
-    <div class="settings-row">
-      <span class="row-label">Speech output</span>
-      <span class="status-label" id="voice-status"></span>
-    </div>
-    <div class="settings-row">
-      <span class="row-label">Speech input</span>
-      <span class="status-label" id="speech-model-status"></span>
-    </div>
-  </section>
 
-  <section class="settings-section">
-    <h2 class="section-label">Shortcut</h2>
-    <div class="settings-row">
-      <span class="row-label">Push to talk</span>
-      <select class="menu-picker" id="shortcut-picker" aria-label="Push-to-talk shortcut"></select>
+    <!-- Voice -->
+    <div class="tab-page" data-tab="voice" hidden>
+      <section class="settings-section">
+        <h2 class="section-label">Voice</h2>
+        <div class="settings-row">
+          <span class="row-label">Voice</span>
+          <div class="row-controls">
+            <select class="menu-picker" id="voice-picker" aria-label="Voice"></select>
+            <button class="preview-button" id="preview-voice-button" type="button" title="Preview voice" aria-label="Preview voice"></button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <span class="row-label">Speaking with</span>
+          <span class="status-label" id="voice-status"></span>
+        </div>
+      </section>
     </div>
-  </section>
 
-  <section class="settings-section">
-    <h2 class="section-label">Permissions</h2>
-    <div class="settings-row">
-      <span class="row-label">Microphone</span>
-      <div class="row-controls">
-        <span class="status-label" id="microphone-status"></span>
-        <button class="pill-button" id="open-microphone-settings-button" type="button">Open settings</button>
-      </div>
+    <!-- Chat -->
+    <div class="tab-page" data-tab="chat" hidden>
+      <section class="settings-section">
+        <h2 class="section-label">Chat</h2>
+        <div class="settings-row">
+          <span class="row-text"><span class="row-label">When you speak</span><span class="row-subtitle">Text only opens the chat</span></span>
+          <div class="segmented-control" id="voice-reply-picker" role="radiogroup" aria-label="When you speak"></div>
+        </div>
+        <div class="settings-row">
+          <span class="row-label">When you type</span>
+          <div class="segmented-control" id="chat-reply-picker" role="radiogroup" aria-label="When you type"></div>
+        </div>
+        <div class="settings-row">
+          <span class="row-label">Chat side</span>
+          <div class="segmented-control" id="chat-side-picker" role="radiogroup" aria-label="Chat side"></div>
+        </div>
+      </section>
     </div>
-  </section>
 
-  <section class="settings-section">
-    <h2 class="section-label">General</h2>
-    <label class="settings-row clickable-row" for="launch-at-login-toggle">
-      <span class="row-label">Launch at login</span>
-      <input class="toggle" id="launch-at-login-toggle" type="checkbox" role="switch">
-    </label>
-    <button class="settings-row clickable-row row-button" id="replay-onboarding-button" type="button">
-      <span class="row-label">Replay onboarding</span>
-    </button>
-  </section>
+    <!-- Buddy -->
+    <div class="tab-page" data-tab="buddy" hidden>
+      <section class="settings-section">
+        <h2 class="section-label">Buddy</h2>
+        <div class="settings-row">
+          <span class="row-text"><span class="row-label">Voice style</span><span class="row-subtitle" id="voice-style-subtitle"></span></span>
+          <div class="segmented-control" id="voice-style-picker" role="radiogroup" aria-label="Voice style"></div>
+        </div>
+        <div id="orb-appearance-rows">
+          <div class="settings-row">
+            <span class="row-label">Size</span>
+            <div class="row-controls">
+              <input class="size-slider" id="orb-size-slider" type="range" min="48" max="160" step="2" aria-label="Orb size">
+              <span class="size-value" id="orb-size-value"></span>
+            </div>
+          </div>
+          <div class="settings-row">
+            <span class="row-label">Color</span>
+            <div class="row-controls">
+              <span class="color-swatch" id="orb-color-swatch"></span>
+              <select class="menu-picker" id="orb-color-picker" aria-label="Orb color"></select>
+            </div>
+          </div>
+        </div>
+        <p class="row-footnote" id="orb-style-footnote" hidden>Size and color apply to the orb style</p>
+      </section>
+    </div>
+  </div>
 
   <div class="divider"></div>
 

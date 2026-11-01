@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost">
+<title>bhai</title>
+<link rel="stylesheet" href="chat.css">
+</head>
+<body>
+<!-- Typed side chat, the counterpart of the Mac's ChatPanelView. -->
+<main class="chat-card" id="chat-card">
+  <header class="chat-header">
+    <img class="bhai-logo header-logo" src="logo.png" alt="bhai">
+    <h1>bhai</h1>
+    <span class="header-spacer"></span>
+    <button class="icon-button" id="swap-side-button" type="button" aria-label="Move the chat to the other edge">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 5h11M10 2l3 3-3 3M14 11H3M6 8l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="icon-button" id="minimize-button" type="button" title="Minimize to the screen edge (Esc)" aria-label="Minimize to the screen edge">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path id="minimize-chevrons" d="M4 3l5 5-5 5M8 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="icon-button" id="close-button" type="button" title="Close" aria-label="Close">
+      <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1 1 9 9M9 1 1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </header>
+  <div class="divider"></div>
+
+  <section class="message-list" id="message-list"></section>
+
+  <section class="composer">
+    <div class="composer-box" id="composer-box">
+      <textarea id="composer-input" rows="1" placeholder="Message bhai..." aria-label="Message bhai"></textarea>
+      <button class="send-button" id="send-button" type="button" aria-label="Send" disabled>
+        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M6 10.5V1.8M2.2 5.4 6 1.6l3.8 3.8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div class="composer-footer">
+      <span class="footer-label" id="model-label"></span>
+      <span class="header-spacer"></span>
+      <span class="footer-label">Replies</span>
+      <div class="segmented-toggle" title="How typed messages are answered. Spoken questions always get a spoken reply.">
+        <button class="segment-button" id="replies-text-button" type="button">Text</button>
+        <button class="segment-button" id="replies-voice-button" type="button">Text + voice</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<button class="minimized-tab" id="minimized-tab" type="button" title="Open chat" aria-label="Open chat">
+  <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path id="tab-chevron" d="M7.5 2 3.5 6l4 4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  <span class="tab-bubble">
+    <svg viewBox="0 0 14 14" width="13" height="13" aria-hidden="true"><path d="M2.5 2h9A1.5 1.5 0 0 1 13 3.5v5A1.5 1.5 0 0 1 11.5 10H6l-3.2 2.6V10h-.3A1.5 1.5 0 0 1 1 8.5v-5A1.5 1.5 0 0 1 2.5 2Z" fill="currentColor"/></svg>
+    <span class="unread-dot" id="unread-dot"></span>
+  </span>
+</button>
+
+<script src="chat.js"></script>
+</body>
+</html>

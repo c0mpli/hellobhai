@@ -4,8 +4,10 @@
 use std::sync::Arc;
 
 use crate::board_panel::BoardPanel;
+use crate::chat_panel::ChatPanel;
 use crate::companion_brain::CompanionBrain;
 use crate::model3d_window::Model3DWindow;
+use crate::orb_window::OrbWindow;
 use crate::settings::SharedSettings;
 use crate::speech_player::SpeechPlayer;
 use crate::whisper_transcriber::WhisperTranscriber;
@@ -17,4 +19,6 @@ pub struct AppState {
     pub whisper_transcriber: Arc<WhisperTranscriber>,
     pub board_panel: Arc<BoardPanel>,
     pub model3d_window: Arc<Model3DWindow>,
+    pub orb_window: Arc<OrbWindow>,
+    pub chat_panel: Arc<ChatPanel>,
 }

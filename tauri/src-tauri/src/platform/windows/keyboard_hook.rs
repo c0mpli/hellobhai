@@ -26,6 +26,9 @@ thread_local! {
     static KEY_EVENT_HANDLER: RefCell<Option<Box<dyn Fn(RawKeyEvent) + Send + 'static>>> = RefCell::new(None);
 }
 
+/// How the Super key is written in shortcut labels on this OS.
+pub const SUPER_KEY_DISPLAY_NAME: &str = "win";
+
 pub fn start_keyboard_hook(on_key_event: Box<dyn Fn(RawKeyEvent) + Send + 'static>) -> Result<(), PlatformError> {
     let (install_result_sender, install_result_receiver) = std::sync::mpsc::channel::<Result<(), PlatformError>>();
     std::thread::Builder::new()

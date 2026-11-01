@@ -54,16 +54,12 @@ button, select, label.clickable-row, input[type="checkbox"] {
   font-weight: 600;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 4px color-mix(in srgb, var(--success) 60%, transparent);
+/* The bhai logo replaces the old status dot, like the Mac header. */
+.panel-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
 }
-
-.status-dot.is-busy { background: var(--accent-blue); box-shadow: 0 0 4px color-mix(in srgb, var(--accent-blue) 60%, transparent); }
-.status-dot.is-warning { background: var(--warning); box-shadow: 0 0 4px color-mix(in srgb, var(--warning) 60%, transparent); }
 
 .header-status-text {
   margin-left: auto;
@@ -85,15 +81,93 @@ button, select, label.clickable-row, input[type="checkbox"] {
 }
 .close-button:hover { background: rgba(255, 255, 255, 0.14); color: var(--text-secondary); }
 
-.push-to-talk-hint {
+.panel-sections { padding: 12px 0 6px; }
+
+.intro {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 0 16px 12px;
+  padding: 0 22px 10px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
 }
+.intro[hidden], .tab-page[hidden], .settings-row[hidden], .platform-note[hidden], .row-footnote[hidden], .icon-button[hidden] { display: none; }
+.intro-welcome { flex-direction: column; align-items: stretch; gap: 6px; }
+.intro-welcome p { margin: 0; }
+.intro-title { font-weight: 700; }
+.intro-body { font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
+.intro-body-bright { color: var(--text-secondary); }
+
+.start-button {
+  margin-top: 6px;
+  padding: 10px 0;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+.start-button:hover { background: color-mix(in srgb, var(--accent) 85%, transparent); }
+
+.platform-note {
+  margin: 0 16px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.tab-bar { display: flex; justify-content: center; padding: 0 16px 4px; }
+
+.row-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.row-subtitle { font-size: 10px; color: var(--text-tertiary); }
+.row-footnote { margin: 0; padding: 0 6px 6px; font-size: 10px; color: var(--text-tertiary); }
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-tertiary);
+}
+.icon-button:hover { color: var(--text-secondary); background: rgba(255, 255, 255, 0.06); }
+
+.shortcut-recorder {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+.shortcut-recorder:hover { background: rgba(255, 255, 255, 0.08); }
+.shortcut-recorder.is-recording { background: rgba(255, 255, 255, 0.12); border-color: var(--accent-blue); }
+.recorder-hint { font-size: 11px; font-weight: 500; color: var(--text-primary); }
+
+.size-slider { width: 120px; accent-color: var(--accent-blue); cursor: pointer; }
+.size-slider:disabled { cursor: default; }
+.size-value {
+  width: 42px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.color-swatch { width: 12px; height: 12px; border-radius: 50%; }
+
+/* Orb size and colour only matter in the orb style; dimmed like the Mac. */
+#orb-appearance-rows.is-disabled { opacity: 0.4; }
+.menu-picker:disabled { cursor: default; }
 
 .key-capsules { display: inline-flex; gap: 3px; }
 .key-capsule {

@@ -21,7 +21,10 @@ pub mod screen_capture;
 pub mod screen_mapping;
 // (D) windows + pages
 pub mod board_panel;
+pub mod chat_conversation;
+pub mod chat_panel;
 pub mod model3d_window;
+pub mod orb_window;
 pub mod overlay_windows;
 pub mod page_bridge;
 pub mod tray_and_settings;
@@ -29,7 +32,9 @@ pub mod ui_commands;
 // (E) brain
 pub mod app_paths;
 pub mod app_state;
+pub mod brain_engine;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod companion_brain;
 pub mod conversation_history;
 pub mod narrated_step_queue;
@@ -47,8 +52,10 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 use crate::app_state::AppState;
 use crate::board_panel::BoardPanel;
+use crate::chat_panel::ChatPanel;
 use crate::companion_brain::CompanionBrain;
 use crate::model3d_window::Model3DWindow;
+use crate::orb_window::OrbWindow;
 use crate::speech_player::SpeechPlayer;
 use crate::whisper_transcriber::WhisperTranscriber;
 
@@ -61,16 +68,28 @@ pub fn run() {
             page_bridge::page_message,
             overlay_windows::overlay_ready,
             overlay_windows::user_stroke_added,
+            overlay_windows::overlay_pointer_away_changed,
+            orb_window::orb_pointer_pressed,
+            orb_window::orb_pointer_moved,
+            orb_window::orb_pointer_released,
+            orb_window::orb_hover_changed,
+            orb_window::buddy_home_state,
             ui_commands::get_settings,
             ui_commands::get_status,
-            ui_commands::set_claude_model,
-            ui_commands::set_supertonic_voice,
+            ui_commands::change_setting,
             ui_commands::preview_voice,
-            ui_commands::set_push_to_talk_shortcut,
+            ui_commands::set_shortcut_recording,
             ui_commands::set_launch_at_login,
             ui_commands::replay_onboarding,
             ui_commands::open_microphone_settings,
             ui_commands::quit_app,
+            chat_panel::get_chat_state,
+            chat_panel::send_chat_message,
+            chat_panel::minimize_chat,
+            chat_panel::expand_chat,
+            chat_panel::close_chat,
+            chat_panel::swap_chat_side,
+            chat_panel::set_speaks_chat_replies,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -92,6 +111,10 @@ pub fn run() {
             let speech_player = SpeechPlayer::start(app_handle.clone(), initial_voice);
             let board_panel = Arc::new(BoardPanel::new());
             let model3d_window = Arc::new(Model3DWindow::new());
+            // Created before the orb: a click on the orb in voice mode is a tap on the hotkey.
+            let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
+            let orb_window = OrbWindow::new(app_handle.clone(), shared_settings.clone(), hotkey_sender.clone());
+            let chat_panel = ChatPanel::new(app_handle.clone(), shared_settings.clone());
 
             let companion_brain = CompanionBrain::new(
                 app_handle.clone(),
@@ -100,6 +123,7 @@ pub fn run() {
                 whisper_transcriber.clone(),
                 board_panel.clone(),
                 model3d_window.clone(),
+                chat_panel.clone(),
             );
 
             app.manage(AppState {
@@ -109,14 +133,25 @@ pub fn run() {
                 whisper_transcriber,
                 board_panel,
                 model3d_window,
+                orb_window: orb_window.clone(),
+                chat_panel: chat_panel.clone(),
             });
+            // After the overlays, so the orb is ordered above them.
+            orb_window.start();
 
-            let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
-            push_to_talk::start_push_to_talk_listener(shared_settings.clone(), hotkey_sender);
+            let app_handle_for_shortcut_recorder = app_handle.clone();
+            push_to_talk::start_push_to_talk_listener(
+                shared_settings.clone(),
+                hotkey_sender,
+                Box::new(move |recorder_update| ui_commands::handle_shortcut_recorder_update(&app_handle_for_shortcut_recorder, recorder_update)),
+            );
             tauri::async_runtime::spawn(companion_brain.clone().run_hotkey_loop(hotkey_receiver));
 
             if is_first_launch {
                 companion_brain.start_onboarding();
+            } else if shared_settings.read().unwrap().is_chat_input_mode {
+                // Chat mode starts with the chat sidebar where the orb would be.
+                chat_panel.show_chat_panel(false);
             }
             Ok(())
         })

@@ -38,6 +38,33 @@ func writeTextFile(_ text: String, to filePath: String) {
     }
 }
 
+func bundledResourceData(named resourceName: String, withExtension fileExtension: String) -> Data {
+    guard let resourceURL = Bundle.main.url(forResource: resourceName, withExtension: fileExtension),
+          let resourceData = try? Data(contentsOf: resourceURL) else {
+        exitWithError("missing \(resourceName).\(fileExtension) next to the exporter binary")
+    }
+    return resourceData
+}
+
+/// OrbWindow.swift is not compiled into the exporter (it needs AppKit
+/// windows), so its two placeholder substitutions are repeated here.
+func tauriOrbPageHTML() -> String {
+    let pageTemplate = String(decoding: bundledResourceData(named: "orb", withExtension: "html"), as: UTF8.self)
+    let riveRuntimeSource = String(decoding: bundledResourceData(named: "rive", withExtension: "js"), as: UTF8.self)
+    let orbFileBase64 = bundledResourceData(named: "orb", withExtension: "riv").base64EncodedString()
+    // The template is edited before the runtime goes in, so text inside the
+    // 3 MB runtime can never be mistaken for a placeholder or the CSP.
+    var orbPageHTML = replacingExactlyOnce(
+        "style-src 'unsafe-inline'\">",
+        with: "style-src 'unsafe-inline'; connect-src ipc: http://ipc.localhost\">",
+        in: pageTemplate,
+        substitutionDescription: "content security policy in orb.html")
+    orbPageHTML = replacingExactlyOnce("__ORB_RIV_BASE64__", with: orbFileBase64, in: orbPageHTML,
+                                       substitutionDescription: "orb.riv placeholder in orb.html")
+    return replacingExactlyOnce("/*__RIVE_RUNTIME_SOURCE__*/", with: riveRuntimeSource, in: orbPageHTML,
+                                substitutionDescription: "Rive runtime placeholder in orb.html")
+}
+
 @MainActor func exportPagesAndPrompts() {
     guard CommandLine.arguments.count == 2 else { exitWithError("usage: export-mac-web-assets <repository root>") }
     let repositoryRoot = CommandLine.arguments[1]
@@ -69,6 +96,11 @@ func writeTextFile(_ text: String, to filePath: String) {
             substitutionDescription: "content security policy in \(fileName)")
         writeTextFile(tauriPageHTML, to: generatedDirectory + "/" + fileName)
     }
+
+    // The orb page, filled in exactly like OrbWindowManager.orbPageHTML in
+    // OrbWindow.swift (runtime source and orb.riv as base64), with the same
+    // CSP widening for Tauri's IPC (the host bridge script calls commands).
+    writeTextFile(tauriOrbPageHTML(), to: generatedDirectory + "/orb.html")
 
     var promptTextByName: [String: String] = [
         "voice_response": ExportedPrompts.companionVoiceResponseSystemPrompt,

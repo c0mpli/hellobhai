@@ -1,0 +1,12 @@
+#!/bin/sh
+# Check-only stand-in for pkg-config (see check-linux-target.sh): claims every
+# library exists at a new version and needs no flags, so the GTK/WebKitGTK/ALSA
+# sys crates' build scripts pass. `cargo check` never links, so nothing needs
+# the real libraries. Never use it for real builds; those run on Linux (CI).
+for argument in "$@"; do
+    case "$argument" in
+        --modversion) echo "99.0.0"; exit 0 ;;
+        --variable*) echo ""; exit 0 ;;
+    esac
+done
+exit 0

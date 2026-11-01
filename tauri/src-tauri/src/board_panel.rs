@@ -204,7 +204,7 @@ fn hide_board(state: &Mutex<BoardPanelState>, app: &AppHandle) {
     // Stop the pen first: a hidden page may stop animating mid-scratch.
     stop_board_drawing(state);
     if let Some(board_window) = &state.lock().unwrap().window {
-        let _ = board_window.hide();
+        crate::screen_capture::hide_window(board_window);
     }
     emit_pen_position(app, None);
 }

@@ -29,3 +29,8 @@ pub fn open_with_shell(checked_target: &str) -> Result<(), PlatformError> {
         Err(PlatformError::Failed(format!("ShellExecute failed with code {}", instance.0 as isize)))
     }
 }
+
+/// Nothing is limited on Windows.
+pub fn platform_limitation_note() -> Option<String> {
+    None
+}
