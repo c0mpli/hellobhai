@@ -23,7 +23,8 @@ use crate::chat_conversation::{chat_model_label, ChatConversation, ChatMessage};
 use crate::page_bridge::{locked_down_window_builder, monitor_containing_point};
 use crate::platform::{self, PlatformError};
 use crate::screen_mapping::{monitors_from_tauri, MonitorDescription, PhysicalRect};
-use crate::settings::{save_settings, SharedSettings};
+use crate::settings::SharedSettings;
+use crate::ui_commands::save_and_announce_settings;
 
 pub const CHAT_WINDOW_LABEL: &str = "chat";
 
@@ -163,17 +164,6 @@ pub struct ChatStateSnapshot {
     pub speaks_chat_replies: bool,
 }
 
-/// Pushed to every window as `chat-settings-changed` (the settings page's Chat
-/// and General tabs, the chat page, and the orb, which hides in chat mode).
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatSettingsSnapshot {
-    pub is_chat_input_mode: bool,
-    pub speaks_voice_replies: bool,
-    pub speaks_chat_replies: bool,
-    pub chat_panel_side: ChatPanelSide,
-}
-
 struct ChatPanelState {
     conversation: ChatConversation,
     is_minimized: bool,
@@ -229,20 +219,10 @@ impl ChatPanel {
             && !self.state.lock().unwrap().is_minimized
     }
 
-    pub fn chat_settings_snapshot(&self) -> ChatSettingsSnapshot {
-        let settings = self.settings.read().unwrap();
-        ChatSettingsSnapshot {
-            is_chat_input_mode: settings.is_chat_input_mode,
-            speaks_voice_replies: settings.speaks_voice_replies,
-            speaks_chat_replies: settings.speaks_chat_replies,
-            chat_panel_side: settings.chat_panel_side,
-        }
-    }
-
     pub fn chat_state_snapshot(&self) -> ChatStateSnapshot {
-        let (claude_model, speaks_chat_replies, chat_panel_side) = {
+        let (model_label, speaks_chat_replies, chat_panel_side) = {
             let settings = self.settings.read().unwrap();
-            (settings.claude_model.clone(), settings.speaks_chat_replies, settings.chat_panel_side)
+            (chat_model_label(settings.brain_engine, &settings.claude_model), settings.speaks_chat_replies, settings.chat_panel_side)
         };
         let state = self.state.lock().unwrap();
         ChatStateSnapshot {
@@ -251,17 +231,13 @@ impl ChatPanel {
             has_unread_reply: state.has_unread_reply,
             is_shown: !state.is_closing,
             chat_panel_side,
-            model_label: chat_model_label(&claude_model),
+            model_label,
             speaks_chat_replies,
         }
     }
 
-    fn emit_chat_state(&self) {
+    pub fn emit_chat_state(&self) {
         let _ = self.app.emit_to(CHAT_WINDOW_LABEL, "chat-state", self.chat_state_snapshot());
-    }
-
-    fn emit_chat_settings(&self) {
-        let _ = self.app.emit("chat-settings-changed", self.chat_settings_snapshot());
     }
 
     // MARK: Messages (called by the brain)
@@ -306,14 +282,33 @@ impl ChatPanel {
     // MARK: bhai mode and chat settings
 
     /// Voice shows the orb and puts the chat away; Chat shows the chat sidebar
-    /// instead of the orb (the orb listens for `chat-settings-changed`).
+    /// instead of the orb.
     pub fn set_chat_input_mode(&self, is_chat_input_mode: bool) {
         self.save_setting(|settings| settings.is_chat_input_mode = is_chat_input_mode);
+        self.apply_chat_input_mode(is_chat_input_mode);
+    }
+
+    /// Shows the chat or the orb for a bhai mode that is already saved (the X,
+    /// or the settings page's General tab through `change_setting`).
+    pub fn apply_chat_input_mode(&self, is_chat_input_mode: bool) {
+        self.hide_orb_for_chat_mode(is_chat_input_mode);
         if is_chat_input_mode {
             self.show();
         } else {
             self.hide();
         }
+    }
+
+    fn hide_orb_for_chat_mode(&self, is_chat_input_mode: bool) {
+        if let Some(app_state) = self.app.try_state::<AppState>() {
+            app_state.orb_window.set_hidden_for_chat_mode(is_chat_input_mode);
+        }
+    }
+
+    /// The chat side changed in the settings page: follow it.
+    pub fn apply_chat_panel_side(&self) {
+        self.emit_chat_state();
+        self.move_to_current_side();
     }
 
     /// Opens the chat. Usually that also switches to chat mode; a spoken question
@@ -322,12 +317,9 @@ impl ChatPanel {
         let is_chat_input_mode = self.settings.read().unwrap().is_chat_input_mode;
         if switches_to_chat_mode && !is_chat_input_mode {
             self.save_setting(|settings| settings.is_chat_input_mode = true);
+            self.hide_orb_for_chat_mode(true);
         }
         self.show();
-    }
-
-    pub fn set_speaks_voice_replies(&self, speaks_voice_replies: bool) {
-        self.save_setting(|settings| settings.speaks_voice_replies = speaks_voice_replies);
     }
 
     pub fn set_speaks_chat_replies(&self, speaks_chat_replies: bool) {
@@ -337,8 +329,7 @@ impl ChatPanel {
 
     pub fn set_chat_panel_side(&self, chat_panel_side: ChatPanelSide) {
         self.save_setting(|settings| settings.chat_panel_side = chat_panel_side);
-        self.emit_chat_state();
-        self.move_to_current_side();
+        self.apply_chat_panel_side();
     }
 
     fn save_setting(&self, change_settings: impl FnOnce(&mut crate::settings::Settings)) {
@@ -347,8 +338,7 @@ impl ChatPanel {
             change_settings(&mut settings);
             settings.clone()
         };
-        save_settings(&self.app, &updated_settings);
-        self.emit_chat_settings();
+        save_and_announce_settings(&self.app, updated_settings);
     }
 
     // MARK: Showing, hiding, minimizing
@@ -380,6 +370,11 @@ impl ChatPanel {
         }
         let _ = chat_window.show();
         let _ = chat_window.set_focus();
+        // A spoken question with a text-only reply opens the chat in voice mode,
+        // where the orb is still shown: keep it under the chat's send button.
+        if let Some(app_state) = self.app.try_state::<AppState>() {
+            app_state.orb_window.place_below_window(Some(&chat_window));
+        }
         self.emit_chat_state();
         self.animate_window_frame(target_frame, SHOW_ANIMATION_DURATION, AnimationCurve::SoftLanding, false);
     }
@@ -574,6 +569,7 @@ impl ChatPanel {
                 // Reopened while it was sliding away: keep it.
                 if was_closing {
                     let _ = chat_window.hide();
+                    app_state.orb_window.place_below_window(None);
                 }
             }
         });
@@ -600,11 +596,6 @@ fn set_window_frame(window: &WebviewWindow, frame: PhysicalRect) {
 #[tauri::command]
 pub fn get_chat_state(state: State<'_, AppState>) -> ChatStateSnapshot {
     state.chat_panel.chat_state_snapshot()
-}
-
-#[tauri::command]
-pub fn get_chat_settings(state: State<'_, AppState>) -> ChatSettingsSnapshot {
-    state.chat_panel.chat_settings_snapshot()
 }
 
 #[tauri::command]
@@ -635,29 +626,11 @@ pub fn swap_chat_side(state: State<'_, AppState>) {
     state.chat_panel.set_chat_panel_side(opposite_side);
 }
 
-/// General tab: bhai mode. true = Chat, false = Voice. Async because it may
-/// create the chat window, which deadlocks inside a synchronous command on Windows.
-#[tauri::command]
-pub async fn set_bhai_mode(is_chat_input_mode: bool, app: AppHandle) {
-    app.state::<AppState>().chat_panel.set_chat_input_mode(is_chat_input_mode);
-}
-
-/// Chat tab: "When you speak" (true = voice + text, false = text only).
-#[tauri::command]
-pub fn set_speaks_voice_replies(speaks_voice_replies: bool, state: State<'_, AppState>) {
-    state.chat_panel.set_speaks_voice_replies(speaks_voice_replies);
-}
-
-/// Chat tab "When you type" and the toggle under the composer (true = text + voice).
+/// The "Replies: Text / Text + voice" toggle under the composer (true = text + voice).
+/// The settings page changes the same setting through `change_setting`.
 #[tauri::command]
 pub fn set_speaks_chat_replies(speaks_chat_replies: bool, state: State<'_, AppState>) {
     state.chat_panel.set_speaks_chat_replies(speaks_chat_replies);
-}
-
-/// Chat tab: chat side.
-#[tauri::command]
-pub fn set_chat_panel_side(chat_panel_side: ChatPanelSide, state: State<'_, AppState>) {
-    state.chat_panel.set_chat_panel_side(chat_panel_side);
 }
 
 #[cfg(test)]

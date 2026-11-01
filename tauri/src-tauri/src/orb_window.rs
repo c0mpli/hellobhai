@@ -56,32 +56,10 @@ const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 /// connected monitor.
 const WATCH_TICKS_BETWEEN_SLOW_CHECKS: u64 = 8;
 
-/// orb.riv's `color` input: 0-9 (higher values look like 9). Default 8, Aurora.
+/// orb.riv's `color` input: 0-9 (Rainbow, Candy, Red, Coral, Sunset, Green,
+/// Teal, Blue, Aurora, Violet; the settings page lists them). Default 8, Aurora.
 pub const DEFAULT_ORB_COLOR: u8 = 8;
 pub const MAXIMUM_ORB_COLOR: u8 = 9;
-
-/// One of orb.riv's built-in color variants, for the Buddy tab's dropdown.
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OrbColorVariant {
-    pub color_value: u8,
-    pub display_name: &'static str,
-    /// Two colors from the variant's swirl, for the swatch (Mac `swatchGradientHexColors`).
-    pub swatch_gradient_hex_colors: [&'static str; 2],
-}
-
-pub const ORB_COLOR_VARIANTS: [OrbColorVariant; 10] = [
-    OrbColorVariant { color_value: 0, display_name: "Rainbow", swatch_gradient_hex_colors: ["#FFE03C", "#FF3B5C"] },
-    OrbColorVariant { color_value: 1, display_name: "Candy", swatch_gradient_hex_colors: ["#FF4FD8", "#3FD0F5"] },
-    OrbColorVariant { color_value: 2, display_name: "Red", swatch_gradient_hex_colors: ["#FF8A80", "#E8322E"] },
-    OrbColorVariant { color_value: 3, display_name: "Coral", swatch_gradient_hex_colors: ["#FF7A8A", "#FFC93C"] },
-    OrbColorVariant { color_value: 4, display_name: "Sunset", swatch_gradient_hex_colors: ["#FFE14D", "#F08A24"] },
-    OrbColorVariant { color_value: 5, display_name: "Green", swatch_gradient_hex_colors: ["#7DF59A", "#1DB954"] },
-    OrbColorVariant { color_value: 6, display_name: "Teal", swatch_gradient_hex_colors: ["#7FFFF2", "#12BFAE"] },
-    OrbColorVariant { color_value: 7, display_name: "Blue", swatch_gradient_hex_colors: ["#4FC3F7", "#1D4ED8"] },
-    OrbColorVariant { color_value: 8, display_name: "Aurora", swatch_gradient_hex_colors: ["#3FD5F5", "#7A4DFF"] },
-    OrbColorVariant { color_value: 9, display_name: "Violet", swatch_gradient_hex_colors: ["#E07BFF", "#6A4DFF"] },
-];
 
 /// How bhai shows up in voice mode (Buddy tab -> "Voice style").
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,17 +249,6 @@ pub struct BuddyHomeState {
     pub orb_frame: PhysicalRect,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BuddySettingsSnapshot {
-    pub voice_buddy_style: VoiceBuddyStyle,
-    pub orb_side_length: f64,
-    pub minimum_orb_side_length: f64,
-    pub maximum_orb_side_length: f64,
-    pub orb_color: u8,
-    pub orb_color_variants: Vec<OrbColorVariant>,
-}
-
 struct OrbDrag {
     cursor_at_press: (f64, f64),
     origin_at_press: (i32, i32),
@@ -322,6 +289,8 @@ pub struct OrbWindow {
 impl OrbWindow {
     /// `hotkey_sender` is the push-to-talk channel: a click in voice mode is a tap on the hotkey.
     pub fn new(app: AppHandle, settings: SharedSettings, hotkey_sender: UnboundedSender<HotkeyEvent>) -> Arc<Self> {
+        // Chat mode at launch: the chat sidebar stands in for the orb.
+        let starts_in_chat_mode = settings.read().unwrap().is_chat_input_mode;
         let orb_window = Arc::new_cyclic(|weak_self| OrbWindow {
             weak_self: weak_self.clone(),
             app,
@@ -333,7 +302,7 @@ impl OrbWindow {
                 last_activity: Instant::now(),
                 visual_state: OrbVisualState::Idle,
                 is_hovering: false,
-                is_hidden_for_chat_mode: false,
+                is_hidden_for_chat_mode: starts_in_chat_mode,
                 is_hidden_for_fullscreen: false,
                 computer_actions_in_progress: 0,
                 window_label_to_stay_below: None,
@@ -401,7 +370,7 @@ impl OrbWindow {
     }
 
     fn orb_color(&self) -> u8 {
-        self.settings.read().unwrap().orb_color.min(MAXIMUM_ORB_COLOR)
+        self.settings.read().unwrap().selected_orb_color.min(MAXIMUM_ORB_COLOR)
     }
 
     fn save_orb_origin(&self, orb_origin: (i32, i32)) {
@@ -411,17 +380,6 @@ impl OrbWindow {
             settings.clone()
         };
         save_settings(&self.app, &updated_settings);
-    }
-
-    pub fn buddy_settings_snapshot(&self) -> BuddySettingsSnapshot {
-        BuddySettingsSnapshot {
-            voice_buddy_style: self.voice_buddy_style(),
-            orb_side_length: self.orb_side_length(),
-            minimum_orb_side_length: MINIMUM_ORB_SIDE_LENGTH,
-            maximum_orb_side_length: MAXIMUM_ORB_SIDE_LENGTH,
-            orb_color: self.orb_color(),
-            orb_color_variants: ORB_COLOR_VARIANTS.to_vec(),
-        }
     }
 
     pub fn home_state(&self) -> BuddyHomeState {
@@ -847,47 +805,6 @@ pub fn buddy_home_state(state: State<'_, AppState>) -> BuddyHomeState {
     state.orb_window.home_state()
 }
 
-/// For the settings page's Buddy tab.
-#[tauri::command]
-pub fn get_buddy_settings(state: State<'_, AppState>) -> BuddySettingsSnapshot {
-    state.orb_window.buddy_settings_snapshot()
-}
-
-fn update_and_save_settings(app: &AppHandle, state: &State<'_, AppState>, change_settings: impl FnOnce(&mut crate::settings::Settings)) {
-    let updated_settings = {
-        let mut settings = state.settings.write().unwrap();
-        change_settings(&mut settings);
-        settings.clone()
-    };
-    save_settings(app, &updated_settings);
-}
-
-/// "orb" | "cursor", applied live.
-#[tauri::command]
-pub fn set_voice_buddy_style(style: VoiceBuddyStyle, app: AppHandle, state: State<'_, AppState>) {
-    update_and_save_settings(&app, &state, |settings| settings.voice_buddy_style = style);
-    state.orb_window.apply_voice_buddy_style();
-}
-
-/// 48-160 logical pixels in 2 px steps, applied live around the orb's centre.
-#[tauri::command]
-pub fn set_orb_side_length(side_length: f64, app: AppHandle, state: State<'_, AppState>) {
-    let side_length = clamped_orb_side_length(side_length);
-    update_and_save_settings(&app, &state, |settings| settings.orb_side_length = side_length);
-    state.orb_window.apply_orb_size();
-}
-
-/// orb.riv color variant 0-9 (`ORB_COLOR_VARIANTS`).
-#[tauri::command]
-pub fn set_orb_color(color_value: u8, app: AppHandle, state: State<'_, AppState>) {
-    if color_value > MAXIMUM_ORB_COLOR {
-        eprintln!("settings: ignoring unknown orb color {color_value}");
-        return;
-    }
-    update_and_save_settings(&app, &state, |settings| settings.orb_color = color_value);
-    state.orb_window.apply_orb_color();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -994,11 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn color_variants_match_the_mac_names_and_values() {
-        let names: Vec<&str> = ORB_COLOR_VARIANTS.iter().map(|variant| variant.display_name).collect();
-        assert_eq!(names, ["Rainbow", "Candy", "Red", "Coral", "Sunset", "Green", "Teal", "Blue", "Aurora", "Violet"]);
-        assert!(ORB_COLOR_VARIANTS.iter().enumerate().all(|(index, variant)| variant.color_value as usize == index));
-        assert_eq!(ORB_COLOR_VARIANTS[DEFAULT_ORB_COLOR as usize].display_name, "Aurora");
+    fn voice_buddy_style_uses_the_mac_names() {
         assert_eq!(serde_json::to_value(VoiceBuddyStyle::Cursor).unwrap(), "cursor");
     }
 }

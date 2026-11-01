@@ -3,6 +3,7 @@
 //! the reply combinations in `sendTranscriptToClaudeWithScreenshot`. Pure logic,
 //! no windows, so it is unit-tested here; `chat_panel.rs` shows it.
 
+use crate::brain_engine::BrainEngine;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -115,8 +116,12 @@ pub fn chat_hotkey_action(chat_is_open_and_focused: bool) -> ChatHotkeyAction {
     }
 }
 
-/// The model name under the composer, like the Mac ("Sonnet", "Opus", ...).
-pub fn chat_model_label(claude_model_alias: &str) -> String {
+/// The model name under the composer, like the Mac ("Sonnet", "Opus", ...,
+/// or "Codex" when Codex is the brain).
+pub fn chat_model_label(brain_engine: BrainEngine, claude_model_alias: &str) -> String {
+    if brain_engine == BrainEngine::Codex {
+        return "Codex".to_string();
+    }
     let mut characters = claude_model_alias.chars();
     match characters.next() {
         Some(first_character) => first_character.to_uppercase().collect::<String>() + characters.as_str(),
@@ -199,8 +204,9 @@ mod tests {
 
     #[test]
     fn model_label_is_the_capitalized_alias() {
-        assert_eq!(chat_model_label("sonnet"), "Sonnet");
-        assert_eq!(chat_model_label("fable"), "Fable");
-        assert_eq!(chat_model_label(""), "");
+        assert_eq!(chat_model_label(BrainEngine::Claude, "sonnet"), "Sonnet");
+        assert_eq!(chat_model_label(BrainEngine::Claude, "fable"), "Fable");
+        assert_eq!(chat_model_label(BrainEngine::Claude, ""), "");
+        assert_eq!(chat_model_label(BrainEngine::Codex, "sonnet"), "Codex");
     }
 }

@@ -23,7 +23,8 @@ use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
 use crate::chat_conversation::{chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatHotkeyAction};
 use crate::chat_panel::ChatPanel;
-use crate::claude_cli::{home_directory, run_claude_streaming, ClaudeRequest};
+use crate::claude_cli::{home_directory, ClaudeRequest};
+use crate::brain_engine::ask_selected_brain;
 use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
 use crate::model3d_window::Model3DWindow;
@@ -316,19 +317,6 @@ impl CompanionBrain {
         }
     }
 
-    /// Chat mode: the orb opens the chat. Voice mode: the orb is a tap-to-talk
-    /// button (first click listens, second click sends), like pressing and
-    /// releasing the hotkey.
-    pub fn handle_orb_clicked(self: &Arc<Self>) {
-        if self.is_chat_input_mode() {
-            self.chat_panel.show_chat_panel(true);
-        } else if self.state.lock().unwrap().is_recording {
-            self.handle_push_to_talk_released();
-        } else {
-            self.handle_push_to_talk_pressed();
-        }
-    }
-
     fn handle_push_to_talk_pressed(self: &Arc<Self>) {
         {
             let mut state = self.state.lock().unwrap();
@@ -562,7 +550,8 @@ impl CompanionBrain {
             reply_chat_message_ids.push(streaming_reply_message_id);
 
             let system_prompt_file = self.system_prompt_file(SystemPromptKind::VoiceResponse);
-            let full_response_text = run_claude_streaming(
+            let full_response_text = ask_selected_brain(
+                &self.settings,
                 ClaudeRequest {
                     images: images_for_this_step,
                     system_prompt_file: &system_prompt_file,
@@ -874,7 +863,8 @@ impl CompanionBrain {
         let queue_for_streaming = narrated_step_queue.clone();
         let stream_script = async {
             let mut streamed_line_forwarder = StreamedLineForwarder::new();
-            let script_result = run_claude_streaming(
+            let script_result = ask_selected_brain(
+                &self.settings,
                 ClaudeRequest {
                     images: screen_images,
                     system_prompt_file: &system_prompt_file,
@@ -968,7 +958,8 @@ impl CompanionBrain {
                     .find(|capture| capture.is_cursor_screen)
                     .ok_or("no cursor screen found")?;
                 let system_prompt_file = brain.system_prompt_file(SystemPromptKind::OnboardingDemo);
-                let full_response_text = run_claude_streaming(
+                let full_response_text = ask_selected_brain(
+                    &brain.settings,
                     ClaudeRequest {
                         images: labeled_images_for_captures(std::slice::from_ref(cursor_screen_capture)),
                         system_prompt_file: &system_prompt_file,
