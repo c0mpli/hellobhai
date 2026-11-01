@@ -1,5 +1,5 @@
 #!/bin/bash
-# Exports the Mac app's generated web pages (board, notes, 3D overlay) and
+# Exports the Mac app's generated web pages (board, notes, 3D overlay, orb) and
 # system prompts into tauri/generated/, so the Tauri app (Windows, later Linux)
 # uses exactly what the Mac app builds. The Mac sources stay the single source
 # of truth: run this on a Mac after changing VisualExplanationPanel.swift,
