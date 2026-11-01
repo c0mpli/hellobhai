@@ -67,6 +67,9 @@ x11-dl = "2.21"
 zbus = "5"
 png = "0.18"
 libc = "0.2"
+# GTK calls tao doesn't expose (raising and sizing the orb and chat); already in
+# the tree through tauri, same version.
+gtk = "0.18"
 
 [build-dependencies]
 tauri-build = { version = "2.7", features = [] }

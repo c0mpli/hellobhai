@@ -1581,6 +1581,7 @@ dependencies = [
  "base64 0.22.1",
  "cpal",
  "flate2",
+ "gtk",
  "hound",
  "image",
  "libc",

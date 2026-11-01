@@ -83,10 +83,15 @@ pub async fn perform_open(target: &str, home_directory: &Path) {
 }
 
 /// Link schemes [OPEN] accepts: the web, mail, and common chat/music/meeting apps.
-const ALLOWED_LINK_SCHEMES: [&str; 11] =
-    ["http", "https", "mailto", "whatsapp", "spotify", "slack", "msteams", "discord", "tg", "zoommtg", "ms-settings"];
+const ALLOWED_LINK_SCHEMES: [&str; 10] = ["http", "https", "mailto", "whatsapp", "spotify", "slack", "msteams", "discord", "tg", "zoommtg"];
+/// The Windows Settings app's links.
+const WINDOWS_SETTINGS_LINK_SCHEME: &str = "ms-settings";
 /// Built-in apps that have no Start menu shortcut on every Windows version.
 const ALLOWED_BUILT_IN_APPS: [&str; 4] = ["notepad", "calc", "mspaint", "explorer"];
+/// Windows-only targets (`shell:AppsFolder\…`, `ms-settings:`, the built-in
+/// apps) mean nothing to xdg-open, so Linux refuses them. Earlier history or
+/// the Codex brain can still produce them.
+const ALLOWS_WINDOWS_ONLY_TARGETS: bool = !cfg!(target_os = "linux");
 /// Files that run code when opened. Documents, media and folders are fine.
 /// The second line is Linux: scripts, launchers and installers.
 const BLOCKED_FILE_EXTENSIONS: &[&str] = &[
@@ -113,7 +118,7 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
     }
 
     let apps_folder_prefix = "shell:appsfolder\\";
-    if target.to_ascii_lowercase().starts_with(apps_folder_prefix) {
+    if ALLOWS_WINDOWS_ONLY_TARGETS && target.to_ascii_lowercase().starts_with(apps_folder_prefix) {
         let app_id = &target[apps_folder_prefix.len()..];
         let is_plain_app_id =
             !app_id.is_empty() && app_id.chars().all(|character| character.is_ascii_alphanumeric() || "._!-".contains(character));
@@ -126,7 +131,9 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
             scheme.len() >= 2 && scheme.chars().all(|character| character.is_ascii_alphanumeric() || "+-.".contains(character));
         if looks_like_scheme {
             let scheme = scheme.to_ascii_lowercase();
-            return if ALLOWED_LINK_SCHEMES.contains(&scheme.as_str()) {
+            let is_allowed_scheme = ALLOWED_LINK_SCHEMES.contains(&scheme.as_str())
+                || (ALLOWS_WINDOWS_ONLY_TARGETS && scheme == WINDOWS_SETTINGS_LINK_SCHEME);
+            return if is_allowed_scheme {
                 Ok(target.to_string())
             } else {
                 Err(format!("{scheme}: links can't be opened"))
@@ -134,7 +141,7 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
         }
     }
 
-    if ALLOWED_BUILT_IN_APPS.contains(&target.to_ascii_lowercase().as_str()) {
+    if ALLOWS_WINDOWS_ONLY_TARGETS && ALLOWED_BUILT_IN_APPS.contains(&target.to_ascii_lowercase().as_str()) {
         return Ok(target.to_string());
     }
 
@@ -155,8 +162,10 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
         return Ok(target.to_string());
     }
 
+    // Linux: the Windows name for the calculator finds the "Calculator" app.
+    let app_name = if !ALLOWS_WINDOWS_ONLY_TARGETS && target.eq_ignore_ascii_case("calc") { "Calculator" } else { target };
     for start_menu_directory in start_menu_directories {
-        if let Some(shortcut_path) = find_start_menu_shortcut(start_menu_directory, target, 0) {
+        if let Some(shortcut_path) = find_start_menu_shortcut(start_menu_directory, app_name, 0) {
             return Ok(shortcut_path.to_string_lossy().into_owned());
         }
     }
@@ -250,9 +259,10 @@ mod tests {
         assert!(check("file:///C:/Windows/System32/cmd.exe").is_err());
         assert!(check("ms-msdt:/id PCWDiagnostic").is_err());
         assert!(check("shell:startup").is_err());
-        assert!(check(r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").is_ok());
+        assert_eq!(check(r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").is_ok(), ALLOWS_WINDOWS_ONLY_TARGETS);
         assert!(check(r"shell:AppsFolder\..\cmd").is_err());
-        assert!(check("Notepad").is_ok());
+        assert_eq!(check("Notepad").is_ok(), ALLOWS_WINDOWS_ONLY_TARGETS);
+        assert_eq!(check("ms-settings:display").is_ok(), ALLOWS_WINDOWS_ONLY_TARGETS);
         assert!(check("cmd").is_err());
         assert!(check("powershell").is_err());
         assert_eq!(check("spotify"), Ok(start_menu_directory.join("Spotify").join(format!("Spotify.{APP_SHORTCUT_FILE_EXTENSION}")).to_string_lossy().into_owned()));

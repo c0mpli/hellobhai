@@ -923,6 +923,10 @@ async function startOverlay() {
     if (!isDrawingEnabled) finishCurrentStroke();
   });
   await listen('speaking-changed', (event) => { isSpeaking = event.payload.isSpeaking; });
+  // Linux only: blanked while bhai takes a screenshot, which X11 can't take without us.
+  await listen('hidden-for-capture', (event) => {
+    overlayCanvas.style.visibility = event.payload.hidden ? 'hidden' : '';
+  });
   await listen('onboarding-text', (event) => {
     const { text, visible } = event.payload;
     onboardingBubble.isVisible = visible;

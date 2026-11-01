@@ -127,7 +127,7 @@ pub fn hide_settings_window(app: &AppHandle) {
     // Like the Mac recorder's onDisappear: a hidden panel isn't recording a shortcut.
     crate::push_to_talk::set_recording_new_shortcut(false);
     if let Some(settings_window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        let _ = settings_window.hide();
+        crate::screen_capture::hide_window(&settings_window);
     }
 }
 

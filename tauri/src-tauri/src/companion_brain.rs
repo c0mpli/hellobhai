@@ -175,13 +175,12 @@ fn labeled_images_for_captures(screen_captures: &[ScreenCapture]) -> Vec<Labeled
 }
 
 async fn capture_all_screens_off_the_async_threads(app: &AppHandle) -> Result<Vec<ScreenCapture>, String> {
-    let windows_hidden_for_capture = screen_capture::hide_own_windows_the_capture_would_see(app).await;
+    // Dropped (windows shown again) after the capture, or on cancel at either await.
+    let _own_windows_hidden_for_capture = screen_capture::hide_own_windows_the_capture_would_see(app).await;
     let app_for_capture = app.clone();
-    let capture_result = tokio::task::spawn_blocking(move || screen_capture::capture_all_screens(&app_for_capture))
+    tokio::task::spawn_blocking(move || screen_capture::capture_all_screens(&app_for_capture))
         .await
-        .map_err(|join_error| format!("screen capture task failed: {join_error}"));
-    screen_capture::show_windows_hidden_for_capture(windows_hidden_for_capture);
-    capture_result?
+        .map_err(|join_error| format!("screen capture task failed: {join_error}"))?
 }
 
 impl CompanionBrain {
@@ -538,7 +537,9 @@ impl CompanionBrain {
                     user_prompt_for_this_step.push('\n');
                     user_prompt_for_this_step.push_str(&prompts::user_circled_region_note(screen_index + 1, pixel_rect));
                     let crop_rect = padded_rect(*user_circled_region, 24);
+                    let own_windows_hidden_for_capture = screen_capture::hide_own_windows_the_capture_would_see(&self.app).await;
                     let crop_result = tokio::task::spawn_blocking(move || screen_capture::capture_region_jpeg(crop_rect)).await;
+                    drop(own_windows_hidden_for_capture);
                     if let Ok(Ok(region_crop_jpeg)) = crop_result {
                         images_for_this_step.push(LabeledImage {
                             jpeg_bytes: region_crop_jpeg,

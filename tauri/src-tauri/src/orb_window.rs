@@ -418,19 +418,20 @@ impl OrbWindow {
         self.keep_window_order();
     }
 
-    fn keep_window_order(&self) {
+    pub fn keep_window_order(&self) {
+        // Re-asserted every couple of seconds: clicking the taskbar raises it over
+        // topmost windows, and the default spot is in the taskbar's row. Setting
+        // the flag again is a no-op when it is already on, so the window is also
+        // raised explicitly: the orb first, then the chat it must stay under.
+        if let Some(orb_window) = self.window_if_visible() {
+            let _ = orb_window.set_always_on_top(true);
+            platform::raise_always_on_top_window(&orb_window);
+        }
         let window_label_to_stay_below = self.state.lock().unwrap().window_label_to_stay_below.clone();
-        match window_label_to_stay_below.and_then(|window_label| self.app.get_webview_window(&window_label)) {
-            Some(window_to_stay_below) if window_to_stay_below.is_visible().unwrap_or(false) => {
-                let _ = window_to_stay_below.set_always_on_top(true);
-            }
-            // Re-asserted every couple of seconds: clicking the taskbar raises it over
-            // topmost windows, and the default spot is in the taskbar's row.
-            _ => {
-                if let Some(orb_window) = self.window_if_visible() {
-                    let _ = orb_window.set_always_on_top(true);
-                }
-            }
+        let window_to_stay_below = window_label_to_stay_below.and_then(|window_label| self.app.get_webview_window(&window_label));
+        if let Some(window_to_stay_below) = window_to_stay_below.filter(|window| window.is_visible().unwrap_or(false)) {
+            let _ = window_to_stay_below.set_always_on_top(true);
+            platform::raise_always_on_top_window(&window_to_stay_below);
         }
     }
 
@@ -494,14 +495,15 @@ impl OrbWindow {
         self.state.lock().unwrap().orb_frame = PhysicalRect { x: origin.0, y: origin.1, width: orb_side, height: orb_side };
         if let Some(orb_window) = self.app.get_webview_window(ORB_WINDOW_LABEL) {
             let _ = orb_window.set_position(PhysicalPosition::new(origin.0, origin.1));
-            let _ = orb_window.set_size(PhysicalSize::new(orb_side, orb_side));
+            // Not `set_size`: GTK won't shrink a non-resizable window below its first size.
+            platform::set_fixed_size_window_size(&orb_window, PhysicalSize::new(orb_side, orb_side));
         }
     }
 
     fn apply_visibility(&self) {
         if !self.should_be_shown() {
             if let Some(orb_window) = self.app.get_webview_window(ORB_WINDOW_LABEL) {
-                let _ = orb_window.hide();
+                crate::screen_capture::hide_window(&orb_window);
             }
             return;
         }

@@ -29,11 +29,14 @@ pub use window_focus::*;
 /// Called first thing in `main`, before GTK starts or any thread exists.
 /// - Wayland gives apps no global window positions, always-on-top or
 ///   click-through, which the overlays need, so GTK is pointed at XWayland
-///   (GDK_BACKEND=x11) unless the user chose a backend themselves.
+///   (GDK_BACKEND=x11) unless the user chose a backend themselves. Only when
+///   XWayland is there (DISPLAY set): without it GTK couldn't start at all,
+///   while its own choice starts and the X11 features report their failures.
 /// - WebKitGTK's DMA-BUF renderer shows blank windows on some GPU drivers
 ///   (NVIDIA especially); turning it off costs nothing for these small pages.
 pub fn prepare_process_environment() {
-    if x11_connection::is_wayland_session() && std::env::var_os("GDK_BACKEND").is_none() {
+    let xwayland_is_available = std::env::var_os("DISPLAY").is_some();
+    if x11_connection::is_wayland_session() && xwayland_is_available && std::env::var_os("GDK_BACKEND").is_none() {
         std::env::set_var("GDK_BACKEND", "x11");
     }
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {

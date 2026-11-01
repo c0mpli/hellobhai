@@ -91,8 +91,13 @@ fn tap_keysym(connection: &X11Connection, xtest: &x11_dl::xtest::Xf86vmode, keys
     let display = connection.display;
     let layout_keycode = unsafe { (xlib.XKeysymToKeycode)(display, keysym) };
     if layout_keycode != 0 {
-        let unshifted_keysym = unsafe { (xlib.XkbKeycodeToKeysym)(display, layout_keycode, 0, 0) };
-        let shifted_keysym = unsafe { (xlib.XkbKeycodeToKeysym)(display, layout_keycode, 0, 1) };
+        // XKeysymToKeycode searches every layout group; the key press types from
+        // the active one (with "English (US) + Hindi" and Hindi active, the "h"
+        // key types Devanagari), so check the key at the active group. A key the
+        // active group lacks goes through the spare keycode below.
+        let active_group = active_layout_group(connection);
+        let unshifted_keysym = unsafe { (xlib.XkbKeycodeToKeysym)(display, layout_keycode, active_group, 0) };
+        let shifted_keysym = unsafe { (xlib.XkbKeycodeToKeysym)(display, layout_keycode, active_group, 1) };
         if unshifted_keysym == keysym || shifted_keysym == keysym {
             let needs_shift = unshifted_keysym != keysym;
             let shift_keycode = unsafe { (xlib.XKeysymToKeycode)(display, keysym::XK_Shift_L as c_ulong) };
@@ -131,6 +136,18 @@ fn tap_keysym(connection: &X11Connection, xtest: &x11_dl::xtest::Xf86vmode, keys
     // ponytail: apps read the mapping when they handle the event; 5 ms keeps fast
     // typists' apps in step. Raise it if characters come out wrong in some app.
     sleep(Duration::from_millis(5));
+}
+
+/// The keyboard layout group in effect now (0 when XKB can't tell).
+fn active_layout_group(connection: &X11Connection) -> c_int {
+    const XKB_USE_CORE_KEYBOARD: c_uint = 0x0100;
+    let mut keyboard_state: xlib::XkbStateRec = unsafe { std::mem::zeroed() };
+    let status = unsafe { (connection.xlib.XkbGetState)(connection.display, XKB_USE_CORE_KEYBOARD, &mut keyboard_state) };
+    if status == xlib::Success as c_int {
+        keyboard_state.group as c_int
+    } else {
+        0
+    }
 }
 
 /// A keycode with no keysyms at all in the current layout (most layouts leave

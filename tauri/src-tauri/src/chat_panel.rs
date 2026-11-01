@@ -383,6 +383,8 @@ impl ChatPanel {
     pub fn hide(&self) {
         let Some(chat_window) = self.chat_window() else { return };
         if !chat_window.is_visible().unwrap_or(false) {
+            // Hidden only for a screenshot: keep it hidden when the capture ends.
+            crate::screen_capture::hide_window(&chat_window);
             return;
         }
         let Some(current_frame) = window_frame(&chat_window) else { return };
@@ -492,15 +494,25 @@ impl ChatPanel {
             Some(window_id) => platform::bring_window_to_foreground(window_id),
             None => Err(PlatformError::Failed("no window remembered".to_string())),
         };
-        match focus_result {
-            Ok(()) => {}
-            // No OS support: the Mac's trick of ordering the window out and back
-            // in, which leaves the keyboard with the window underneath.
-            Err(PlatformError::Unsupported) => {
-                let _ = chat_window.hide();
-                let _ = chat_window.show();
+        // Nothing remembered (e.g. chat mode was switched on from the settings
+        // page, or Wayland), the window is gone, or the OS refused: the Mac's
+        // trick of ordering the chat out and back in. Hiding it hands the
+        // keyboard to the window underneath; showing it again can take the
+        // keyboard back (Windows' SW_SHOW, window managers focusing on map), so
+        // that window is read and activated after. Otherwise [TYPE] would type
+        // into the chat.
+        if let Err(focus_error) = focus_result {
+            eprintln!("chat: handing the keyboard back by hiding the chat for a moment ({focus_error})");
+            let _ = chat_window.hide();
+            // ponytail: a fixed wait for the hide and the OS's focus change to land
+            // (both are asynchronous); raise it if the keyboard stays with the chat.
+            std::thread::sleep(Duration::from_millis(50));
+            let window_that_got_the_keyboard = platform::foreground_window_id();
+            let _ = chat_window.show();
+            if let Some(window_id) = window_that_got_the_keyboard {
+                self.state.lock().unwrap().user_app_window_id = Some(window_id);
+                let _ = platform::bring_window_to_foreground(window_id);
             }
-            Err(focus_error) => eprintln!("chat: couldn't hand the keyboard back: {focus_error}"),
         }
     }
 
@@ -568,7 +580,7 @@ impl ChatPanel {
                 let was_closing = std::mem::replace(&mut chat_panel.state.lock().unwrap().is_closing, false);
                 // Reopened while it was sliding away: keep it.
                 if was_closing {
-                    let _ = chat_window.hide();
+                    crate::screen_capture::hide_window(&chat_window);
                     app_state.orb_window.place_below_window(None);
                 }
             }
@@ -588,7 +600,8 @@ fn window_frame(window: &WebviewWindow) -> Option<PhysicalRect> {
 
 fn set_window_frame(window: &WebviewWindow, frame: PhysicalRect) {
     let _ = window.set_position(PhysicalPosition::new(frame.x, frame.y));
-    let _ = window.set_size(PhysicalSize::new(frame.width, frame.height));
+    // Not `set_size`: GTK won't shrink a non-resizable window below its first size.
+    platform::set_fixed_size_window_size(window, PhysicalSize::new(frame.width, frame.height));
 }
 
 // MARK: - Commands (chat page and settings page)

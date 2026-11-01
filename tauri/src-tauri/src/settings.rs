@@ -87,17 +87,27 @@ pub fn load_settings(app: &AppHandle) -> SharedSettings {
     Arc::new(RwLock::new(settings_from_json_text(settings_json_text)))
 }
 
+/// Saves run one at a time: the orb size slider fires a change per step from
+/// several async commands at once.
+static SETTINGS_FILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Writes settings.json (creating the folder); errors are logged, not fatal.
+/// Written to a temporary file and renamed over the old one, so a crash or an
+/// overlapping write can never leave a half-written file (which would load as
+/// all defaults: onboarding again, shortcut and brain reset).
 pub fn save_settings(app: &AppHandle, settings: &Settings) {
     let Some(settings_path) = settings_file_path(app) else {
         eprintln!("settings: no config folder, not saving");
         return;
     };
+    let _one_write_at_a_time = SETTINGS_FILE_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temporary_settings_path = settings_path.with_extension("json.partial");
     let write_result = settings_path
         .parent()
         .map(std::fs::create_dir_all)
         .unwrap_or(Ok(()))
-        .and_then(|_| std::fs::write(&settings_path, serde_json::to_string_pretty(settings).unwrap_or_default()));
+        .and_then(|_| std::fs::write(&temporary_settings_path, serde_json::to_string_pretty(settings).unwrap_or_default()))
+        .and_then(|_| std::fs::rename(&temporary_settings_path, &settings_path));
     if let Err(write_error) = write_result {
         eprintln!("settings: couldn't save {}: {write_error}", settings_path.display());
     }
