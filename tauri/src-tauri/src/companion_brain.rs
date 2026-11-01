@@ -1,8 +1,9 @@
 //! The central state machine, port of the Mac's `CompanionManager`: push-to-talk
 //! -> transcribe -> agent loop (up to 8 screenshot -> claude -> actions rounds)
 //! -> speak, point, circle; plus the board, notes and 3D side calls and onboarding.
-//! The message flow (`send_transcript`) takes plain text so a typed chat panel
-//! can reuse it later.
+//! Spoken and typed questions share one message flow (`send_message`); every
+//! turn also lands in the typed chat (`chat_panel.rs`), and the bhai mode decides
+//! what the hotkey does (Voice: hold to talk; Chat: open or minimize the chat).
 //!
 //! Cancelling = aborting a task handle: the futures are dropped at their next
 //! await, which also kills a running `claude` (kill_on_drop). No lock is ever
@@ -20,6 +21,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::app_paths;
 use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
+use crate::chat_conversation::{chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatHotkeyAction};
+use crate::chat_panel::ChatPanel;
 use crate::claude_cli::{home_directory, run_claude_streaming, ClaudeRequest};
 use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
@@ -85,9 +88,36 @@ pub struct CompanionBrain {
     whisper_transcriber: Arc<WhisperTranscriber>,
     board_panel: Arc<BoardPanel>,
     model3d_window: Arc<Model3DWindow>,
+    chat_panel: Arc<ChatPanel>,
     // In a Mutex so the brain stays Sync whatever channel the recorder holds inside.
     push_to_talk_recorder: Mutex<PushToTalkRecorder>,
     state: Mutex<BrainState>,
+}
+
+/// Finishes this request's chat rows however the request ends, including an
+/// abort (which drops the future before any code after an await could run):
+/// whatever streamed in stays, empty placeholders go.
+struct StreamingChatRowsGuard {
+    chat_panel: Arc<ChatPanel>,
+    message_ids: Vec<u64>,
+}
+
+impl Drop for StreamingChatRowsGuard {
+    fn drop(&mut self) {
+        self.chat_panel.finish_streaming_messages(&self.message_ids);
+    }
+}
+
+/// Lets clicks pass through the chat while bhai acts on screen, until the
+/// actions finish or are cancelled.
+struct ChatClickThroughGuard<'chat_panel> {
+    chat_panel: &'chat_panel ChatPanel,
+}
+
+impl Drop for ChatClickThroughGuard<'_> {
+    fn drop(&mut self) {
+        self.chat_panel.set_lets_clicks_pass_through(false);
+    }
 }
 
 fn abort_task(task: &mut Option<JoinHandle<()>>) {
@@ -158,6 +188,7 @@ impl CompanionBrain {
         whisper_transcriber: Arc<WhisperTranscriber>,
         board_panel: Arc<BoardPanel>,
         model3d_window: Arc<Model3DWindow>,
+        chat_panel: Arc<ChatPanel>,
     ) -> Arc<Self> {
         let app_for_audio_level = app.clone();
         let push_to_talk_recorder = PushToTalkRecorder::new(Box::new(move |audio_level| {
@@ -170,6 +201,7 @@ impl CompanionBrain {
             whisper_transcriber,
             board_panel,
             model3d_window,
+            chat_panel,
             push_to_talk_recorder: Mutex::new(push_to_talk_recorder),
             state: Mutex::new(BrainState {
                 voice_state: VoiceState::Idle,
@@ -198,6 +230,10 @@ impl CompanionBrain {
 
     pub fn is_listening(&self) -> bool {
         self.state.lock().unwrap().voice_state == VoiceState::Listening
+    }
+
+    fn is_chat_input_mode(&self) -> bool {
+        self.settings.read().unwrap().is_chat_input_mode
     }
 
     fn claude_model(&self) -> String {
@@ -234,11 +270,61 @@ impl CompanionBrain {
     pub async fn run_hotkey_loop(self: Arc<Self>, mut hotkey_receiver: UnboundedReceiver<HotkeyEvent>) {
         while let Some(hotkey_event) = hotkey_receiver.recv().await {
             match hotkey_event {
-                HotkeyEvent::PushToTalkPressed => self.handle_push_to_talk_pressed(),
+                HotkeyEvent::PushToTalkPressed => {
+                    if self.is_chat_input_mode() {
+                        self.handle_chat_mode_hotkey_pressed();
+                    } else {
+                        self.handle_push_to_talk_pressed();
+                    }
+                }
                 HotkeyEvent::PushToTalkReleased => self.handle_push_to_talk_released(),
                 HotkeyEvent::PushToTalkCancelled => self.handle_push_to_talk_cancelled(),
                 HotkeyEvent::EscapePressed => self.model3d_window.handle_escape_pressed(),
             }
+        }
+    }
+
+    /// Cancel any in-progress response, on-screen actions, narrated explanation,
+    /// speech and annotations, so nothing talks over or acts past the user.
+    /// The hotkey is the documented way to stop bhai in both modes.
+    fn stop_everything_in_progress_for_hotkey_press(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            abort_task(&mut state.response_task);
+            abort_task(&mut state.visual_task);
+            abort_task(&mut state.screen_circle_fade_task);
+            state.user_drawn_strokes.clear();
+            state.user_drawn_strokes_awaiting_request = false;
+        }
+        // The settings panel would cover the screen.
+        tray_and_settings::hide_settings_window(&self.app);
+        self.speech_player.stop_playback();
+        self.board_panel.finish_live_content();
+        self.board_panel.stop_drawing();
+        self.model3d_window.close();
+        emit_to_overlays(&self.app, "clear-annotations", json!({}));
+    }
+
+    /// Chat mode's hotkey: stop whatever is in progress, then open the chat, or
+    /// tuck it into its edge tab if it is already open and focused.
+    fn handle_chat_mode_hotkey_pressed(&self) {
+        self.stop_everything_in_progress_for_hotkey_press();
+        match chat_hotkey_action(self.chat_panel.is_open_and_focused()) {
+            ChatHotkeyAction::MinimizeChat => self.chat_panel.minimize(),
+            ChatHotkeyAction::OpenChat => self.chat_panel.show_chat_panel(true),
+        }
+    }
+
+    /// Chat mode: the orb opens the chat. Voice mode: the orb is a tap-to-talk
+    /// button (first click listens, second click sends), like pressing and
+    /// releasing the hotkey.
+    pub fn handle_orb_clicked(self: &Arc<Self>) {
+        if self.is_chat_input_mode() {
+            self.chat_panel.show_chat_panel(true);
+        } else if self.state.lock().unwrap().is_recording {
+            self.handle_push_to_talk_released();
+        } else {
+            self.handle_push_to_talk_pressed();
         }
     }
 
@@ -248,21 +334,9 @@ impl CompanionBrain {
             if state.is_recording || state.is_transcribing {
                 return;
             }
-            // Cancel any in-progress response, narrated explanation and fades so nothing talks over the user.
-            abort_task(&mut state.response_task);
-            abort_task(&mut state.visual_task);
-            abort_task(&mut state.screen_circle_fade_task);
-            state.user_drawn_strokes.clear();
-            state.user_drawn_strokes_awaiting_request = false;
             state.is_recording = true;
         }
-        // The settings panel would cover the screen.
-        tray_and_settings::hide_settings_window(&self.app);
-        self.speech_player.stop_playback();
-        self.board_panel.finish_live_content();
-        self.board_panel.stop_drawing();
-        self.model3d_window.close();
-        emit_to_overlays(&self.app, "clear-annotations", json!({}));
+        self.stop_everything_in_progress_for_hotkey_press();
         // While the hotkey is held, a mouse drag draws on the overlay instead of clicking the app underneath.
         overlay_windows::set_overlays_accept_user_drawing(&self.app, true);
         self.hide_onboarding_prompt();
@@ -348,9 +422,50 @@ impl CompanionBrain {
         });
     }
 
-    /// Runs the agent loop for one user message (transcript or "What is this?").
+    /// Runs the agent loop for one spoken message (transcript or "What is this?").
     pub fn send_transcript(self: &Arc<Self>, transcript: String) {
-        let language_note = prompts::reply_language_note(&transcript);
+        self.send_message(transcript, false);
+    }
+
+    /// Sends a message typed in the chat through the same pipeline as a spoken
+    /// one (screenshots, agent loop, pointing, drawings, actions), after the same
+    /// cleanup as a hotkey press so the new answer starts fresh.
+    pub fn send_typed_chat_message(self: &Arc<Self>, typed_message: String) {
+        let trimmed_message = typed_message.trim();
+        if trimmed_message.is_empty() {
+            return;
+        }
+        {
+            let mut state = self.state.lock().unwrap();
+            abort_task(&mut state.visual_task);
+            abort_task(&mut state.screen_circle_fade_task);
+            state.user_drawn_strokes.clear();
+            state.user_drawn_strokes_awaiting_request = false;
+        }
+        self.board_panel.finish_live_content();
+        self.board_panel.stop_drawing();
+        self.model3d_window.close();
+        emit_to_overlays(&self.app, "clear-annotations", json!({}));
+        self.send_message(trimmed_message.to_string(), true);
+    }
+
+    fn send_message(self: &Arc<Self>, transcript: String, is_typed_chat_message: bool) {
+        self.chat_panel.append_message(true, transcript.clone(), false);
+        let (speaks_voice_replies, speaks_chat_replies) = {
+            let settings = self.settings.read().unwrap();
+            (settings.speaks_voice_replies, settings.speaks_chat_replies)
+        };
+        let routing = reply_routing(is_typed_chat_message, speaks_voice_replies, speaks_chat_replies);
+        // A spoken question answered in text needs the chat on screen to be read.
+        if routing.opens_chat_without_switching_mode {
+            self.chat_panel.show_chat_panel(false);
+        }
+        let replies_are_spoken = routing.replies_are_spoken;
+        let language_note = if is_typed_chat_message {
+            prompts::typed_reply_language_note(replies_are_spoken)
+        } else {
+            prompts::reply_language_note(&transcript).to_string()
+        };
         let user_circled_regions: Vec<PhysicalRect> = {
             let mut state = self.state.lock().unwrap();
             abort_task(&mut state.response_task);
@@ -368,10 +483,23 @@ impl CompanionBrain {
 
         let brain = self.clone();
         let response_task = tauri::async_runtime::spawn(async move {
-            let agent_loop_result = brain.run_agent_loop(&transcript, language_note, &user_circled_regions).await;
+            let mut streaming_chat_rows_guard = StreamingChatRowsGuard { chat_panel: brain.chat_panel.clone(), message_ids: Vec::new() };
+            let agent_loop_result = brain
+                .run_agent_loop(
+                    &transcript,
+                    &language_note,
+                    &user_circled_regions,
+                    replies_are_spoken,
+                    &mut streaming_chat_rows_guard.message_ids,
+                )
+                .await;
             if let Err(claude_error) = agent_loop_result {
                 eprintln!("companion response error: {claude_error}");
-                brain.speech_player.speak_text(CLAUDE_UNREACHABLE_MESSAGE.to_string());
+                brain.chat_panel.finish_streaming_messages(&streaming_chat_rows_guard.message_ids);
+                brain.chat_panel.append_message(false, CLAUDE_UNREACHABLE_MESSAGE.to_string(), false);
+                if replies_are_spoken {
+                    brain.speech_player.speak_text(CLAUDE_UNREACHABLE_MESSAGE.to_string());
+                }
                 brain.set_voice_state(VoiceState::Responding);
             }
             // Only reached when not aborted (an abort drops this future first).
@@ -385,6 +513,8 @@ impl CompanionBrain {
         transcript: &str,
         language_note: &str,
         user_circled_regions: &[PhysicalRect],
+        replies_are_spoken: bool,
+        reply_chat_message_ids: &mut Vec<u64>,
     ) -> Result<(), String> {
         let mut previous_step_action_summaries: Vec<String> = Vec::new();
         for agent_step_number in 1..=MAXIMUM_AGENT_STEPS {
@@ -426,6 +556,10 @@ impl CompanionBrain {
                 }
             }
 
+            // The reply streams into the chat as it arrives, like a chat app.
+            let streaming_reply_message_id = self.chat_panel.append_message(false, String::new(), true);
+            reply_chat_message_ids.push(streaming_reply_message_id);
+
             let system_prompt_file = self.system_prompt_file(SystemPromptKind::VoiceResponse);
             let full_response_text = run_claude_streaming(
                 ClaudeRequest {
@@ -437,7 +571,13 @@ impl CompanionBrain {
                     effort: None,
                     model: self.claude_model(),
                 },
-                |_accumulated_reply_text| {},
+                |accumulated_reply_text| {
+                    self.chat_panel.update_message(
+                        streaming_reply_message_id,
+                        chat_display_text_for_partial_reply(accumulated_reply_text),
+                        true,
+                    );
+                },
             )
             .await?;
             eprintln!("claude replied: {}", full_response_text.chars().take(400).collect::<String>());
@@ -499,10 +639,16 @@ impl CompanionBrain {
             });
             eprintln!("step {agent_step_number}: {} on-screen action(s)", parsed_reply.actions.len());
 
-            if !spoken_text.trim().is_empty() {
-                // Let the previous round's narration finish rather than cutting it off.
-                self.wait_until_not_speaking().await;
-                self.speech_player.speak_text(spoken_text.clone());
+            let final_reply_text = spoken_text.trim().to_string();
+            if final_reply_text.is_empty() {
+                self.chat_panel.remove_message(streaming_reply_message_id);
+            } else {
+                self.chat_panel.update_message(streaming_reply_message_id, final_reply_text, false);
+                if replies_are_spoken {
+                    // Let the previous round's narration finish rather than cutting it off.
+                    self.wait_until_not_speaking().await;
+                    self.speech_player.speak_text(spoken_text.clone());
+                }
                 self.set_voice_state(VoiceState::Responding);
             }
             self.show_screen_circles_while_speaking(&parsed_reply.circles, &screen_captures);
@@ -515,7 +661,10 @@ impl CompanionBrain {
             if action_summaries == previous_step_action_summaries {
                 eprintln!("agent repeated the same actions, stopping");
                 self.wait_until_not_speaking().await;
-                self.speech_player.speak_text(REPEATED_ACTIONS_MESSAGE.to_string());
+                self.chat_panel.append_message(false, REPEATED_ACTIONS_MESSAGE.to_string(), false);
+                if replies_are_spoken {
+                    self.speech_player.speak_text(REPEATED_ACTIONS_MESSAGE.to_string());
+                }
                 break;
             }
             previous_step_action_summaries = action_summaries;
@@ -530,6 +679,12 @@ impl CompanionBrain {
     /// Replays Claude's [CLICK]/[TYPE]/[KEY] actions in order. Runs inside the
     /// response task, so pressing the hotkey again cancels whatever is left.
     async fn perform_computer_actions(&self, computer_actions: &[ComputerAction], screen_captures: &[ScreenCapture]) {
+        // Typing and key presses must reach the user's app, not the chat's text box.
+        self.chat_panel.give_keyboard_focus_back_to_user_app();
+        // Screenshots leave out bhai's own windows, so Claude may click something
+        // behind the chat. Let clicks pass through it until the actions are done.
+        self.chat_panel.set_lets_clicks_pass_through(true);
+        let _chat_click_through_guard = ChatClickThroughGuard { chat_panel: &self.chat_panel };
         for computer_action in computer_actions {
             match computer_action {
                 ComputerAction::Click { screenshot_x, screenshot_y, label, screen_number } => {

@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::chat_panel::ChatPanelSide;
 use crate::push_to_talk::PushToTalkShortcutOption;
 use crate::supertonic::SupertonicVoice;
 
@@ -18,6 +19,14 @@ pub struct Settings {
     pub supertonic_voice: SupertonicVoice,
     pub push_to_talk_shortcut: PushToTalkShortcutOption,
     pub has_completed_onboarding: bool,
+    /// bhai mode: false = Voice (hold the hotkey to talk), true = Chat (the hotkey
+    /// opens the typed chat, which replaces the orb on screen). Mac `isChatInputMode`.
+    pub is_chat_input_mode: bool,
+    /// Spoken questions get voice + text (true) or text only in the chat (false).
+    pub speaks_voice_replies: bool,
+    /// Typed questions get text (false) or text + voice (true).
+    pub speaks_chat_replies: bool,
+    pub chat_panel_side: ChatPanelSide,
 }
 
 impl Default for Settings {
@@ -27,6 +36,10 @@ impl Default for Settings {
             supertonic_voice: SupertonicVoice::default(),
             push_to_talk_shortcut: PushToTalkShortcutOption::default(),
             has_completed_onboarding: false,
+            is_chat_input_mode: false,
+            speaks_voice_replies: true,
+            speaks_chat_replies: false,
+            chat_panel_side: ChatPanelSide::Right,
         }
     }
 }
@@ -80,6 +93,10 @@ mod tests {
                 "supertonicVoice": "F2",
                 "pushToTalkShortcut": "ctrlWin",
                 "hasCompletedOnboarding": false,
+                "isChatInputMode": false,
+                "speaksVoiceReplies": true,
+                "speaksChatReplies": false,
+                "chatPanelSide": "right",
             })
         );
 

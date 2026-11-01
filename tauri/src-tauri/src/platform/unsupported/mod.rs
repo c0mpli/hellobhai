@@ -14,6 +14,7 @@ mod runtime_downloads;
 mod screen_capture;
 mod system_settings;
 mod system_voice;
+mod window_focus;
 
 pub use child_process::*;
 pub use claude_tools::*;
@@ -24,3 +25,4 @@ pub use runtime_downloads::*;
 pub use screen_capture::*;
 pub use system_settings::*;
 pub use system_voice::*;
+pub use window_focus::*;
