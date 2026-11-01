@@ -8,6 +8,9 @@
   --text-secondary: #ADB5B2;
   --text-tertiary: #6B736F;
   --accent-blue: #3380FF; /* DS.Colors.overlayCursorColor */
+  --accent-text: #60A5FA; /* DS.Colors.accentText (blue400) */
+  /* Settings Chat -> Text size; set from chat-state. */
+  --chat-text-size: 13px;
   --soft-landing: cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 
@@ -69,6 +72,45 @@ body.is-minimized .chat-card { display: none; }
 
 .divider { height: 1px; background: var(--border-subtle); flex: none; }
 
+/* One tab per conversation (Mac ChatTabButton): the active one lit like a
+   selected segment; the x shows on the active tab and on hover. */
+.tab-strip {
+  display: flex;
+  gap: 4px;
+  padding: 0 14px 10px;
+  overflow-x: auto;
+  flex: none;
+  scrollbar-width: none;
+  user-select: none;
+}
+.tab-strip::-webkit-scrollbar { display: none; }
+.chat-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 5px 5px 5px 10px;
+  border-radius: 999px;
+  border: 0.5px solid transparent;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.chat-tab:hover { background: rgba(255, 255, 255, 0.06); }
+.chat-tab.is-active { background: rgba(255, 255, 255, 0.10); border-color: var(--border-subtle); }
+.chat-tab-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); white-space: nowrap; }
+.chat-tab:hover .chat-tab-title { color: var(--text-secondary); }
+.chat-tab.is-active .chat-tab-title { color: var(--text-primary); }
+.chat-tab-close {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+  opacity: 0;
+}
+.chat-tab.is-active .chat-tab-close, .chat-tab:hover .chat-tab-close { opacity: 1; }
+
 .message-list {
   flex: 1;
   overflow-y: auto;
@@ -102,6 +144,7 @@ body.is-minimized .chat-card { display: none; }
   background: var(--accent-blue);
   border-radius: 14px;
   padding: 8px 12px;
+  font-size: var(--chat-text-size);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
@@ -111,8 +154,11 @@ body.is-minimized .chat-card { display: none; }
 .reply-row.is-thinking { align-items: center; }
 .reply-logo { width: 20px; height: 20px; margin-top: -2px; }
 .reply-row.is-thinking .reply-logo { margin-top: 0; }
-.reply-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; user-select: text; }
+.reply-text { font-size: var(--chat-text-size); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; user-select: text; }
 .streaming-caret { color: var(--accent-blue); }
+/* While a reply is spoken: the current sentence lit, the rest dimmed until bhai gets to it. */
+.spoken-sentence { color: var(--accent-text); }
+.not-yet-spoken { color: var(--text-tertiary); }
 
 .thinking-dots { display: flex; gap: 4px; }
 .thinking-dots span {
@@ -144,11 +190,11 @@ body.is-minimized .chat-card { display: none; }
   outline: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--chat-text-size);
+  line-height: calc(var(--chat-text-size) + 5px);
   /* Lines the first row up with the middle of the send button. */
   padding: 3px 0;
-  max-height: calc(18px * 6 + 6px);
+  max-height: calc((var(--chat-text-size) + 5px) * 6 + 6px);
   overflow-y: auto;
 }
 #composer-input::placeholder { color: var(--text-tertiary); }

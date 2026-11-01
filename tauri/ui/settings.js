@@ -24,6 +24,13 @@ const REASONING_EFFORT_OPTIONS = [
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
 ];
+// The Mac's ChatTextSize: small 12, medium 13 (default), large 15, extra large 17 px.
+const CHAT_TEXT_SIZE_OPTIONS = [
+  { value: 'small', label: 'Small' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'large', label: 'Large' },
+  { value: 'extraLarge', label: 'Extra large' },
+];
 const SUPERTONIC_VOICES = ['F1', 'F2', 'F3', 'F4', 'F5', 'M1', 'M2', 'M3', 'M4', 'M5'];
 // Same names, order and swatch colours as the Mac's OrbColorVariant; the value is orb.riv's color input.
 const ORB_COLOR_VARIANTS = [
@@ -243,6 +250,7 @@ function renderSettings(settingsSnapshot) {
     settingsSnapshot.speaksChatReplies ? 'voice' : 'text',
     (replyKind) => changeSetting('speaksChatReplies', replyKind === 'voice'),
   );
+  fillSelect(element('chat-text-size-picker'), CHAT_TEXT_SIZE_OPTIONS, settingsSnapshot.chatTextSize);
   renderSegmentedControl(
     element('chat-side-picker'),
     [{ optionID: 'left', label: 'Left' }, { optionID: 'right', label: 'Right' }],
@@ -369,6 +377,7 @@ async function startSettingsPanel() {
 
   element('effort-picker').addEventListener('change', (event) => changeSetting('reasoningEffort', event.target.value || null));
   element('voice-picker').addEventListener('change', (event) => changeSetting('supertonicVoice', event.target.value));
+  element('chat-text-size-picker').addEventListener('change', (event) => changeSetting('chatTextSize', event.target.value));
   element('preview-voice-button').addEventListener('click', async () => {
     await invoke('preview_voice', { voice: element('voice-picker').value });
     refreshStatus();

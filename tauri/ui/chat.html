@@ -13,6 +13,9 @@
     <img class="bhai-logo header-logo" src="logo.png" alt="bhai">
     <h1>bhai</h1>
     <span class="header-spacer"></span>
+    <button class="icon-button" id="new-chat-button" type="button" title="New chat (Ctrl+T)" aria-label="New chat">
+      <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
     <button class="icon-button" id="swap-side-button" type="button" aria-label="Move the chat to the other edge">
       <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M2 5h11M10 2l3 3-3 3M14 11H3M6 8l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
@@ -23,6 +26,7 @@
       <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1 1 9 9M9 1 1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
   </header>
+  <nav class="tab-strip" id="tab-strip" aria-label="Chats"></nav>
   <div class="divider"></div>
 
   <section class="message-list" id="message-list"></section>

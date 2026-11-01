@@ -21,7 +21,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::app_paths;
 use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
-use crate::chat_conversation::{chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatHotkeyAction};
+use crate::chat_conversation::{chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatConversation, ChatHotkeyAction};
 use crate::chat_panel::ChatPanel;
 use crate::claude_cli::{home_directory, ClaudeRequest};
 use crate::brain_engine::ask_selected_brain;
@@ -32,13 +32,14 @@ use crate::narrated_step_queue::{NarratedStepQueue, StreamedLineForwarder};
 use crate::orb_window::OrbClickThroughWhileActing;
 use crate::overlay_windows;
 use crate::page_bridge::emit_to_overlays;
+use crate::platform;
 use crate::prompts::{self, SystemPromptKind};
 use crate::push_to_talk::HotkeyEvent;
 use crate::response_tags::{parse_point_tag, parse_reply, CircleTag, ComputerAction};
 use crate::screen_capture::{self, ScreenCapture};
 use crate::screen_mapping::{self, PhysicalRect};
 use crate::settings::{self, SharedSettings};
-use crate::speech_player::SpeechPlayer;
+use crate::speech_player::{SpeechPlayer, SpeechProgressEvent};
 use crate::stream_json::LabeledImage;
 use crate::tray_and_settings;
 use crate::whisper_transcriber::{SpeechModelState, WhisperTranscriber};
@@ -198,6 +199,12 @@ impl CompanionBrain {
         let push_to_talk_recorder = PushToTalkRecorder::new(Box::new(move |audio_level| {
             emit_to_overlays(&app_for_audio_level, "audio-level", json!({ "level": audio_level }));
         }));
+        // The chat follows along while a reply is spoken (Mac `onSentenceStartedPlaying`).
+        let chat_panel_for_speech_progress = chat_panel.clone();
+        speech_player.set_speech_progress_observer(Box::new(move |speech_progress_event| match speech_progress_event {
+            SpeechProgressEvent::SentenceStartedPlaying(sentence) => chat_panel_for_speech_progress.advance_chat_speech_progress(sentence),
+            SpeechProgressEvent::SpeechStopped => chat_panel_for_speech_progress.clear_chat_speech_progress(),
+        }));
         Arc::new(CompanionBrain {
             app,
             settings,
@@ -246,6 +253,14 @@ impl CompanionBrain {
 
     fn system_prompt_file(&self, kind: SystemPromptKind) -> std::path::PathBuf {
         prompts::prompt_file_path(&app_paths::prompts_directory(&self.app), kind)
+    }
+
+    /// Speaks a reply that is also a chat row, so the chat lights up each
+    /// sentence as its audio starts.
+    fn speak_chat_reply(&self, reply_text: String, chat_message_id: u64) {
+        self.speech_player.speak_text(reply_text);
+        // After speak_text, which replaces any earlier playback.
+        self.chat_panel.begin_speaking_chat_reply(chat_message_id);
     }
 
     async fn wait_until_not_speaking(&self) {
@@ -307,6 +322,63 @@ impl CompanionBrain {
         self.board_panel.stop_drawing();
         self.model3d_window.close();
         emit_to_overlays(&self.app, "clear-annotations", json!({}));
+    }
+
+    // MARK: Chat tabs (Mac `openNewChatTab` / `switchToChatTab` / `closeChatTab`)
+
+    /// Opens an empty tab after the current one and switches to it. An empty
+    /// tab is already a new chat, so nothing happens on one.
+    pub fn open_new_chat_tab(&self) {
+        let new_tab_id = self.chat_panel.change_chat_tabs(|chat_tabs, active_conversation| {
+            if active_conversation.messages().is_empty() {
+                return None;
+            }
+            Some(chat_tabs.insert_empty_tab_after_active())
+        });
+        if let Some(new_tab_id) = new_tab_id {
+            self.switch_to_chat_tab(new_tab_id);
+        }
+    }
+
+    /// A reply still coming in belongs to the tab it was asked in, so whatever
+    /// is in progress stops; the tab's own history goes to the brain from now on.
+    pub fn switch_to_chat_tab(&self, target_tab_id: u64) {
+        let can_switch = self
+            .chat_panel
+            .change_chat_tabs(|chat_tabs, _| chat_tabs.contains_tab(target_tab_id) && chat_tabs.active_tab_id() != target_tab_id);
+        if !can_switch {
+            return;
+        }
+        self.stop_everything_in_progress_for_hotkey_press();
+        // Taken out so the brain's lock is never held while the chat's is.
+        let mut active_conversation_history = std::mem::take(&mut self.state.lock().unwrap().conversation_history);
+        self.chat_panel.change_chat_tabs(|chat_tabs, active_conversation| {
+            chat_tabs.switch_to_tab(target_tab_id, active_conversation, &mut active_conversation_history)
+        });
+        self.state.lock().unwrap().conversation_history = active_conversation_history;
+    }
+
+    /// Closing the last tab clears it instead.
+    pub fn close_chat_tab(&self, closed_tab_id: u64) {
+        let (tab_exists, tab_count, active_tab_id) = self.chat_panel.change_chat_tabs(|chat_tabs, _| {
+            (chat_tabs.contains_tab(closed_tab_id), chat_tabs.tab_count(), chat_tabs.active_tab_id())
+        });
+        if !tab_exists {
+            return;
+        }
+        if tab_count == 1 {
+            self.stop_everything_in_progress_for_hotkey_press();
+            self.state.lock().unwrap().conversation_history = ConversationHistory::new();
+            self.chat_panel.change_chat_tabs(|_, active_conversation| *active_conversation = ChatConversation::default());
+            return;
+        }
+        if closed_tab_id == active_tab_id {
+            let neighbour_tab_id = self.chat_panel.change_chat_tabs(|chat_tabs, _| chat_tabs.neighbour_of_active_tab());
+            if let Some(neighbour_tab_id) = neighbour_tab_id {
+                self.switch_to_chat_tab(neighbour_tab_id);
+            }
+        }
+        self.chat_panel.change_chat_tabs(|chat_tabs, _| chat_tabs.remove_parked_tab(closed_tab_id));
     }
 
     /// Chat mode's hotkey: stop whatever is in progress, then open the chat, or
@@ -637,11 +709,11 @@ impl CompanionBrain {
             if final_reply_text.is_empty() {
                 self.chat_panel.remove_message(streaming_reply_message_id);
             } else {
-                self.chat_panel.update_message(streaming_reply_message_id, final_reply_text, false);
+                self.chat_panel.update_message(streaming_reply_message_id, final_reply_text.clone(), false);
                 if replies_are_spoken {
                     // Let the previous round's narration finish rather than cutting it off.
                     self.wait_until_not_speaking().await;
-                    self.speech_player.speak_text(spoken_text.clone());
+                    self.speak_chat_reply(final_reply_text, streaming_reply_message_id);
                 }
                 self.set_voice_state(VoiceState::Responding);
             }
@@ -655,9 +727,9 @@ impl CompanionBrain {
             if action_summaries == previous_step_action_summaries {
                 eprintln!("agent repeated the same actions, stopping");
                 self.wait_until_not_speaking().await;
-                self.chat_panel.append_message(false, REPEATED_ACTIONS_MESSAGE.to_string(), false);
+                let repeated_actions_message_id = self.chat_panel.append_message(false, REPEATED_ACTIONS_MESSAGE.to_string(), false);
                 if replies_are_spoken {
-                    self.speech_player.speak_text(REPEATED_ACTIONS_MESSAGE.to_string());
+                    self.speak_chat_reply(REPEATED_ACTIONS_MESSAGE.to_string(), repeated_actions_message_id);
                 }
                 break;
             }
@@ -740,16 +812,44 @@ impl CompanionBrain {
         let last_circle_appear_delay_seconds = if circle_annotations.is_empty() { 0.0 } else { 0.3 + (circle_annotations.len() - 1) as f64 * 1.2 };
         emit_to_overlays(&self.app, "screen-circles", json!({ "circles": circle_annotations }));
 
+        let has_screen_circles = !circle_annotations.is_empty();
         let brain = self.clone();
         let fade_task = tauri::async_runtime::spawn(async move {
             let earliest_fade_time = Instant::now() + Duration::from_secs_f64(last_circle_appear_delay_seconds + 1.5);
+            // Circles sit at fixed screen positions, so once the user switches to
+            // another window (another app, or a window on another virtual
+            // desktop) they would land on something else: clear them then.
+            // bhai's own windows don't count (foreground_window_id is None for
+            // them, and on Wayland, where nothing is watched).
+            let foreground_window_id_when_circles_appeared = platform::foreground_window_id();
             while brain.speech_player.is_speaking() || Instant::now() < earliest_fade_time {
                 tokio::time::sleep(Duration::from_millis(100)).await;
+                if has_screen_circles {
+                    let current_foreground_window_id = platform::foreground_window_id();
+                    if current_foreground_window_id.is_some() && current_foreground_window_id != foreground_window_id_when_circles_appeared {
+                        brain.clear_screen_circles_after_screen_change();
+                        return;
+                    }
+                }
             }
             brain.state.lock().unwrap().user_drawn_strokes.clear();
             emit_to_overlays(&brain.app, "fade-annotations", json!({}));
         });
         self.state.lock().unwrap().screen_circle_fade_task = Some(fade_task);
+    }
+
+    /// Mac `clearScreenCircles`: the circles go at once; the user's own strokes
+    /// belong to the same screen and go too, unless they are still drawing.
+    fn clear_screen_circles_after_screen_change(&self) {
+        let user_is_still_drawing = {
+            let mut state = self.state.lock().unwrap();
+            let user_is_still_drawing = state.voice_state == VoiceState::Listening;
+            if !user_is_still_drawing {
+                state.user_drawn_strokes.clear();
+            }
+            user_is_still_drawing
+        };
+        emit_to_overlays(&self.app, "clear-screen-circles", json!({ "keepsUserStrokes": user_is_still_drawing }));
     }
 
     /// Narrates a whiteboard sketch or live notes with a separate claude call. Each

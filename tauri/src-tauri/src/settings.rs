@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::brain_engine::BrainEngine;
+use crate::chat_conversation::ChatTextSize;
 use crate::chat_panel::ChatPanelSide;
 use crate::orb_window::{VoiceBuddyStyle, DEFAULT_ORB_COLOR, DEFAULT_ORB_SIDE_LENGTH};
 use crate::push_to_talk::PushToTalkShortcutOption;
@@ -40,6 +41,8 @@ pub struct Settings {
     /// Typed questions: text only (false) or text + voice.
     pub speaks_chat_replies: bool,
     pub chat_panel_side: ChatPanelSide,
+    /// Chat messages and composer: small 12, medium 13 (default), large 15, extra large 17 px.
+    pub chat_text_size: ChatTextSize,
     pub voice_buddy_style: VoiceBuddyStyle,
     /// Logical pixels, 48-160 (`orb_window::clamped_orb_side_length` on use).
     pub orb_side_length: f64,
@@ -62,6 +65,7 @@ impl Default for Settings {
             speaks_voice_replies: true,
             speaks_chat_replies: false,
             chat_panel_side: ChatPanelSide::default(),
+            chat_text_size: ChatTextSize::default(),
             voice_buddy_style: VoiceBuddyStyle::default(),
             orb_side_length: DEFAULT_ORB_SIDE_LENGTH,
             selected_orb_color: DEFAULT_ORB_COLOR,
@@ -135,6 +139,7 @@ mod tests {
                 "speaksVoiceReplies": true,
                 "speaksChatReplies": false,
                 "chatPanelSide": "right",
+                "chatTextSize": "medium",
                 "voiceBuddyStyle": "orb",
                 "orbSideLength": 88.0,
                 "selectedOrbColor": 8,

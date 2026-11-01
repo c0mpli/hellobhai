@@ -13,6 +13,8 @@ const sendButtonElement = element('send-button');
 
 let latestChatState = null;
 let lastRenderedMessagesJson = '';
+let lastRenderedMessagesOnlyJson = '';
+let lastScrolledToActiveChatTabId = null;
 
 function createElement(tagName, className, textContent) {
   const createdElement = document.createElement(tagName);
@@ -45,7 +47,24 @@ function renderEmptyState() {
   return emptyState;
 }
 
-function renderMessageRow(chatMessage, previousMessage) {
+/// While this reply is spoken: text already said stays normal, the sentence
+/// being said is lit in the accent colour and the rest is dimmed until bhai
+/// gets to it. Offsets are UTF-16, like JavaScript strings.
+function createReplyTextElement(chatMessage, speechProgress) {
+  const isBeingSpoken = speechProgress
+    && speechProgress.messageId === chatMessage.id
+    && speechProgress.sentenceEnd <= chatMessage.text.length;
+  if (!isBeingSpoken) return createElement('div', 'reply-text', chatMessage.text);
+  const replyText = createElement('div', 'reply-text');
+  replyText.append(
+    document.createTextNode(chatMessage.text.slice(0, speechProgress.sentenceStart)),
+    createElement('span', 'spoken-sentence', chatMessage.text.slice(speechProgress.sentenceStart, speechProgress.sentenceEnd)),
+    createElement('span', 'not-yet-spoken', chatMessage.text.slice(speechProgress.sentenceEnd)),
+  );
+  return replyText;
+}
+
+function renderMessageRow(chatMessage, previousMessage, speechProgress) {
   if (chatMessage.isFromUser) {
     const userRow = createElement('div', 'user-row');
     // Extra space above each new question, so a question and its answer read as one group.
@@ -62,26 +81,60 @@ function renderMessageRow(chatMessage, previousMessage) {
     replyRow.append(createLogoImage('reply-logo'), thinkingDots);
     return replyRow;
   }
-  const replyText = createElement('div', 'reply-text', chatMessage.text);
+  const replyText = createReplyTextElement(chatMessage, speechProgress);
   // A thin caret trails the text while it is still streaming.
   if (chatMessage.isStreaming) replyText.append(createElement('span', 'streaming-caret', ' ▏'));
   replyRow.append(createLogoImage('reply-logo'), replyText);
   return replyRow;
 }
 
-function renderMessages(chatMessages) {
-  const messagesJson = JSON.stringify(chatMessages);
+function renderMessages(chatMessages, speechProgress) {
+  const messagesJson = JSON.stringify([chatMessages, speechProgress]);
   if (messagesJson === lastRenderedMessagesJson) return;
+  const onlySpeechProgressChanged = JSON.stringify(chatMessages) === lastRenderedMessagesOnlyJson;
   lastRenderedMessagesJson = messagesJson;
+  lastRenderedMessagesOnlyJson = JSON.stringify(chatMessages);
+  const previousScrollTop = messageListElement.scrollTop;
   messageListElement.replaceChildren();
   if (chatMessages.length === 0) {
     messageListElement.append(renderEmptyState());
     return;
   }
   chatMessages.forEach((chatMessage, messageIndex) => {
-    messageListElement.append(renderMessageRow(chatMessage, chatMessages[messageIndex - 1]));
+    messageListElement.append(renderMessageRow(chatMessage, chatMessages[messageIndex - 1], speechProgress));
   });
-  messageListElement.scrollTo({ top: messageListElement.scrollHeight, behavior: 'smooth' });
+  // Following speech only recolours text, so the reader's scroll position stays.
+  if (onlySpeechProgressChanged) {
+    messageListElement.scrollTop = previousScrollTop;
+  } else {
+    messageListElement.scrollTo({ top: messageListElement.scrollHeight, behavior: 'smooth' });
+  }
+}
+
+function renderTabs(chatTabs, activeChatTabId) {
+  const tabStripElement = element('tab-strip');
+  tabStripElement.replaceChildren(...chatTabs.map((chatTab) => {
+    const isActive = chatTab.id === activeChatTabId;
+    const tabElement = createElement('div', isActive ? 'chat-tab is-active' : 'chat-tab');
+    tabElement.title = chatTab.title;
+    tabElement.addEventListener('click', () => invoke('switch_to_chat_tab', { tabId: chatTab.id }));
+    const closeButton = createElement('button', 'chat-tab-close');
+    closeButton.type = 'button';
+    closeButton.title = 'Close tab (Ctrl+W)';
+    closeButton.setAttribute('aria-label', 'Close tab');
+    closeButton.innerHTML = '<svg viewBox="0 0 10 10" width="7" height="7" aria-hidden="true"><path d="M1.5 1.5 8.5 8.5M8.5 1.5 1.5 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+    closeButton.addEventListener('click', (clickEvent) => {
+      clickEvent.stopPropagation();
+      invoke('close_chat_tab', { tabId: chatTab.id });
+    });
+    tabElement.append(createElement('span', 'chat-tab-title', chatTab.title), closeButton);
+    return tabElement;
+  }));
+  const activeTabElement = tabStripElement.querySelector('.chat-tab.is-active');
+  if (activeTabElement && activeChatTabId !== lastScrolledToActiveChatTabId) {
+    lastScrolledToActiveChatTabId = activeChatTabId;
+    activeTabElement.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+  }
 }
 
 function applyChatState(chatState) {
@@ -107,7 +160,13 @@ function applyChatState(chatState) {
   element('replies-text-button').classList.toggle('is-selected', !chatState.speaksChatReplies);
   element('replies-voice-button').classList.toggle('is-selected', chatState.speaksChatReplies);
 
-  renderMessages(chatState.messages);
+  const chatTextSize = `${chatState.chatTextPointSize}px`;
+  if (document.documentElement.style.getPropertyValue('--chat-text-size') !== chatTextSize) {
+    document.documentElement.style.setProperty('--chat-text-size', chatTextSize);
+    resizeComposerToFitText();
+  }
+  renderTabs(chatState.tabs, chatState.activeChatTabId);
+  renderMessages(chatState.messages, chatState.speechProgress);
   if (chatState.isShown && !chatState.isMinimized && !wasShownAndExpanded) composerInputElement.focus();
 }
 
@@ -142,13 +201,26 @@ composerInputElement.addEventListener('blur', () => element('composer-box').clas
 sendButtonElement.addEventListener('click', () => sendMessage(composerInputElement.value));
 
 // Esc minimizes, from anywhere in the page (the Mac catches it in the text field too).
+// Ctrl+T opens a new chat (nothing on an empty one) and Ctrl+W closes the current tab.
 document.addEventListener('keydown', (keyboardEvent) => {
   if (keyboardEvent.key === 'Escape') {
     keyboardEvent.preventDefault();
     invoke('minimize_chat');
+    return;
+  }
+  const hasOnlyCtrl = keyboardEvent.ctrlKey && !keyboardEvent.altKey && !keyboardEvent.shiftKey && !keyboardEvent.metaKey;
+  if (!hasOnlyCtrl) return;
+  const pressedKey = keyboardEvent.key.toLowerCase();
+  if (pressedKey === 't') {
+    keyboardEvent.preventDefault();
+    invoke('open_new_chat_tab');
+  } else if (pressedKey === 'w' && latestChatState) {
+    keyboardEvent.preventDefault();
+    invoke('close_chat_tab', { tabId: latestChatState.activeChatTabId });
   }
 });
 
+element('new-chat-button').addEventListener('click', () => invoke('open_new_chat_tab'));
 element('swap-side-button').addEventListener('click', () => invoke('swap_chat_side'));
 element('minimize-button').addEventListener('click', () => invoke('minimize_chat'));
 element('close-button').addEventListener('click', () => invoke('close_chat'));
