@@ -84,6 +84,9 @@ final class LocalTTSClient: ObservableObject {
     /// can't clear the speaking flag for the playback that replaced it.
     private var playbackGeneration = 0
     private let onSpeakingStateChanged: (Bool) -> Void
+    /// Called with each sentence as its audio starts (or with the rest of the
+    /// text when the system voice takes over), so the chat can follow along.
+    var onSentenceStartedPlaying: ((String) -> Void)?
 
     init(onSpeakingStateChanged: @escaping (Bool) -> Void) {
         self.onSpeakingStateChanged = onSpeakingStateChanged
@@ -258,6 +261,7 @@ final class LocalTTSClient: ObservableObject {
             // Supertonic), so AVAudioPlayer handles the rate per clip.
             guard let clipPlayer = try? AVAudioPlayer(data: clipWavData) else { continue }
             audioPlayer = clipPlayer
+            onSentenceStartedPlaying?(sentences[sentenceIndex])
             clipPlayer.play()
             while clipPlayer.isPlaying {
                 try? await Task.sleep(for: .milliseconds(30))
@@ -323,6 +327,7 @@ final class LocalTTSClient: ObservableObject {
         utterance.voice = Self.containsDevanagari(text)
             ? AVSpeechSynthesisVoice(language: "hi-IN")
             : Self.bestInstalledSystemVoice
+        onSentenceStartedPlaying?(text)
         systemSpeechSynthesizer.speak(utterance)
         // isSpeaking flips true asynchronously, so give it a moment first.
         try? await Task.sleep(for: .milliseconds(150))

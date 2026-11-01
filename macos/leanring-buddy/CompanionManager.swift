@@ -14,6 +14,55 @@ import ScreenCaptureKit
 import SwiftUI
 
 /// One line in the chat panel: something the user typed or said, or a reply.
+/// Where speech is inside a chat reply, in Character offsets into its text,
+/// so the chat can light up the sentence being spoken.
+struct ChatSpeechProgress: Equatable {
+    let chatMessageID: UUID
+    let currentSentenceCharacterRange: Range<Int>
+}
+
+/// One chat tab (like a browser tab). Only the title is kept here; the
+/// active tab's messages live in `chatMessages`.
+struct ChatTab: Identifiable, Equatable {
+    let id = UUID()
+    var title = ChatTab.newChatTitle
+
+    static let newChatTitle = "New chat"
+
+    /// The tab is named after its first question, cut to fit a tab.
+    static func title(forChatMessages chatMessages: [CompanionChatMessage]) -> String {
+        guard let firstQuestion = chatMessages.first(where: { $0.isFromUser })?.text else { return newChatTitle }
+        let singleLineQuestion = firstQuestion.split(whereSeparator: \.isNewline).joined(separator: " ")
+        return singleLineQuestion.count > 24 ? String(singleLineQuestion.prefix(24)) + "..." : singleLineQuestion
+    }
+}
+
+/// Text size for chat messages and the composer. Persisted as `chatTextSize`.
+enum ChatTextSize: String, CaseIterable {
+    case small
+    case medium
+    case large
+    case extraLarge
+
+    var title: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        case .extraLarge: return "Extra large"
+        }
+    }
+
+    var pointSize: CGFloat {
+        switch self {
+        case .small: return 12
+        case .medium: return 13
+        case .large: return 15
+        case .extraLarge: return 17
+        }
+    }
+}
+
 struct CompanionChatMessage: Identifiable, Equatable {
     let id = UUID()
     let isFromUser: Bool
@@ -53,11 +102,13 @@ final class CompanionManager: ObservableObject {
     /// Custom speech bubble text for the pointing animation. When set,
     /// BlueCursorView uses this instead of a random pointer phrase.
     @Published var detectedElementBubbleText: String?
-    /// Hand-drawn gold ellipses from [CIRCLE] tags, drawn on the overlay
+    /// Hand-drawn blue ellipses from [CIRCLE] tags, drawn on the overlay
     /// around the on-screen text the reply talks about.
     @Published var screenCircleAnnotations: [ScreenCircleAnnotation] = []
     /// Fades the circles out once the reply finishes speaking.
     private var screenCircleFadeTask: Task<Void, Never>?
+    /// Workspace observers that clear the circles on a Space or app switch.
+    private var screenChangeObservers: [NSObjectProtocol] = []
     /// Freehand strokes (global AppKit coords) the user drew on the overlay
     /// while holding the hotkey, so "what is this?" knows what "this" is.
     @Published var userDrawnStrokes: [[CGPoint]] = []
@@ -94,9 +145,24 @@ final class CompanionManager: ObservableObject {
 
     /// On-device neural text-to-speech (Kokoro for English, Supertonic-3 for
     /// Hindi and as fallback). Exposed so the panel can switch engine and voice.
-    private(set) lazy var localTTSClient = LocalTTSClient { [weak self] isSpeaking in
-        self?.isSpeakingAloud = isSpeaking
-    }
+    private(set) lazy var localTTSClient: LocalTTSClient = {
+        let localTTSClient = LocalTTSClient { [weak self] isSpeaking in
+            self?.isSpeakingAloud = isSpeaking
+            if !isSpeaking { self?.chatSpeechProgress = nil }
+        }
+        localTTSClient.onSentenceStartedPlaying = { [weak self] sentence in
+            self?.advanceChatSpeechProgress(toSentence: sentence)
+        }
+        return localTTSClient
+    }()
+
+    /// The sentence of a chat reply being spoken right now, or nil.
+    @Published private(set) var chatSpeechProgress: ChatSpeechProgress?
+    /// The chat reply the current speech reads out, and how far into its
+    /// text the sentence search has got (so a repeated sentence matches the
+    /// right occurrence).
+    private var spokenChatMessageID: UUID?
+    private var spokenChatMessageSearchStartOffset = 0
 
     /// Floating panel for Claude's animated visual explanations.
     let visualExplanationPanelManager = VisualExplanationPanelManager()
@@ -116,6 +182,19 @@ final class CompanionManager: ObservableObject {
     /// Everything said and typed this session, shown in the chat panel.
     /// Voice turns land here too, so the chat reads as one conversation.
     @Published private(set) var chatMessages: [CompanionChatMessage] = []
+
+    /// The chat's tabs, in order. The active one's messages and history are
+    /// `chatMessages` and `conversationHistory`; the others are parked in
+    /// `parkedChatTabConversations` until switched back to.
+    @Published private(set) var chatTabs: [ChatTab] = [CompanionManager.firstChatTab]
+    @Published private(set) var activeChatTabID: UUID = CompanionManager.firstChatTab.id
+    /// The tab the chat starts with (the app has one CompanionManager).
+    private static let firstChatTab = ChatTab()
+    private var parkedChatTabConversations: [UUID: (chatMessages: [CompanionChatMessage], conversationHistory: [(userTranscript: String, assistantResponse: String)])] = [:]
+
+    @Published var chatTextSize: ChatTextSize = ChatTextSize(rawValue: UserDefaults.standard.string(forKey: "chatTextSize") ?? "") ?? .medium {
+        didSet { UserDefaults.standard.set(chatTextSize.rawValue, forKey: "chatTextSize") }
+    }
 
     /// Whether replies to typed messages are also spoken aloud. Off by
     /// default: someone typing usually doesn't want the voice.
@@ -414,6 +493,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        clearScreenCirclesWhenTheScreenChanges()
         visualExplanationPanelManager.onPenScreenLocationChanged = { [weak self] penScreenLocation in
             self?.buddyDrawingPenScreenLocation = penScreenLocation
         }
@@ -860,6 +940,83 @@ final class CompanionManager: ObservableObject {
         return "(the user spoke english this turn: reply and narrate in english only, even if earlier turns were in hindi.)"
     }
 
+    /// Speaks a reply that is also shown as a chat message, so the chat can
+    /// highlight each sentence as it is spoken.
+    private func speakChatReply(_ replyText: String, chatMessageID: UUID) {
+        localTTSClient.speakText(replyText)
+        // After speakText: it stops the previous playback, which clears the progress.
+        spokenChatMessageID = chatMessageID
+        spokenChatMessageSearchStartOffset = 0
+    }
+
+    private func advanceChatSpeechProgress(toSentence sentence: String) {
+        guard let spokenChatMessageID,
+              let chatMessage = chatMessages.first(where: { $0.id == spokenChatMessageID }) else { return }
+        let messageText = chatMessage.text
+        let trimmedSentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSentence.isEmpty,
+              spokenChatMessageSearchStartOffset <= messageText.count else { return }
+        let searchStartIndex = messageText.index(messageText.startIndex, offsetBy: spokenChatMessageSearchStartOffset)
+        guard let sentenceRange = messageText.range(of: trimmedSentence, range: searchStartIndex..<messageText.endIndex) else { return }
+        let sentenceStartOffset = messageText.distance(from: messageText.startIndex, to: sentenceRange.lowerBound)
+        let sentenceEndOffset = messageText.distance(from: messageText.startIndex, to: sentenceRange.upperBound)
+        spokenChatMessageSearchStartOffset = sentenceEndOffset
+        chatSpeechProgress = ChatSpeechProgress(
+            chatMessageID: spokenChatMessageID,
+            currentSentenceCharacterRange: sentenceStartOffset..<sentenceEndOffset
+        )
+    }
+
+    // MARK: - Chat tabs
+
+    /// Opens an empty tab after the current one and switches to it.
+    func openNewChatTab() {
+        // An empty tab is already a new chat.
+        if chatMessages.isEmpty { return }
+        let newChatTab = ChatTab()
+        let activeTabIndex = chatTabs.firstIndex { $0.id == activeChatTabID } ?? chatTabs.count - 1
+        chatTabs.insert(newChatTab, at: activeTabIndex + 1)
+        parkedChatTabConversations[newChatTab.id] = (chatMessages: [], conversationHistory: [])
+        switchToChatTab(newChatTab.id)
+    }
+
+    func switchToChatTab(_ chatTabID: UUID) {
+        guard chatTabID != activeChatTabID, let targetConversation = parkedChatTabConversations[chatTabID] else { return }
+        // A reply still coming in belongs to the tab it was asked in, so stop it.
+        stopEverythingInProgressForHotkeyPress()
+        parkedChatTabConversations[activeChatTabID] = (chatMessages: chatMessages, conversationHistory: conversationHistory)
+        parkedChatTabConversations[chatTabID] = nil
+        chatMessages = targetConversation.chatMessages
+        conversationHistory = targetConversation.conversationHistory
+        activeChatTabID = chatTabID
+    }
+
+    /// Closing the last tab leaves one empty tab.
+    func closeChatTab(_ chatTabID: UUID) {
+        guard let closedTabIndex = chatTabs.firstIndex(where: { $0.id == chatTabID }) else { return }
+        if chatTabs.count == 1 {
+            stopEverythingInProgressForHotkeyPress()
+            chatMessages = []
+            conversationHistory = []
+            chatTabs[0].title = ChatTab.newChatTitle
+            return
+        }
+        if chatTabID == activeChatTabID {
+            let neighbourTabIndex = closedTabIndex + 1 < chatTabs.count ? closedTabIndex + 1 : closedTabIndex - 1
+            switchToChatTab(chatTabs[neighbourTabIndex].id)
+        }
+        chatTabs.remove(at: closedTabIndex)
+        parkedChatTabConversations[chatTabID] = nil
+    }
+
+    private func updateActiveChatTabTitle() {
+        guard let activeTabIndex = chatTabs.firstIndex(where: { $0.id == activeChatTabID }) else { return }
+        let activeTabTitle = ChatTab.title(forChatMessages: chatMessages)
+        if chatTabs[activeTabIndex].title != activeTabTitle {
+            chatTabs[activeTabIndex].title = activeTabTitle
+        }
+    }
+
     private func updateChatMessage(id chatMessageID: UUID, text: String, isStreaming: Bool) {
         guard let messageIndex = chatMessages.firstIndex(where: { $0.id == chatMessageID }) else { return }
         chatMessages[messageIndex].text = text
@@ -897,6 +1054,7 @@ final class CompanionManager: ObservableObject {
 
     private func sendTranscriptToClaudeWithScreenshot(transcript: String, isTypedChatMessage: Bool = false) {
         chatMessages.append(CompanionChatMessage(isFromUser: true, text: transcript))
+        updateActiveChatTabTitle()
         let repliesAreSpoken = isTypedChatMessage ? speaksChatReplies : speaksVoiceReplies
         // A spoken question answered in text needs the chat on screen to be read.
         if !isTypedChatMessage && !speaksVoiceReplies {
@@ -1082,7 +1240,7 @@ final class CompanionManager: ObservableObject {
                             while isSpeakingAloud {
                                 try await Task.sleep(for: .milliseconds(100))
                             }
-                            localTTSClient.speakText(spokenText)
+                            speakChatReply(finalReplyText, chatMessageID: streamingReplyMessage.id)
                         }
                         voiceState = .responding
                     }
@@ -1101,9 +1259,10 @@ final class CompanionManager: ObservableObject {
                             try await Task.sleep(for: .milliseconds(100))
                         }
                         let stoppedMessage = "that didn't seem to work, so i stopped. can you take a look?"
-                        chatMessages.append(CompanionChatMessage(isFromUser: false, text: stoppedMessage))
+                        let stoppedChatMessage = CompanionChatMessage(isFromUser: false, text: stoppedMessage)
+                        chatMessages.append(stoppedChatMessage)
                         if repliesAreSpoken {
-                            localTTSClient.speakText(stoppedMessage)
+                            speakChatReply(stoppedMessage, chatMessageID: stoppedChatMessage.id)
                         }
                         break
                     }
@@ -1651,6 +1810,36 @@ final class CompanionManager: ObservableObject {
                 screenCircleAnnotations = []
                 userDrawnStrokes = []
             }
+        }
+    }
+
+    /// Circles are drawn at fixed screen positions from the screenshot, so
+    /// once the user switches Space or app they would sit on top of something
+    /// else. Clear them then. bhai's own windows (chat, settings) don't count.
+    private func clearScreenCirclesWhenTheScreenChanges() {
+        let workspaceNotificationCenter = NSWorkspace.shared.notificationCenter
+        screenChangeObservers.append(workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.clearScreenCircles() }
+        })
+        screenChangeObservers.append(workspaceNotificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let activatedApp = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard activatedApp?.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            MainActor.assumeIsolated { self?.clearScreenCircles() }
+        })
+    }
+
+    private func clearScreenCircles() {
+        guard !screenCircleAnnotations.isEmpty else { return }
+        screenCircleFadeTask?.cancel()
+        withAnimation(.easeOut(duration: 0.2)) {
+            screenCircleAnnotations = []
+            // The user's own strokes belong to the same screen; keep them
+            // while they are still drawing.
+            if voiceState != .listening { userDrawnStrokes = [] }
         }
     }
 

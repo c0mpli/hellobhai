@@ -282,6 +282,7 @@ struct ChatPanelView: View {
     private var expandedChat: some View {
         VStack(spacing: 0) {
             header
+            tabStrip
             // Divider() ignores .background, so the line is drawn by hand.
             Rectangle()
                 .fill(DS.Colors.borderSubtle)
@@ -313,6 +314,10 @@ struct ChatPanelView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(DS.Colors.textPrimary)
             Spacer()
+            ChatIconButton(systemImageName: "plus", helpText: "New chat (Cmd+T)") {
+                companionManager.openNewChatTab()
+            }
+            .keyboardShortcut("t", modifiers: .command)
             ChatIconButton(
                 systemImageName: "arrow.left.arrow.right",
                 helpText: companionManager.chatPanelSide == .right ? "Move the chat to the left edge" : "Move the chat to the right edge"
@@ -335,6 +340,42 @@ struct ChatPanelView: View {
         .padding(.vertical, 12)
     }
 
+    // MARK: Tabs
+
+    /// One tab per conversation, like browser tabs. Cmd+W closes the
+    /// current one; closing the last tab clears it.
+    private var tabStrip: some View {
+        ScrollViewReader { tabScrollProxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(companionManager.chatTabs) { chatTab in
+                        ChatTabButton(
+                            title: chatTab.title,
+                            isActive: chatTab.id == companionManager.activeChatTabID,
+                            onSelect: { companionManager.switchToChatTab(chatTab.id) },
+                            onClose: { companionManager.closeChatTab(chatTab.id) }
+                        )
+                        .id(chatTab.id)
+                    }
+                }
+                .padding(.horizontal, 14)
+            }
+            .onChange(of: companionManager.activeChatTabID) { _, newActiveChatTabID in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    tabScrollProxy.scrollTo(newActiveChatTabID)
+                }
+            }
+        }
+        .padding(.bottom, 10)
+        .background(
+            // Cmd+W closes the current tab while the chat has focus.
+            Button("") { companionManager.closeChatTab(companionManager.activeChatTabID) }
+                .keyboardShortcut("w", modifiers: .command)
+                .opacity(0)
+                .allowsHitTesting(false)
+        )
+    }
+
     // MARK: Messages
 
     private var messageList: some View {
@@ -350,7 +391,13 @@ struct ChatPanelView: View {
                         let isQuestionAfterReply = chatMessage.isFromUser
                             && messageIndex > 0
                             && !companionManager.chatMessages[messageIndex - 1].isFromUser
-                        ChatMessageRow(chatMessage: chatMessage)
+                        ChatMessageRow(
+                            chatMessage: chatMessage,
+                            textPointSize: companionManager.chatTextSize.pointSize,
+                            currentlySpokenSentenceCharacterRange: companionManager.chatSpeechProgress?.chatMessageID == chatMessage.id
+                                ? companionManager.chatSpeechProgress?.currentSentenceCharacterRange
+                                : nil
+                        )
                             .padding(.top, isQuestionAfterReply ? 12 : 0)
                             .id(chatMessage.id)
                     }
@@ -396,7 +443,7 @@ struct ChatPanelView: View {
                 // Return sends; shift+return adds a line (vertical-axis TextField).
                 TextField("Message bhai...", text: $draftMessage, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(.system(size: companionManager.chatTextSize.pointSize))
                     .foregroundColor(DS.Colors.textPrimary)
                     .lineLimit(1...6)
                     // Lines the first row up with the middle of the send button.
@@ -509,13 +556,31 @@ private struct ChatFooterMenu: View {
 
 private struct ChatMessageRow: View {
     let chatMessage: CompanionChatMessage
+    let textPointSize: CGFloat
+    /// While this reply is spoken: the sentence being said. Text already said
+    /// stays normal, the current sentence is lit in the accent colour and the
+    /// rest is dimmed until bhai gets to it.
+    var currentlySpokenSentenceCharacterRange: Range<Int>? = nil
+
+    private var replyText: Text {
+        guard let sentenceRange = currentlySpokenSentenceCharacterRange,
+              sentenceRange.upperBound <= chatMessage.text.count else {
+            return Text(chatMessage.text)
+        }
+        let alreadySpokenText = String(chatMessage.text.prefix(sentenceRange.lowerBound))
+        let currentSentenceText = String(chatMessage.text.dropFirst(sentenceRange.lowerBound).prefix(sentenceRange.count))
+        let notYetSpokenText = String(chatMessage.text.dropFirst(sentenceRange.upperBound))
+        return Text(alreadySpokenText)
+            + Text(currentSentenceText).foregroundColor(DS.Colors.accentText)
+            + Text(notYetSpokenText).foregroundColor(DS.Colors.textTertiary)
+    }
 
     var body: some View {
         if chatMessage.isFromUser {
             HStack {
                 Spacer(minLength: 40)
                 Text(chatMessage.text)
-                    .font(.system(size: 13))
+                    .font(.system(size: textPointSize))
                     .foregroundColor(.white)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
@@ -536,8 +601,8 @@ private struct ChatMessageRow: View {
                 BhaiLogoView(sideLength: 20)
                     .padding(.top, -2)
                 // A thin caret trails the text while it is still streaming.
-                (Text(chatMessage.text) + Text(chatMessage.isStreaming ? "\u{2009}\u{258F}" : "").foregroundColor(DS.Colors.overlayCursorColor))
-                    .font(.system(size: 13))
+                (replyText + Text(chatMessage.isStreaming ? "\u{2009}\u{258F}" : "").foregroundColor(DS.Colors.overlayCursorColor))
+                    .font(.system(size: textPointSize))
                     .foregroundColor(DS.Colors.textPrimary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -609,6 +674,44 @@ private struct ChatSendButton: View {
         .disabled(!isEnabled)
         .onHover { isHovered = $0 }
         .pointerCursor(isEnabled: isEnabled)
+    }
+}
+
+/// A chat tab: the active one is lit like a selected segment; the close
+/// button shows on the active tab and on hover.
+private struct ChatTabButton: View {
+    let title: String
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(isActive ? DS.Colors.textPrimary : (isHovered ? DS.Colors.textSecondary : DS.Colors.textTertiary))
+                .lineLimit(1)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Close tab (Cmd+W)")
+            .opacity(isActive || isHovered ? 1 : 0)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 5)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Color.white.opacity(isActive ? 0.10 : (isHovered ? 0.06 : 0))))
+        .overlay(Capsule().strokeBorder(isActive ? DS.Colors.borderSubtle : Color.clear, lineWidth: 0.5))
+        .contentShape(Capsule())
+        .onTapGesture(perform: onSelect)
+        .onHover { isHovered = $0 }
+        .pointerCursor()
     }
 }
 

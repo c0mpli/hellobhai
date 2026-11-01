@@ -5,7 +5,7 @@
 //  System-wide transparent overlay windows, one per screen. The blue
 //  pointer flies out of the orb (OrbWindow.swift), or from beside the mouse
 //  in the cursor voice style, onto any screen when Claude points, clicks or
-//  draws; the overlays also show the gold circles,
+//  draws; the overlays also show the blue circles,
 //  the user's own strokes, and the notch speaking pill.
 //
 
@@ -223,7 +223,7 @@ enum SystemPointerVisibility {
 // In the cursor voice style the pointer's home is beside the mouse instead:
 // it follows the mouse on the mouse's screen (waveform while listening,
 // spinner while thinking) and launches from and returns to there.
-// Also draws the gold circles, the user's strokes, the notch pill, and the
+// Also draws the blue circles, the user's strokes, the notch pill, and the
 // onboarding bubbles next to the orb (or the pointer, in the cursor style).
 struct BlueCursorView: View {
     let screenFrame: CGRect
@@ -333,7 +333,7 @@ struct BlueCursorView: View {
                         strokePath.addLines(userDrawnStroke.map(convertScreenPointToSwiftUICoordinates))
                     }
                 }
-                .stroke(HandDrawnScreenCircleView.goldStrokeColor, style: HandDrawnScreenCircleView.goldStrokeStyle)
+                .stroke(HandDrawnScreenCircleView.strokeColor, style: HandDrawnScreenCircleView.strokeStyle)
                 .transition(.opacity)
             }
 
@@ -1236,7 +1236,7 @@ class OverlayWindowManager {
 
 // MARK: - Screen Circles
 
-/// One gold ellipse Claude asked for with a [CIRCLE] tag.
+/// One blue ellipse Claude asked for with a [CIRCLE] tag.
 struct ScreenCircleAnnotation: Identifiable {
     let id = UUID()
     /// Where to draw, in global AppKit coords (bottom-left origin).
@@ -1290,20 +1290,23 @@ struct HandDrawnEllipseShape: Shape {
     }
 }
 
-/// Traces a HandDrawnEllipseShape in thin warm gold once its delay passes.
+/// Traces a HandDrawnEllipseShape in bhai's pointer blue once its delay
+/// passes. A soft glow keeps it readable on light and dark screens.
 struct HandDrawnScreenCircleView: View {
     let wobbleSeed: Double
     let appearDelaySeconds: Double
 
-    static let goldStrokeColor = Color(red: 0.83, green: 0.655, blue: 0.17).opacity(0.85)
-    static let goldStrokeStyle = StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
+    static let strokeColor = DS.Colors.overlayCursorColor
+    static let strokeStyle = StrokeStyle(lineWidth: 2.75, lineCap: .round, lineJoin: .round)
+    static let strokeGlowColor = DS.Colors.overlayCursorColor.opacity(0.55)
 
     @State private var tracedFraction: CGFloat = 0
 
     var body: some View {
         HandDrawnEllipseShape(wobbleSeed: wobbleSeed)
             .trim(from: 0, to: tracedFraction)
-            .stroke(Self.goldStrokeColor, style: Self.goldStrokeStyle)
+            .stroke(Self.strokeColor, style: Self.strokeStyle)
+            .shadow(color: Self.strokeGlowColor, radius: 4)
             .onAppear {
                 withAnimation(.easeInOut(duration: 0.4).delay(appearDelaySeconds)) {
                     tracedFraction = 1

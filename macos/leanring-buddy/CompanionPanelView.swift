@@ -561,6 +561,16 @@ struct CompanionPanelView: View {
                 )
             }
 
+            PanelSettingsRow(iconName: "textformat.size", label: "Text size") {
+                PanelMenuPicker(
+                    selectedTitle: companionManager.chatTextSize.title,
+                    options: ChatTextSize.allCases.map { (title: $0.title, optionID: $0.rawValue) },
+                    onSelectOption: { selectedTextSizeRawValue in
+                        companionManager.chatTextSize = ChatTextSize(rawValue: selectedTextSizeRawValue) ?? .medium
+                    }
+                )
+            }
+
             PanelSettingsRow(iconName: "sidebar.squares.right", label: "Chat side") {
                 PanelSegmentedControl(
                     options: [(label: "Left", optionID: ChatPanelSide.left.rawValue), (label: "Right", optionID: ChatPanelSide.right.rawValue)],
