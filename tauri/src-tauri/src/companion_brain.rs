@@ -20,7 +20,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::app_paths;
 use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
-use crate::claude_cli::{home_directory, run_claude_streaming, ClaudeRequest};
+use crate::brain_engine::ask_selected_brain;
+use crate::claude_cli::{home_directory, ClaudeRequest};
 use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
 use crate::model3d_window::Model3DWindow;
@@ -427,7 +428,8 @@ impl CompanionBrain {
             }
 
             let system_prompt_file = self.system_prompt_file(SystemPromptKind::VoiceResponse);
-            let full_response_text = run_claude_streaming(
+            let full_response_text = ask_selected_brain(
+                &self.settings,
                 ClaudeRequest {
                     images: images_for_this_step,
                     system_prompt_file: &system_prompt_file,
@@ -716,7 +718,8 @@ impl CompanionBrain {
         let queue_for_streaming = narrated_step_queue.clone();
         let stream_script = async {
             let mut streamed_line_forwarder = StreamedLineForwarder::new();
-            let script_result = run_claude_streaming(
+            let script_result = ask_selected_brain(
+                &self.settings,
                 ClaudeRequest {
                     images: screen_images,
                     system_prompt_file: &system_prompt_file,
@@ -810,7 +813,8 @@ impl CompanionBrain {
                     .find(|capture| capture.is_cursor_screen)
                     .ok_or("no cursor screen found")?;
                 let system_prompt_file = brain.system_prompt_file(SystemPromptKind::OnboardingDemo);
-                let full_response_text = run_claude_streaming(
+                let full_response_text = ask_selected_brain(
+                    &brain.settings,
                     ClaudeRequest {
                         images: labeled_images_for_captures(std::slice::from_ref(cursor_screen_capture)),
                         system_prompt_file: &system_prompt_file,

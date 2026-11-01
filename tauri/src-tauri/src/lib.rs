@@ -29,7 +29,9 @@ pub mod ui_commands;
 // (E) brain
 pub mod app_paths;
 pub mod app_state;
+pub mod brain_engine;
 pub mod claude_cli;
+pub mod codex_cli;
 pub mod companion_brain;
 pub mod conversation_history;
 pub mod narrated_step_queue;
@@ -63,10 +65,9 @@ pub fn run() {
             overlay_windows::user_stroke_added,
             ui_commands::get_settings,
             ui_commands::get_status,
-            ui_commands::set_claude_model,
-            ui_commands::set_supertonic_voice,
+            ui_commands::change_setting,
             ui_commands::preview_voice,
-            ui_commands::set_push_to_talk_shortcut,
+            ui_commands::set_shortcut_recording,
             ui_commands::set_launch_at_login,
             ui_commands::replay_onboarding,
             ui_commands::open_microphone_settings,
@@ -112,7 +113,12 @@ pub fn run() {
             });
 
             let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
-            push_to_talk::start_push_to_talk_listener(shared_settings.clone(), hotkey_sender);
+            let app_handle_for_shortcut_recorder = app_handle.clone();
+            push_to_talk::start_push_to_talk_listener(
+                shared_settings.clone(),
+                hotkey_sender,
+                Box::new(move |recorder_update| ui_commands::handle_shortcut_recorder_update(&app_handle_for_shortcut_recorder, recorder_update)),
+            );
             tauri::async_runtime::spawn(companion_brain.clone().run_hotkey_loop(hotkey_receiver));
 
             if is_first_launch {

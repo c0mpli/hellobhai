@@ -7,3 +7,7 @@ pub fn open_microphone_privacy_settings() -> Result<(), PlatformError> {
 pub fn open_with_shell(checked_target: &str) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }
+
+pub fn platform_limitation_note() -> Option<String> {
+    None
+}
