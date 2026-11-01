@@ -74,6 +74,18 @@ pub fn reply_language_note(transcript: &str) -> &'static str {
     }
 }
 
+/// Exact Mac string (`typedReplyLanguageNote`). Typed Hinglish is usually in Latin
+/// letters, so the Devanagari check can't tell it from English; Claude reads the
+/// language itself, and the script depends on whether the reply is read aloud.
+pub fn typed_reply_language_note(replies_are_spoken: bool) -> String {
+    let hinglish_script = if replies_are_spoken {
+        "natural hinglish written in devanagari, because the reply is read aloud"
+    } else {
+        "natural hinglish in the same script the user typed in"
+    };
+    format!("(the user typed this turn instead of speaking. reply in english if they wrote english; if they wrote hindi or hinglish in any script, reply in {hinglish_script}. the reply is shown in a chat panel, so when something needs the user's yes, ask in the reply and wait for their next message. they cannot circle things on screen while typing.)")
+}
+
 /// capture label + " (image dimensions: WxH pixels)"
 pub fn image_label_with_dimensions(capture_label: &str, width: u32, height: u32) -> String {
     format!("{capture_label} (image dimensions: {width}x{height} pixels)")

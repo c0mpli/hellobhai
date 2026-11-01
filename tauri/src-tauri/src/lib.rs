@@ -21,6 +21,8 @@ pub mod screen_capture;
 pub mod screen_mapping;
 // (D) windows + pages
 pub mod board_panel;
+pub mod chat_conversation;
+pub mod chat_panel;
 pub mod model3d_window;
 pub mod orb_window;
 pub mod overlay_windows;
@@ -48,6 +50,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 use crate::app_state::AppState;
 use crate::board_panel::BoardPanel;
+use crate::chat_panel::ChatPanel;
 use crate::companion_brain::CompanionBrain;
 use crate::model3d_window::Model3DWindow;
 use crate::orb_window::OrbWindow;
@@ -83,6 +86,17 @@ pub fn run() {
             ui_commands::replay_onboarding,
             ui_commands::open_microphone_settings,
             ui_commands::quit_app,
+            chat_panel::get_chat_state,
+            chat_panel::get_chat_settings,
+            chat_panel::send_chat_message,
+            chat_panel::minimize_chat,
+            chat_panel::expand_chat,
+            chat_panel::close_chat,
+            chat_panel::swap_chat_side,
+            chat_panel::set_bhai_mode,
+            chat_panel::set_speaks_voice_replies,
+            chat_panel::set_speaks_chat_replies,
+            chat_panel::set_chat_panel_side,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -107,6 +121,7 @@ pub fn run() {
             // Created before the orb: a click on the orb in voice mode is a tap on the hotkey.
             let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
             let orb_window = OrbWindow::new(app_handle.clone(), shared_settings.clone(), hotkey_sender.clone());
+            let chat_panel = ChatPanel::new(app_handle.clone(), shared_settings.clone());
 
             let companion_brain = CompanionBrain::new(
                 app_handle.clone(),
@@ -115,6 +130,7 @@ pub fn run() {
                 whisper_transcriber.clone(),
                 board_panel.clone(),
                 model3d_window.clone(),
+                chat_panel.clone(),
             );
 
             app.manage(AppState {
@@ -125,6 +141,7 @@ pub fn run() {
                 board_panel,
                 model3d_window,
                 orb_window: orb_window.clone(),
+                chat_panel: chat_panel.clone(),
             });
             // After the overlays, so the orb is ordered above them.
             orb_window.start();
@@ -134,6 +151,9 @@ pub fn run() {
 
             if is_first_launch {
                 companion_brain.start_onboarding();
+            } else if shared_settings.read().unwrap().is_chat_input_mode {
+                // Chat mode starts with the chat sidebar where the orb would be.
+                chat_panel.show_chat_panel(false);
             }
             Ok(())
         })

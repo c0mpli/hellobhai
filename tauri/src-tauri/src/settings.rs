@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::orb_window::{VoiceBuddyStyle, DEFAULT_ORB_COLOR, DEFAULT_ORB_SIDE_LENGTH};
+use crate::chat_panel::ChatPanelSide;
 use crate::push_to_talk::PushToTalkShortcutOption;
 use crate::supertonic::SupertonicVoice;
 
@@ -27,6 +28,14 @@ pub struct Settings {
     pub orb_color: u8,
     /// Global physical pixels of the orb's top-left corner after the user dragged it; None = default spot.
     pub orb_window_origin: Option<(i32, i32)>,
+    /// bhai mode: false = Voice (hold the hotkey to talk), true = Chat (the hotkey
+    /// opens the typed chat, which replaces the orb on screen). Mac `isChatInputMode`.
+    pub is_chat_input_mode: bool,
+    /// Spoken questions get voice + text (true) or text only in the chat (false).
+    pub speaks_voice_replies: bool,
+    /// Typed questions get text (false) or text + voice (true).
+    pub speaks_chat_replies: bool,
+    pub chat_panel_side: ChatPanelSide,
 }
 
 impl Default for Settings {
@@ -40,6 +49,10 @@ impl Default for Settings {
             orb_side_length: DEFAULT_ORB_SIDE_LENGTH,
             orb_color: DEFAULT_ORB_COLOR,
             orb_window_origin: None,
+            is_chat_input_mode: false,
+            speaks_voice_replies: true,
+            speaks_chat_replies: false,
+            chat_panel_side: ChatPanelSide::Right,
         }
     }
 }
@@ -97,6 +110,10 @@ mod tests {
                 "orbSideLength": 88.0,
                 "orbColor": 8,
                 "orbWindowOrigin": null,
+                "isChatInputMode": false,
+                "speaksVoiceReplies": true,
+                "speaksChatReplies": false,
+                "chatPanelSide": "right",
             })
         );
 
