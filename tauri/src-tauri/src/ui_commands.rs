@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::app_state::AppState;
-use crate::brain_engine::{BrainEngine, CODEX_REASONING_EFFORTS};
+use crate::brain_engine::{BrainEngine, REASONING_EFFORTS};
 use crate::claude_cli::find_claude_executable;
 use crate::codex_cli::find_codex_executable;
 use crate::platform;
@@ -90,8 +90,9 @@ pub fn voice_status_text(neural_voice_load_state: &NeuralVoiceLoadState) -> Stri
 pub enum SettingChange {
     ClaudeModel(String),
     BrainEngine(BrainEngine),
-    /// null = the model's default.
-    CodexReasoningEffort(Option<String>),
+    /// null = the model's default. Applies to both brains.
+    #[serde(alias = "codexReasoningEffort")]
+    ReasoningEffort(Option<String>),
     SupertonicVoice(SupertonicVoice),
     IsChatInputMode(bool),
     SpeaksVoiceReplies(bool),
@@ -114,11 +115,11 @@ pub fn apply_setting_change(settings: &mut Settings, setting_change: SettingChan
             settings.claude_model = model;
         }
         SettingChange::BrainEngine(brain_engine) => settings.brain_engine = brain_engine,
-        SettingChange::CodexReasoningEffort(reasoning_effort) => {
-            if reasoning_effort.as_deref().is_some_and(|effort| !CODEX_REASONING_EFFORTS.contains(&effort)) {
+        SettingChange::ReasoningEffort(reasoning_effort) => {
+            if reasoning_effort.as_deref().is_some_and(|effort| !REASONING_EFFORTS.contains(&effort)) {
                 return false;
             }
-            settings.codex_reasoning_effort = reasoning_effort;
+            settings.reasoning_effort = reasoning_effort;
         }
         SettingChange::SupertonicVoice(voice) => settings.supertonic_voice = voice,
         SettingChange::IsChatInputMode(is_chat_input_mode) => settings.is_chat_input_mode = is_chat_input_mode,
@@ -191,14 +192,17 @@ pub async fn change_setting(change: SettingChange, app: AppHandle) {
         SettingChange::SupertonicVoice(voice) => state.speech_player.set_voice(voice),
         SettingChange::IsChatInputMode(is_chat_input_mode) => state.chat_panel.apply_chat_input_mode(is_chat_input_mode),
         SettingChange::ChatPanelSide(_) => state.chat_panel.apply_chat_panel_side(),
-        // The chat shows the model name and the replies toggle.
-        SettingChange::ClaudeModel(_) | SettingChange::BrainEngine(_) | SettingChange::SpeaksChatReplies(_) => {
+        // The chat shows the model and effort pickers and the replies toggle.
+        SettingChange::ClaudeModel(_)
+        | SettingChange::BrainEngine(_)
+        | SettingChange::ReasoningEffort(_)
+        | SettingChange::SpeaksChatReplies(_) => {
             state.chat_panel.emit_chat_state()
         }
         SettingChange::VoiceBuddyStyle(_) => state.orb_window.apply_voice_buddy_style(),
         SettingChange::OrbSideLength(_) => state.orb_window.apply_orb_size(),
         SettingChange::SelectedOrbColor(_) => state.orb_window.apply_orb_color(),
-        SettingChange::CodexReasoningEffort(_) | SettingChange::SpeaksVoiceReplies(_) | SettingChange::PushToTalkShortcut(_) => {}
+        SettingChange::SpeaksVoiceReplies(_) | SettingChange::PushToTalkShortcut(_) => {}
     }
 }
 
@@ -308,8 +312,8 @@ mod tests {
     fn setting_changes_arrive_as_name_and_value_from_the_page() {
         let change: SettingChange = serde_json::from_str(r#"{"name":"voiceBuddyStyle","value":"cursor"}"#).unwrap();
         assert_eq!(change, SettingChange::VoiceBuddyStyle(VoiceBuddyStyle::Cursor));
-        let change: SettingChange = serde_json::from_str(r#"{"name":"codexReasoningEffort","value":null}"#).unwrap();
-        assert_eq!(change, SettingChange::CodexReasoningEffort(None));
+        let change: SettingChange = serde_json::from_str(r#"{"name":"reasoningEffort","value":null}"#).unwrap();
+        assert_eq!(change, SettingChange::ReasoningEffort(None));
         let change: SettingChange = serde_json::from_str(r#"{"name":"pushToTalkShortcut","value":"ctrlWin"}"#).unwrap();
         assert_eq!(change, SettingChange::PushToTalkShortcut(PushToTalkShortcutOption::CtrlWin));
     }
@@ -318,7 +322,7 @@ mod tests {
     fn invalid_values_from_the_page_change_nothing() {
         let mut settings = Settings::default();
         assert!(!apply_setting_change(&mut settings, SettingChange::ClaudeModel("gpt".into())));
-        assert!(!apply_setting_change(&mut settings, SettingChange::CodexReasoningEffort(Some("max".into()))));
+        assert!(!apply_setting_change(&mut settings, SettingChange::ReasoningEffort(Some("max".into()))));
         assert!(!apply_setting_change(&mut settings, SettingChange::SelectedOrbColor(10)));
         let single_key = ShortcutModifiers { ctrl: true, ..Default::default() };
         assert!(!apply_setting_change(&mut settings, SettingChange::PushToTalkShortcut(PushToTalkShortcutOption::CustomModifiers(single_key))));
@@ -330,13 +334,13 @@ mod tests {
         let mut settings = Settings::default();
         assert!(apply_setting_change(&mut settings, SettingChange::ClaudeModel("opus".into())));
         assert!(apply_setting_change(&mut settings, SettingChange::BrainEngine(BrainEngine::Codex)));
-        assert!(apply_setting_change(&mut settings, SettingChange::CodexReasoningEffort(Some("high".into()))));
+        assert!(apply_setting_change(&mut settings, SettingChange::ReasoningEffort(Some("high".into()))));
         assert!(apply_setting_change(&mut settings, SettingChange::OrbSideLength(999.0)));
         assert!(apply_setting_change(&mut settings, SettingChange::IsChatInputMode(true)));
         assert!(apply_setting_change(&mut settings, SettingChange::ChatPanelSide(ChatPanelSide::Left)));
         assert_eq!(settings.claude_model, "opus");
         assert_eq!(settings.brain_engine, BrainEngine::Codex);
-        assert_eq!(settings.codex_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(settings.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(settings.orb_side_length, 160.0);
         assert!(settings.is_chat_input_mode);
         assert_eq!(settings.chat_panel_side, ChatPanelSide::Left);

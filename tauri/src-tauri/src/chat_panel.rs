@@ -19,6 +19,7 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent};
 
 use crate::app_state::AppState;
+use crate::brain_engine::BrainEngine;
 use crate::chat_conversation::{chat_model_label, ChatConversation, ChatMessage};
 use crate::page_bridge::{locked_down_window_builder, monitor_containing_point};
 use crate::platform::{self, PlatformError};
@@ -161,6 +162,10 @@ pub struct ChatStateSnapshot {
     pub is_shown: bool,
     pub chat_panel_side: ChatPanelSide,
     pub model_label: String,
+    /// The chat's model and effort menus show the shared settings.
+    pub brain_engine: BrainEngine,
+    pub claude_model: String,
+    pub reasoning_effort: Option<String>,
     pub speaks_chat_replies: bool,
 }
 
@@ -220,19 +225,19 @@ impl ChatPanel {
     }
 
     pub fn chat_state_snapshot(&self) -> ChatStateSnapshot {
-        let (model_label, speaks_chat_replies, chat_panel_side) = {
-            let settings = self.settings.read().unwrap();
-            (chat_model_label(settings.brain_engine, &settings.claude_model), settings.speaks_chat_replies, settings.chat_panel_side)
-        };
+        let settings = self.settings.read().unwrap().clone();
         let state = self.state.lock().unwrap();
         ChatStateSnapshot {
             messages: state.conversation.messages().to_vec(),
             is_minimized: state.is_minimized,
             has_unread_reply: state.has_unread_reply,
             is_shown: !state.is_closing,
-            chat_panel_side,
-            model_label,
-            speaks_chat_replies,
+            chat_panel_side: settings.chat_panel_side,
+            model_label: chat_model_label(settings.brain_engine, &settings.claude_model),
+            brain_engine: settings.brain_engine,
+            claude_model: settings.claude_model,
+            reasoning_effort: settings.reasoning_effort,
+            speaks_chat_replies: settings.speaks_chat_replies,
         }
     }
 

@@ -97,7 +97,13 @@ function applyChatState(chatState) {
   // Chevrons point toward the edge the chat tucks into; the tab's points back out.
   element('minimize-chevrons').setAttribute('d', isRightSide ? 'M4 3l5 5-5 5M8 3l5 5-5 5' : 'M12 3 7 8l5 5M8 3 3 8l5 5');
   element('tab-chevron').setAttribute('d', isRightSide ? 'M7.5 2 3.5 6l4 4' : 'M4.5 2l4 4-4 4');
+  // Codex has no model choice here, so it shows its name instead of the model menu.
+  const isCodexBrain = chatState.brainEngine === 'codex';
+  element('model-label').hidden = !isCodexBrain;
   element('model-label').textContent = chatState.modelLabel;
+  element('model-picker').hidden = isCodexBrain;
+  element('model-picker').value = chatState.claudeModel;
+  element('effort-picker').value = chatState.reasoningEffort ?? '';
   element('replies-text-button').classList.toggle('is-selected', !chatState.speaksChatReplies);
   element('replies-voice-button').classList.toggle('is-selected', chatState.speaksChatReplies);
 
@@ -147,6 +153,11 @@ element('swap-side-button').addEventListener('click', () => invoke('swap_chat_si
 element('minimize-button').addEventListener('click', () => invoke('minimize_chat'));
 element('close-button').addEventListener('click', () => invoke('close_chat'));
 element('minimized-tab').addEventListener('click', () => invoke('expand_chat'));
+function changeSetting(settingName, settingValue) {
+  return invoke('change_setting', { change: { name: settingName, value: settingValue } });
+}
+element('model-picker').addEventListener('change', (event) => changeSetting('claudeModel', event.target.value));
+element('effort-picker').addEventListener('change', (event) => changeSetting('reasoningEffort', event.target.value || null));
 element('replies-text-button').addEventListener('click', () => invoke('set_speaks_chat_replies', { speaksChatReplies: false }));
 element('replies-voice-button').addEventListener('click', () => invoke('set_speaks_chat_replies', { speaksChatReplies: true }));
 

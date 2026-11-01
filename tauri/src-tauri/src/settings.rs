@@ -27,8 +27,10 @@ pub struct Settings {
     pub has_completed_onboarding: bool,
     /// Which local CLI answers: claude (default) or codex.
     pub brain_engine: BrainEngine,
-    /// "low", "medium" or "high"; None = the model's own default.
-    pub codex_reasoning_effort: Option<String>,
+    /// "low", "medium" or "high" for both brains (voice and chat); None = the
+    /// model's own default. Older settings files saved it as codexReasoningEffort.
+    #[serde(alias = "codexReasoningEffort")]
+    pub reasoning_effort: Option<String>,
     /// bhai mode: false = voice (hold the shortcut and talk; orb or cursor on
     /// screen), true = chat (the shortcut opens the chat sidebar, which replaces
     /// the orb on screen). Mac `isChatInputMode`.
@@ -55,7 +57,7 @@ impl Default for Settings {
             push_to_talk_shortcut: PushToTalkShortcutOption::default(),
             has_completed_onboarding: false,
             brain_engine: BrainEngine::default(),
-            codex_reasoning_effort: None,
+            reasoning_effort: None,
             is_chat_input_mode: false,
             speaks_voice_replies: true,
             speaks_chat_replies: false,
@@ -128,7 +130,7 @@ mod tests {
                 "pushToTalkShortcut": "ctrlWin",
                 "hasCompletedOnboarding": false,
                 "brainEngine": "claude",
-                "codexReasoningEffort": null,
+                "reasoningEffort": null,
                 "isChatInputMode": false,
                 "speaksVoiceReplies": true,
                 "speaksChatReplies": false,
@@ -153,5 +155,7 @@ mod tests {
         assert_eq!(settings_from_json_text(None), Settings::default());
         assert_eq!(settings_from_json_text(Some("{not json".to_string())), Settings::default());
         assert_eq!(settings_from_json_text(Some(r#"{"claudeModel":"haiku"}"#.to_string())).claude_model, "haiku");
+        // Older files saved the effort as Codex-only; it now applies to both brains.
+        assert_eq!(settings_from_json_text(Some(r#"{"codexReasoningEffort":"high"}"#.to_string())).reasoning_effort.as_deref(), Some("high"));
     }
 }

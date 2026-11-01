@@ -17,9 +17,9 @@ pub enum BrainEngine {
     Codex,
 }
 
-/// Codex reasoning efforts the panel offers; `None` (shown as "Default") means
-/// the model's own default.
-pub const CODEX_REASONING_EFFORTS: [&str; 3] = ["low", "medium", "high"];
+/// Reasoning efforts the settings panel and chat offer, for both brains;
+/// `None` (shown as "Default") means the model's own default.
+pub const REASONING_EFFORTS: [&str; 3] = ["low", "medium", "high"];
 
 /// Claude gets the request untouched. Codex ignores `model` (it uses the CLI's
 /// default model) and, on voice turns, gets a note that it has no file tools.
@@ -28,12 +28,24 @@ pub async fn ask_selected_brain(
     request: ClaudeRequest<'_>,
     on_accumulated_text: impl FnMut(&str),
 ) -> Result<String, String> {
-    let (brain_engine, codex_reasoning_effort) = {
+    let (brain_engine, reasoning_effort) = {
         let current_settings = settings.read().unwrap();
-        (current_settings.brain_engine, current_settings.codex_reasoning_effort.clone())
+        (current_settings.brain_engine, current_settings.reasoning_effort.clone())
     };
     match brain_engine {
-        BrainEngine::Claude => run_claude_streaming(request, on_accumulated_text).await,
-        BrainEngine::Codex => run_codex_streaming(request, codex_reasoning_effort, on_accumulated_text).await,
+        // The request's own effort ("low" for panels) wins over the setting.
+        BrainEngine::Claude => {
+            let request = ClaudeRequest {
+                effort: request.effort.or_else(|| reasoning_effort.as_deref().and_then(static_reasoning_effort)),
+                ..request
+            };
+            run_claude_streaming(request, on_accumulated_text).await
+        }
+        BrainEngine::Codex => run_codex_streaming(request, reasoning_effort, on_accumulated_text).await,
     }
+}
+
+/// `ClaudeRequest.effort` is `&'static str`; maps a saved effort onto it.
+fn static_reasoning_effort(reasoning_effort: &str) -> Option<&'static str> {
+    REASONING_EFFORTS.into_iter().find(|known_effort| *known_effort == reasoning_effort)
 }

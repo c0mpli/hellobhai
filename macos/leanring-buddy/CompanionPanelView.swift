@@ -41,13 +41,6 @@ struct CompanionPanelView: View {
 
     /// Model aliases the `claude` CLI accepts for `--model`. Storing the alias
     /// (not a dated id) means new model versions are picked up automatically.
-    private static let claudeModelOptions: [(label: String, modelAlias: String)] = [
-        ("Fable", "fable"),
-        ("Opus", "opus"),
-        ("Sonnet", "sonnet"),
-        ("Haiku", "haiku"),
-    ]
-
     private var selectedShortcutOption: BuddyPushToTalkShortcut.ShortcutOption {
         BuddyPushToTalkShortcut.ShortcutOption(rawValue: selectedShortcutOptionRawValue) ?? .controlOption
     }
@@ -251,27 +244,26 @@ struct CompanionPanelView: View {
                 )
             }
 
-            switch companionManager.selectedBrainEngine {
-            case .claude:
+            if companionManager.selectedBrainEngine == .claude {
                 PanelSettingsRow(iconName: "sparkles", label: "Claude") {
                     PanelSegmentedControl(
-                        options: Self.claudeModelOptions.map { (label: $0.label, optionID: $0.modelAlias) },
+                        options: CompanionManager.claudeModelOptions.map { (label: $0.label, optionID: $0.modelAlias) },
                         selectedOptionID: companionManager.selectedModel,
                         onSelectOption: { selectedModelAlias in
                             companionManager.setSelectedModel(selectedModelAlias)
                         }
                     )
                 }
-            case .codex:
-                PanelSettingsRow(iconName: "sparkles", label: "Codex default", subtitle: "Reasoning effort") {
-                    PanelMenuPicker(
-                        selectedTitle: Self.codexReasoningEffortOptions.first { $0.optionID == (companionManager.selectedCodexReasoningEffort ?? "") }?.title ?? "Default",
-                        options: Self.codexReasoningEffortOptions,
-                        onSelectOption: { selectedEffortOptionID in
-                            companionManager.setSelectedCodexReasoningEffort(selectedEffortOptionID.isEmpty ? nil : selectedEffortOptionID)
-                        }
-                    )
-                }
+            }
+
+            PanelSettingsRow(iconName: "gauge.with.dots.needle.50percent", label: "Effort", subtitle: "Voice and chat") {
+                PanelMenuPicker(
+                    selectedTitle: CompanionManager.reasoningEffortOptions.first { $0.optionID == (companionManager.selectedReasoningEffort ?? "") }?.title ?? "Default",
+                    options: CompanionManager.reasoningEffortOptions,
+                    onSelectOption: { selectedEffortOptionID in
+                        companionManager.setSelectedReasoningEffort(selectedEffortOptionID.isEmpty ? nil : selectedEffortOptionID)
+                    }
+                )
             }
 
             PanelSettingsRow(iconName: "terminal", label: "CLI") {
@@ -290,13 +282,6 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// "" means the model's own default effort (no override passed).
-    private static let codexReasoningEffortOptions: [(title: String, optionID: String)] = [
-        ("Default", ""),
-        ("Low", "low"),
-        ("Medium", "medium"),
-        ("High", "high"),
-    ]
 
     @ViewBuilder
     private var selectedBrainCLIStatusLabel: some View {

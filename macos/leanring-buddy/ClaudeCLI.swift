@@ -22,6 +22,10 @@ final class ClaudeCLI {
     /// A Claude Code model alias like "sonnet" or "opus".
     var model: String
 
+    /// "low", "medium" or "high", or nil for the model's default effort.
+    /// A per-call effort (the panels ask for "low") takes precedence.
+    var reasoningEffort: String?
+
     init(model: String = "sonnet") {
         self.model = model
     }
@@ -84,7 +88,7 @@ final class ClaudeCLI {
             "--setting-sources", "project",
             "--no-session-persistence"
         ] + (allowsMacTools ? Self.macToolArguments : ["--tools", ""])
-          + (effort.map { ["--effort", $0] } ?? [])
+          + ((effort ?? reasoningEffort).map { ["--effort", $0] } ?? [])
         // Run from an empty temp dir so no project CLAUDE.md gets picked up.
         process.currentDirectoryURL = FileManager.default.temporaryDirectory
 

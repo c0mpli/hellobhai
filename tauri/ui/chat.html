@@ -35,7 +35,20 @@
       </button>
     </div>
     <div class="composer-footer">
+      <!-- Same settings as the panel's Model section, so a change here also applies to voice. -->
       <span class="footer-label" id="model-label"></span>
+      <select class="footer-menu" id="model-picker" aria-label="Model for chat and voice" title="Model for chat and voice">
+        <option value="fable">Fable</option>
+        <option value="opus">Opus</option>
+        <option value="sonnet">Sonnet</option>
+        <option value="haiku">Haiku</option>
+      </select>
+      <select class="footer-menu" id="effort-picker" aria-label="Reasoning effort for chat and voice" title="Reasoning effort for chat and voice">
+        <option value="">Default effort</option>
+        <option value="low">Low effort</option>
+        <option value="medium">Medium effort</option>
+        <option value="high">High effort</option>
+      </select>
       <span class="header-spacer"></span>
       <span class="footer-label">Replies</span>
       <div class="segmented-toggle" title="How typed messages are answered. Spoken questions always get a spoken reply.">

@@ -18,7 +18,7 @@ const CLAUDE_MODEL_OPTIONS = [
   { optionID: 'haiku', label: 'Haiku' },
 ];
 // "" means the model's own default effort (no override passed).
-const CODEX_REASONING_EFFORT_OPTIONS = [
+const REASONING_EFFORT_OPTIONS = [
   { value: '', label: 'Default' },
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
@@ -172,9 +172,8 @@ function renderModelSection(settingsSnapshot) {
     async (brainEngine) => { await changeSetting('brainEngine', brainEngine); refreshStatus(); },
   );
   element('claude-model-row').hidden = isCodexBrain;
-  element('codex-effort-row').hidden = !isCodexBrain;
   renderSegmentedControl(element('claude-model-picker'), CLAUDE_MODEL_OPTIONS, settingsSnapshot.claudeModel, (modelAlias) => changeSetting('claudeModel', modelAlias));
-  fillSelect(element('codex-effort-picker'), CODEX_REASONING_EFFORT_OPTIONS, settingsSnapshot.codexReasoningEffort ?? '');
+  fillSelect(element('effort-picker'), REASONING_EFFORT_OPTIONS, settingsSnapshot.reasoningEffort ?? '');
 }
 
 function renderBuddySection(settingsSnapshot) {
@@ -368,7 +367,7 @@ async function startSettingsPanel() {
   });
   setInterval(() => { if (document.visibilityState === 'visible') refreshStatus(); }, STATUS_REFRESH_INTERVAL_MILLISECONDS);
 
-  element('codex-effort-picker').addEventListener('change', (event) => changeSetting('codexReasoningEffort', event.target.value || null));
+  element('effort-picker').addEventListener('change', (event) => changeSetting('reasoningEffort', event.target.value || null));
   element('voice-picker').addEventListener('change', (event) => changeSetting('supertonicVoice', event.target.value));
   element('preview-voice-button').addEventListener('click', async () => {
     await invoke('preview_voice', { voice: element('voice-picker').value });

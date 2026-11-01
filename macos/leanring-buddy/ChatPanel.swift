@@ -419,10 +419,29 @@ struct ChatPanelView: View {
                     )
             )
 
-            HStack(spacing: 8) {
-                Text(companionManager.selectedBrainEngine == .codex ? "Codex" : companionManager.selectedModel.capitalized)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(DS.Colors.textTertiary)
+            HStack(spacing: 6) {
+                // Same settings as the panel's Model section, so a change here
+                // also applies to voice.
+                if companionManager.selectedBrainEngine == .codex {
+                    Text("Codex")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textTertiary)
+                } else {
+                    ChatFooterMenu(
+                        title: CompanionManager.claudeModelOptions.first { $0.modelAlias == companionManager.selectedModel }?.label ?? companionManager.selectedModel.capitalized,
+                        helpText: "Model for chat and voice",
+                        options: CompanionManager.claudeModelOptions.map { (title: $0.label, optionID: $0.modelAlias) }
+                    ) { selectedModelAlias in
+                        companionManager.setSelectedModel(selectedModelAlias)
+                    }
+                }
+                ChatFooterMenu(
+                    title: (CompanionManager.reasoningEffortOptions.first { $0.optionID == (companionManager.selectedReasoningEffort ?? "") }?.title ?? "Default") + " effort",
+                    helpText: "Reasoning effort for chat and voice",
+                    options: CompanionManager.reasoningEffortOptions
+                ) { selectedEffortOptionID in
+                    companionManager.setSelectedReasoningEffort(selectedEffortOptionID.isEmpty ? nil : selectedEffortOptionID)
+                }
                 Spacer()
                 Text("Replies")
                     .font(.system(size: 11, weight: .medium))
@@ -449,6 +468,44 @@ struct ChatPanelView: View {
 }
 
 // MARK: - Pieces
+
+/// A dropdown in the composer footer (model, effort), styled as a capsule
+/// like the Replies toggle next to it.
+private struct ChatFooterMenu: View {
+    let title: String
+    let helpText: String
+    let options: [(title: String, optionID: String)]
+    let onSelectOption: (String) -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.optionID) { option in
+                Button(option.title) { onSelectOption(option.optionID) }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isHovered ? DS.Colors.textPrimary : DS.Colors.textSecondary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.white.opacity(isHovered ? 0.10 : 0.06)))
+            .overlay(Capsule().strokeBorder(DS.Colors.borderSubtle, lineWidth: 0.5))
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+        .help(helpText)
+    }
+}
 
 private struct ChatMessageRow: View {
     let chatMessage: CompanionChatMessage

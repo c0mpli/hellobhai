@@ -79,12 +79,16 @@ final class CompanionManager: ObservableObject {
     // streamingResponseText, so no separate response overlay manager is needed.
 
     /// Runs the local `claude -p` CLI — uses your Claude Code login, no API keys.
-    private lazy var claudeCLI = ClaudeCLI(model: selectedModel)
+    private lazy var claudeCLI: ClaudeCLI = {
+        let claudeCLI = ClaudeCLI(model: selectedModel)
+        claudeCLI.reasoningEffort = selectedReasoningEffort
+        return claudeCLI
+    }()
 
     /// Runs the local `codex exec` CLI instead when the panel's Brain is Codex.
     private lazy var codexCLI: CodexCLI = {
         let codexCLI = CodexCLI()
-        codexCLI.reasoningEffort = selectedCodexReasoningEffort
+        codexCLI.reasoningEffort = selectedReasoningEffort
         return codexCLI
     }()
 
@@ -222,8 +226,27 @@ final class CompanionManager: ObservableObject {
     /// Which local CLI answers: `claude -p` (default) or `codex exec`. Persisted to UserDefaults.
     @Published private(set) var selectedBrainEngine: BrainEngine = BrainEngine(rawValue: UserDefaults.standard.string(forKey: "selectedBrainEngine") ?? "") ?? .claude
 
-    /// Codex reasoning effort ("low", "medium", "high"), or nil for the model default. Persisted to UserDefaults.
-    @Published private(set) var selectedCodexReasoningEffort: String? = UserDefaults.standard.string(forKey: "selectedCodexReasoningEffort")
+    /// Reasoning effort ("low", "medium", "high") for both brains, or nil for
+    /// the model default. Shared by voice and chat. Persisted to UserDefaults
+    /// (falls back to the older Codex-only key).
+    @Published private(set) var selectedReasoningEffort: String? = UserDefaults.standard.string(forKey: "selectedReasoningEffort")
+        ?? UserDefaults.standard.string(forKey: "selectedCodexReasoningEffort")
+
+    /// Claude Code model aliases offered in the settings panel and the chat.
+    static let claudeModelOptions: [(label: String, modelAlias: String)] = [
+        ("Fable", "fable"),
+        ("Opus", "opus"),
+        ("Sonnet", "sonnet"),
+        ("Haiku", "haiku"),
+    ]
+
+    /// "" means the model's own default effort (no override passed).
+    static let reasoningEffortOptions: [(title: String, optionID: String)] = [
+        ("Default", ""),
+        ("Low", "low"),
+        ("Medium", "medium"),
+        ("High", "high"),
+    ]
 
     /// Which orb.riv color variant the orb shows. Persisted to UserDefaults.
     @Published private(set) var selectedOrbColor: Int = UserDefaults.standard.object(forKey: "selectedOrbColor") as? Int
@@ -334,9 +357,10 @@ final class CompanionManager: ObservableObject {
         UserDefaults.standard.set(brainEngine.rawValue, forKey: "selectedBrainEngine")
     }
 
-    func setSelectedCodexReasoningEffort(_ reasoningEffort: String?) {
-        selectedCodexReasoningEffort = reasoningEffort
-        UserDefaults.standard.set(reasoningEffort, forKey: "selectedCodexReasoningEffort")
+    func setSelectedReasoningEffort(_ reasoningEffort: String?) {
+        selectedReasoningEffort = reasoningEffort
+        UserDefaults.standard.set(reasoningEffort, forKey: "selectedReasoningEffort")
+        claudeCLI.reasoningEffort = reasoningEffort
         codexCLI.reasoningEffort = reasoningEffort
     }
 
