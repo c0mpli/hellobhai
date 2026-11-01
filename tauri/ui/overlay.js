@@ -1,8 +1,8 @@
 // Per-monitor overlay: the blue pointer that launches out of the orb (orb voice
 // style) or follows the mouse with a waveform while listening and a spinner
 // while thinking (cursor voice style), flies to [POINT] targets with a label
-// bubble and rides the board/3D pen, gold [CIRCLE] ellipses, the user's own
-// gold strokes while the hotkey is held, the onboarding bubbles (by the orb,
+// bubble and rides the board/3D pen, blue [CIRCLE] ellipses, the user's own
+// blue strokes while the hotkey is held, the onboarding bubbles (by the orb,
 // or by the pointer in the cursor style) and the speaking pill.
 // Port of macos/leanring-buddy/OverlayWindow.swift (same constants).
 //
@@ -20,8 +20,10 @@ let monitorConfig = null; // { originX, originY, width, height, scaleFactor }
 // ---- Visual constants (DesignSystem.swift / OverlayWindow.swift) ----
 const CURSOR_COLOR = '#3380FF'; // DS.Colors.overlayCursorColor
 const CURSOR_COLOR_RGB = '51, 128, 255';
-const GOLD_STROKE_COLOR = 'rgba(212, 167, 43, 0.85)'; // HandDrawnScreenCircleView.goldStrokeColor
-const GOLD_STROKE_WIDTH = 2.5;
+// HandDrawnScreenCircleView.strokeStyle / strokeGlowColor: circles and the user's strokes.
+const ANNOTATION_STROKE_WIDTH = 2.75;
+const ANNOTATION_STROKE_GLOW_COLOR = `rgba(${CURSOR_COLOR_RGB}, 0.55)`;
+const ANNOTATION_STROKE_GLOW_RADIUS = 4;
 const BUBBLE_FONT = '500 11px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif';
 const TRIANGLE_SIZE = 16;
 const DEFAULT_TRIANGLE_ROTATION_DEGREES = -35;
@@ -753,18 +755,21 @@ function cumulativeLengthsOf(points) {
   return cumulativeLengths;
 }
 
-function setGoldStrokeStyle() {
-  drawingContext.strokeStyle = GOLD_STROKE_COLOR;
-  drawingContext.lineWidth = GOLD_STROKE_WIDTH;
+/// Pointer blue with a soft glow, readable on light and dark screens.
+function setAnnotationStrokeStyle() {
+  drawingContext.strokeStyle = CURSOR_COLOR;
+  drawingContext.lineWidth = ANNOTATION_STROKE_WIDTH;
   drawingContext.lineCap = 'round';
   drawingContext.lineJoin = 'round';
+  drawingContext.shadowColor = ANNOTATION_STROKE_GLOW_COLOR;
+  drawingContext.shadowBlur = ANNOTATION_STROKE_GLOW_RADIUS * (window.devicePixelRatio || 1);
 }
 
 function drawAnnotations(currentSeconds) {
   const fadeOpacity = annotationFadeStartSeconds === null ? 1 : clamp(1 - (currentSeconds - annotationFadeStartSeconds) / 0.6, 0, 1);
   drawingContext.save();
   drawingContext.globalAlpha = fadeOpacity;
-  setGoldStrokeStyle();
+  setAnnotationStrokeStyle();
 
   for (const screenCircle of screenCircles) {
     // Traced over 0.4 s ease-in-out once its delay passes (the SwiftUI trim animation).
@@ -907,6 +912,11 @@ async function startOverlay() {
       const points = handDrawnEllipsePoints(rect, Math.random() * 1000);
       screenCircles.push({ rect, points, cumulativeLengths: cumulativeLengthsOf(points), appearAtSeconds: currentSeconds + circle.appearDelaySeconds });
     }
+  });
+  // The user switched to another window, so the circles would sit on something else.
+  await listen('clear-screen-circles', (event) => {
+    screenCircles = [];
+    if (!event.payload.keepsUserStrokes) userStrokes = [];
   });
   await listen('fade-annotations', () => { if (annotationFadeStartSeconds === null) annotationFadeStartSeconds = nowInSeconds(); });
   await listen('clear-annotations', () => {

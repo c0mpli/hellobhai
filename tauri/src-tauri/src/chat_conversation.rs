@@ -4,10 +4,18 @@
 //! no windows, so it is unit-tested here; `chat_panel.rs` shows it.
 
 use crate::brain_engine::BrainEngine;
+use crate::conversation_history::ConversationHistory;
+use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Message ids are unique across every tab: a cancelled request's cleanup can
+/// run after a tab switch and must not touch the new tab's rows.
+static NEXT_CHAT_MESSAGE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// One line in the chat: something the user typed or said, or a reply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -25,7 +33,6 @@ pub struct ChatMessage {
 #[derive(Default)]
 pub struct ChatConversation {
     messages: Vec<ChatMessage>,
-    next_message_id: u64,
 }
 
 impl ChatConversation {
@@ -35,8 +42,7 @@ impl ChatConversation {
 
     /// Adds a row and returns its id.
     pub fn append(&mut self, is_from_user: bool, text: String, is_streaming: bool) -> u64 {
-        self.next_message_id += 1;
-        let message_id = self.next_message_id;
+        let message_id = NEXT_CHAT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
         self.messages.push(ChatMessage { id: message_id, is_from_user, text, is_streaming });
         message_id
     }
@@ -46,6 +52,10 @@ impl ChatConversation {
             message.text = text;
             message.is_streaming = is_streaming;
         }
+    }
+
+    pub fn message_text(&self, message_id: u64) -> Option<&str> {
+        self.messages.iter().find(|message| message.id == message_id).map(|message| message.text.as_str())
     }
 
     pub fn remove(&mut self, message_id: u64) {
@@ -64,6 +74,189 @@ impl ChatConversation {
             }
         }
     }
+}
+
+pub const NEW_CHAT_TAB_TITLE: &str = "New chat";
+const MAXIMUM_CHAT_TAB_TITLE_CHARACTERS: usize = 24;
+
+/// A tab is named after its first question, on one line and cut to fit a tab
+/// (Mac `ChatTab.title(forChatMessages:)`).
+pub fn chat_tab_title(chat_messages: &[ChatMessage]) -> String {
+    let Some(first_question) = chat_messages.iter().find(|message| message.is_from_user) else {
+        return NEW_CHAT_TAB_TITLE.to_string();
+    };
+    let single_line_question = first_question.text.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+    if single_line_question.chars().count() > MAXIMUM_CHAT_TAB_TITLE_CHARACTERS {
+        single_line_question.chars().take(MAXIMUM_CHAT_TAB_TITLE_CHARACTERS).collect::<String>() + "..."
+    } else {
+        single_line_question
+    }
+}
+
+/// One tab in the strip under the chat header, as the page draws it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTabSummary {
+    pub id: u64,
+    pub title: String,
+}
+
+/// A tab that isn't shown: its rows and the history sent to the brain.
+#[derive(Default)]
+struct ParkedChatTab {
+    conversation: ChatConversation,
+    conversation_history: ConversationHistory,
+}
+
+/// The chat's tabs, like browser tabs (Mac `chatTabs` and
+/// `parkedChatTabConversations`). The active tab's rows and history live with
+/// their owners (`ChatPanel` and the brain); the other tabs are parked here.
+pub struct ChatTabs {
+    tab_ids_in_order: Vec<u64>,
+    active_tab_id: u64,
+    parked_tabs: HashMap<u64, ParkedChatTab>,
+    next_tab_id: u64,
+}
+
+impl Default for ChatTabs {
+    fn default() -> Self {
+        ChatTabs { tab_ids_in_order: vec![1], active_tab_id: 1, parked_tabs: HashMap::new(), next_tab_id: 2 }
+    }
+}
+
+impl ChatTabs {
+    pub fn active_tab_id(&self) -> u64 {
+        self.active_tab_id
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tab_ids_in_order.len()
+    }
+
+    pub fn contains_tab(&self, tab_id: u64) -> bool {
+        self.tab_ids_in_order.contains(&tab_id)
+    }
+
+    /// Every tab in order, titled from the active rows or the parked ones.
+    pub fn summaries(&self, active_conversation: &ChatConversation) -> Vec<ChatTabSummary> {
+        self.tab_ids_in_order
+            .iter()
+            .map(|&tab_id| {
+                let tab_messages = if tab_id == self.active_tab_id {
+                    active_conversation.messages()
+                } else {
+                    self.parked_tabs.get(&tab_id).map(|parked_tab| parked_tab.conversation.messages()).unwrap_or(&[])
+                };
+                ChatTabSummary { id: tab_id, title: chat_tab_title(tab_messages) }
+            })
+            .collect()
+    }
+
+    /// Adds an empty tab after the active one and returns its id (not switched to yet).
+    pub fn insert_empty_tab_after_active(&mut self) -> u64 {
+        let new_tab_id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let active_tab_index = self
+            .tab_ids_in_order
+            .iter()
+            .position(|&tab_id| tab_id == self.active_tab_id)
+            .unwrap_or(self.tab_ids_in_order.len() - 1);
+        self.tab_ids_in_order.insert(active_tab_index + 1, new_tab_id);
+        self.parked_tabs.insert(new_tab_id, ParkedChatTab::default());
+        new_tab_id
+    }
+
+    /// Parks the active tab's rows and history and swaps in the target tab's.
+    /// Returns false (nothing changed) for the active tab or an unknown one.
+    pub fn switch_to_tab(
+        &mut self,
+        target_tab_id: u64,
+        active_conversation: &mut ChatConversation,
+        active_conversation_history: &mut ConversationHistory,
+    ) -> bool {
+        if target_tab_id == self.active_tab_id {
+            return false;
+        }
+        let Some(target_tab) = self.parked_tabs.remove(&target_tab_id) else { return false };
+        self.parked_tabs.insert(
+            self.active_tab_id,
+            ParkedChatTab {
+                conversation: std::mem::replace(active_conversation, target_tab.conversation),
+                conversation_history: std::mem::replace(active_conversation_history, target_tab.conversation_history),
+            },
+        );
+        self.active_tab_id = target_tab_id;
+        true
+    }
+
+    /// The tab to show when the active one closes: the next one, else the previous one.
+    pub fn neighbour_of_active_tab(&self) -> Option<u64> {
+        let active_tab_index = self.tab_ids_in_order.iter().position(|&tab_id| tab_id == self.active_tab_id)?;
+        if let Some(next_tab_id) = self.tab_ids_in_order.get(active_tab_index + 1) {
+            return Some(*next_tab_id);
+        }
+        let previous_tab_index = active_tab_index.checked_sub(1)?;
+        self.tab_ids_in_order.get(previous_tab_index).copied()
+    }
+
+    /// Removes a tab that isn't active (switch away from it first).
+    pub fn remove_parked_tab(&mut self, tab_id: u64) {
+        if tab_id == self.active_tab_id {
+            return;
+        }
+        self.tab_ids_in_order.retain(|&existing_tab_id| existing_tab_id != tab_id);
+        self.parked_tabs.remove(&tab_id);
+    }
+
+    /// A cancelled request's rows may have been parked by a tab switch.
+    pub fn finish_streaming_in_parked_tabs(&mut self, message_ids: &[u64]) {
+        for parked_tab in self.parked_tabs.values_mut() {
+            parked_tab.conversation.finish_streaming(message_ids);
+        }
+    }
+}
+
+/// Text size for chat messages and the composer (Mac `ChatTextSize`),
+/// saved as `chatTextSize`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatTextSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+    ExtraLarge,
+}
+
+impl ChatTextSize {
+    pub fn point_size(self) -> u32 {
+        match self {
+            ChatTextSize::Small => 12,
+            ChatTextSize::Medium => 13,
+            ChatTextSize::Large => 15,
+            ChatTextSize::ExtraLarge => 17,
+        }
+    }
+}
+
+/// Where a spoken sentence sits in a chat reply: the first match at or after
+/// `search_start_byte_offset` (so a repeated sentence lights the right
+/// occurrence), as a byte range. Port of the Mac's `advanceChatSpeechProgress`.
+pub fn find_spoken_sentence_byte_range(message_text: &str, spoken_sentence: &str, search_start_byte_offset: usize) -> Option<Range<usize>> {
+    let trimmed_sentence = spoken_sentence.trim();
+    if trimmed_sentence.is_empty() {
+        return None;
+    }
+    let text_after_search_start = message_text.get(search_start_byte_offset..)?;
+    let match_start_in_rest = text_after_search_start.find(trimmed_sentence)?;
+    let sentence_start_byte_offset = search_start_byte_offset + match_start_in_rest;
+    Some(sentence_start_byte_offset..sentence_start_byte_offset + trimmed_sentence.len())
+}
+
+/// A byte offset as a UTF-16 offset, which is how the chat page's JavaScript
+/// strings count (for `String.prototype.slice`).
+pub fn utf16_offset_for_byte_offset(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset].encode_utf16().count()
 }
 
 // Only bhai's own tags, so ordinary brackets like [1] or arr[0] stay.
@@ -182,6 +375,70 @@ mod tests {
         chat_conversation.remove(reply_id);
         assert!(chat_conversation.messages().is_empty());
         assert_ne!(chat_conversation.append(true, "a".into(), false), reply_id);
+    }
+
+    #[test]
+    fn tab_titles_come_from_the_first_question_cut_to_24_characters() {
+        let mut chat_conversation = ChatConversation::default();
+        assert_eq!(chat_tab_title(chat_conversation.messages()), "New chat");
+        chat_conversation.append(false, "a reply first".into(), false);
+        assert_eq!(chat_tab_title(chat_conversation.messages()), "New chat");
+        chat_conversation.append(true, "what is\nthis".into(), false);
+        assert_eq!(chat_tab_title(chat_conversation.messages()), "what is this");
+        let mut long_conversation = ChatConversation::default();
+        long_conversation.append(true, "explain how dns resolution works step by step".into(), false);
+        assert_eq!(chat_tab_title(long_conversation.messages()), "explain how dns resoluti...");
+    }
+
+    #[test]
+    fn tabs_park_rows_and_history_and_close_to_a_neighbour() {
+        let mut chat_tabs = ChatTabs::default();
+        let mut active_conversation = ChatConversation::default();
+        let mut active_history = ConversationHistory::default();
+        let first_tab_id = chat_tabs.active_tab_id();
+        active_conversation.append(true, "first question".into(), false);
+        active_history.append(crate::conversation_history::ConversationEntry { user_text: "q".into(), assistant_response: "a".into() });
+
+        let second_tab_id = chat_tabs.insert_empty_tab_after_active();
+        assert!(chat_tabs.switch_to_tab(second_tab_id, &mut active_conversation, &mut active_history));
+        assert!(active_conversation.messages().is_empty());
+        assert!(active_history.entries().is_empty());
+        let titles: Vec<String> = chat_tabs.summaries(&active_conversation).into_iter().map(|summary| summary.title).collect();
+        assert_eq!(titles, vec!["first question", "New chat"]);
+
+        assert_eq!(chat_tabs.neighbour_of_active_tab(), Some(first_tab_id));
+        assert!(chat_tabs.switch_to_tab(first_tab_id, &mut active_conversation, &mut active_history));
+        assert_eq!(active_history.entries().len(), 1);
+        chat_tabs.remove_parked_tab(second_tab_id);
+        assert_eq!(chat_tabs.tab_count(), 1);
+        assert!(!chat_tabs.switch_to_tab(second_tab_id, &mut active_conversation, &mut active_history));
+    }
+
+    #[test]
+    fn spoken_sentences_are_found_in_order_even_when_repeated() {
+        let reply = "Yes. Click save. Yes.";
+        let first_match = find_spoken_sentence_byte_range(reply, "Yes.", 0).unwrap();
+        assert_eq!(first_match, 0..4);
+        let second_match = find_spoken_sentence_byte_range(reply, " Click save. ", first_match.end).unwrap();
+        assert_eq!(&reply[second_match.clone()], "Click save.");
+        let third_match = find_spoken_sentence_byte_range(reply, "Yes.", second_match.end).unwrap();
+        assert_eq!(third_match, 17..21);
+        assert_eq!(find_spoken_sentence_byte_range(reply, "Nope.", 0), None);
+        assert_eq!(find_spoken_sentence_byte_range(reply, "  ", 0), None);
+        assert_eq!(find_spoken_sentence_byte_range(reply, "Yes.", 99), None);
+        // The page slices JavaScript strings, which count UTF-16 units.
+        let hindi_reply = "हाँ भाई। ठीक है।";
+        let hindi_match = find_spoken_sentence_byte_range(hindi_reply, "ठीक है।", 0).unwrap();
+        assert_eq!(utf16_offset_for_byte_offset(hindi_reply, hindi_match.start), "हाँ भाई। ".encode_utf16().count());
+    }
+
+    #[test]
+    fn text_sizes_match_the_mac_and_unknown_names_are_rejected() {
+        assert_eq!(ChatTextSize::default(), ChatTextSize::Medium);
+        let point_sizes = [ChatTextSize::Small, ChatTextSize::Medium, ChatTextSize::Large, ChatTextSize::ExtraLarge].map(ChatTextSize::point_size);
+        assert_eq!(point_sizes, [12, 13, 15, 17]);
+        assert_eq!(serde_json::from_str::<ChatTextSize>(r#""extraLarge""#).unwrap(), ChatTextSize::ExtraLarge);
+        assert!(serde_json::from_str::<ChatTextSize>(r#""huge""#).is_err());
     }
 
     #[test]

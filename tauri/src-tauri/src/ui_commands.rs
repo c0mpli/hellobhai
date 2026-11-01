@@ -12,6 +12,7 @@ use crate::claude_cli::find_claude_executable;
 use crate::codex_cli::find_codex_executable;
 use crate::platform;
 use crate::push_to_talk::{set_recording_new_shortcut, PushToTalkShortcutOption, ShortcutRecorderUpdate};
+use crate::chat_conversation::ChatTextSize;
 use crate::chat_panel::ChatPanelSide;
 use crate::orb_window::{clamped_orb_side_length, VoiceBuddyStyle, MAXIMUM_ORB_COLOR};
 use crate::settings::{save_settings, Settings};
@@ -98,6 +99,8 @@ pub enum SettingChange {
     SpeaksVoiceReplies(bool),
     SpeaksChatReplies(bool),
     ChatPanelSide(ChatPanelSide),
+    /// Only the four Mac sizes deserialize; any other name is refused before it gets here.
+    ChatTextSize(ChatTextSize),
     VoiceBuddyStyle(VoiceBuddyStyle),
     OrbSideLength(f64),
     SelectedOrbColor(u8),
@@ -126,6 +129,7 @@ pub fn apply_setting_change(settings: &mut Settings, setting_change: SettingChan
         SettingChange::SpeaksVoiceReplies(speaks_voice_replies) => settings.speaks_voice_replies = speaks_voice_replies,
         SettingChange::SpeaksChatReplies(speaks_chat_replies) => settings.speaks_chat_replies = speaks_chat_replies,
         SettingChange::ChatPanelSide(chat_panel_side) => settings.chat_panel_side = chat_panel_side,
+        SettingChange::ChatTextSize(chat_text_size) => settings.chat_text_size = chat_text_size,
         SettingChange::VoiceBuddyStyle(voice_buddy_style) => settings.voice_buddy_style = voice_buddy_style,
         SettingChange::OrbSideLength(orb_side_length) => settings.orb_side_length = clamped_orb_side_length(orb_side_length),
         SettingChange::SelectedOrbColor(orb_color) => {
@@ -196,7 +200,8 @@ pub async fn change_setting(change: SettingChange, app: AppHandle) {
         SettingChange::ClaudeModel(_)
         | SettingChange::BrainEngine(_)
         | SettingChange::ReasoningEffort(_)
-        | SettingChange::SpeaksChatReplies(_) => {
+        | SettingChange::SpeaksChatReplies(_)
+        | SettingChange::ChatTextSize(_) => {
             state.chat_panel.emit_chat_state()
         }
         SettingChange::VoiceBuddyStyle(_) => state.orb_window.apply_voice_buddy_style(),
@@ -316,6 +321,10 @@ mod tests {
         assert_eq!(change, SettingChange::ReasoningEffort(None));
         let change: SettingChange = serde_json::from_str(r#"{"name":"pushToTalkShortcut","value":"ctrlWin"}"#).unwrap();
         assert_eq!(change, SettingChange::PushToTalkShortcut(PushToTalkShortcutOption::CtrlWin));
+        let change: SettingChange = serde_json::from_str(r#"{"name":"chatTextSize","value":"extraLarge"}"#).unwrap();
+        assert_eq!(change, SettingChange::ChatTextSize(ChatTextSize::ExtraLarge));
+        // An unknown text size never reaches the settings.
+        assert!(serde_json::from_str::<SettingChange>(r#"{"name":"chatTextSize","value":"huge"}"#).is_err());
     }
 
     #[test]
@@ -338,6 +347,8 @@ mod tests {
         assert!(apply_setting_change(&mut settings, SettingChange::OrbSideLength(999.0)));
         assert!(apply_setting_change(&mut settings, SettingChange::IsChatInputMode(true)));
         assert!(apply_setting_change(&mut settings, SettingChange::ChatPanelSide(ChatPanelSide::Left)));
+        assert!(apply_setting_change(&mut settings, SettingChange::ChatTextSize(ChatTextSize::Large)));
+        assert_eq!(settings.chat_text_size, ChatTextSize::Large);
         assert_eq!(settings.claude_model, "opus");
         assert_eq!(settings.brain_engine, BrainEngine::Codex);
         assert_eq!(settings.reasoning_effort.as_deref(), Some("high"));

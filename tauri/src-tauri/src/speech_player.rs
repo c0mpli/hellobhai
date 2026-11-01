@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rodio::buffer::SamplesBuffer;
+use rodio::source::EmptyCallback;
 use rodio::{DeviceSinkBuilder, Player};
 use tauri::{AppHandle, Emitter};
 
@@ -48,6 +49,16 @@ pub enum NeuralVoiceLoadState {
     Failed(String),
 }
 
+/// What the chat follows while something is spoken.
+pub enum SpeechProgressEvent<'sentence> {
+    /// A sentence's audio just started (or, with the system voice, the rest of the text).
+    SentenceStartedPlaying(&'sentence str),
+    /// Playback finished or was stopped.
+    SpeechStopped,
+}
+
+type SpeechProgressObserver = Box<dyn Fn(SpeechProgressEvent) + Send + Sync>;
+
 /// Work for the synthesis thread, which owns the engine (ort sessions run with `&mut`).
 enum SynthesisThreadCommand {
     Speak { text: String, playback_generation: u64, voice: SupertonicVoice },
@@ -65,6 +76,7 @@ pub struct SpeechPlayer {
     load_state: Mutex<NeuralVoiceLoadState>,
     /// The playback in progress, so `stop_playback` can silence it from any thread.
     current_player: Mutex<Option<Arc<Player>>>,
+    speech_progress_observer: Mutex<Option<SpeechProgressObserver>>,
 }
 
 fn supertonic_directory(models_directory: &Path) -> PathBuf {
@@ -87,6 +99,7 @@ impl SpeechPlayer {
             selected_voice: Mutex::new(initial_voice),
             load_state: Mutex::new(NeuralVoiceLoadState::NotLoaded),
             current_player: Mutex::new(None),
+            speech_progress_observer: Mutex::new(None),
         });
 
         let speech_player_for_thread = speech_player.clone();
@@ -157,6 +170,32 @@ impl SpeechPlayer {
         });
     }
 
+    pub fn set_speech_progress_observer(&self, speech_progress_observer: SpeechProgressObserver) {
+        *self.speech_progress_observer.lock().unwrap() = Some(speech_progress_observer);
+    }
+
+    fn notify_speech_progress(&self, speech_progress_event: SpeechProgressEvent) {
+        if let Some(speech_progress_observer) = self.speech_progress_observer.lock().unwrap().as_ref() {
+            speech_progress_observer(speech_progress_event);
+        }
+    }
+
+    /// A silent queue entry placed before a clip: the player reaches it the
+    /// moment the clip before it ends, which is when this clip starts. It runs
+    /// on the audio thread, so the observer is called from the async runtime.
+    fn sentence_started_marker(self: &Arc<Self>, sentence: String, playback_generation: u64) -> EmptyCallback {
+        let speech_player = self.clone();
+        EmptyCallback::new(Box::new(move || {
+            let speech_player = speech_player.clone();
+            let sentence = sentence.clone();
+            tauri::async_runtime::spawn(async move {
+                if speech_player.playback_generation.load(Ordering::SeqCst) == playback_generation {
+                    speech_player.notify_speech_progress(SpeechProgressEvent::SentenceStartedPlaying(&sentence));
+                }
+            });
+        }))
+    }
+
     pub fn load_state(&self) -> NeuralVoiceLoadState {
         self.load_state.lock().unwrap().clone()
     }
@@ -184,6 +223,9 @@ impl SpeechPlayer {
         let was_speaking = self.is_speaking.swap(is_speaking_now, Ordering::SeqCst);
         if was_speaking != is_speaking_now {
             let _ = self.app.emit("speaking-changed", serde_json::json!({ "isSpeaking": is_speaking_now }));
+            if !is_speaking_now {
+                self.notify_speech_progress(SpeechProgressEvent::SpeechStopped);
+            }
         }
     }
 
@@ -293,7 +335,7 @@ impl SpeechPlayer {
     // the one sentence being synthesized (well under a second); ort run options
     // with terminate() would cut that if it ever matters.
     fn speak_on_synthesis_thread(
-        &self,
+        self: &Arc<Self>,
         text: &str,
         playback_generation: u64,
         voice: SupertonicVoice,
@@ -340,16 +382,24 @@ impl SpeechPlayer {
                     // Appending returns at once, so the next sentence is synthesized
                     // while this one plays and the queue plays them back to back.
                     match engine.synthesize(sentence, language_code_for_sentence(sentence), voice_style) {
-                        Ok(samples) => player.append(SamplesBuffer::new(NonZero::<u16>::MIN, sample_rate, samples)),
+                        Ok(samples) => {
+                            player.append(self.sentence_started_marker(sentence.clone(), playback_generation));
+                            player.append(SamplesBuffer::new(NonZero::<u16>::MIN, sample_rate, samples));
+                        }
                         Err(error_message) => {
                             eprintln!("Supertonic-3 failed, finishing with the system voice: {error_message}");
-                            append_system_voice_clip(&player, &sentences[sentence_index..].join(" "));
+                            let rest_of_text = sentences[sentence_index..].join(" ");
+                            player.append(self.sentence_started_marker(rest_of_text.clone(), playback_generation));
+                            append_system_voice_clip(&player, &rest_of_text);
                             break;
                         }
                     }
                 }
             }
-            _ => append_system_voice_clip(&player, text),
+            _ => {
+                player.append(self.sentence_started_marker(text.to_string(), playback_generation));
+                append_system_voice_clip(&player, text);
+            }
         }
 
         while !player.empty() && !is_cancelled() {

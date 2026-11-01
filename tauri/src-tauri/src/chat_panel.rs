@@ -20,7 +20,9 @@ use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, 
 
 use crate::app_state::AppState;
 use crate::brain_engine::BrainEngine;
-use crate::chat_conversation::{chat_model_label, ChatConversation, ChatMessage};
+use crate::chat_conversation::{
+    chat_model_label, find_spoken_sentence_byte_range, utf16_offset_for_byte_offset, ChatConversation, ChatMessage, ChatTabSummary, ChatTabs,
+};
 use crate::page_bridge::{locked_down_window_builder, monitor_containing_point};
 use crate::platform::{self, PlatformError};
 use crate::screen_mapping::{monitors_from_tauri, MonitorDescription, PhysicalRect};
@@ -167,10 +169,33 @@ pub struct ChatStateSnapshot {
     pub claude_model: String,
     pub reasoning_effort: Option<String>,
     pub speaks_chat_replies: bool,
+    /// The strip under the header, in order.
+    pub tabs: Vec<ChatTabSummary>,
+    pub active_chat_tab_id: u64,
+    /// Font size in px for the messages and the composer.
+    pub chat_text_point_size: u32,
+    pub speech_progress: Option<ChatSpeechProgress>,
+}
+
+/// The sentence of a chat reply being spoken right now, in UTF-16 offsets into
+/// its text (how the page's strings count), so the page can light it up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSpeechProgress {
+    pub message_id: u64,
+    pub sentence_start: usize,
+    pub sentence_end: usize,
 }
 
 struct ChatPanelState {
+    /// The active tab's rows; the other tabs' rows are parked in `chat_tabs`.
     conversation: ChatConversation,
+    chat_tabs: ChatTabs,
+    /// The chat reply being read out, and how far into its text (bytes) the
+    /// sentence search has got, so a repeated sentence matches the right occurrence.
+    spoken_chat_message_id: Option<u64>,
+    spoken_message_search_start_byte_offset: usize,
+    chat_speech_progress: Option<ChatSpeechProgress>,
     is_minimized: bool,
     has_unread_reply: bool,
     /// Set while the slide-away runs, so a show during it cancels the pending hide.
@@ -195,6 +220,10 @@ impl ChatPanel {
             settings,
             state: Mutex::new(ChatPanelState {
                 conversation: ChatConversation::default(),
+                chat_tabs: ChatTabs::default(),
+                spoken_chat_message_id: None,
+                spoken_message_search_start_byte_offset: 0,
+                chat_speech_progress: None,
                 is_minimized: false,
                 has_unread_reply: false,
                 is_closing: false,
@@ -238,6 +267,10 @@ impl ChatPanel {
             claude_model: settings.claude_model,
             reasoning_effort: settings.reasoning_effort,
             speaks_chat_replies: settings.speaks_chat_replies,
+            tabs: state.chat_tabs.summaries(&state.conversation),
+            active_chat_tab_id: state.chat_tabs.active_tab_id(),
+            chat_text_point_size: settings.chat_text_size.point_size(),
+            speech_progress: state.chat_speech_progress,
         }
     }
 
@@ -267,7 +300,72 @@ impl ChatPanel {
     }
 
     pub fn finish_streaming_messages(&self, message_ids: &[u64]) {
-        self.state.lock().unwrap().conversation.finish_streaming(message_ids);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.conversation.finish_streaming(message_ids);
+            state.chat_tabs.finish_streaming_in_parked_tabs(message_ids);
+        }
+        self.emit_chat_state();
+    }
+
+    // MARK: Tabs (the brain decides; it owns each tab's history)
+
+    /// Runs a change on the tabs and the active tab's rows, then redraws the page.
+    pub fn change_chat_tabs<ChangeResult>(&self, change: impl FnOnce(&mut ChatTabs, &mut ChatConversation) -> ChangeResult) -> ChangeResult {
+        let change_result = {
+            let mut state = self.state.lock().unwrap();
+            let state = &mut *state;
+            change(&mut state.chat_tabs, &mut state.conversation)
+        };
+        self.emit_chat_state();
+        change_result
+    }
+
+    // MARK: Following speech (Mac `speakChatReply` / `advanceChatSpeechProgress`)
+
+    /// Called right after a chat reply starts being spoken.
+    pub fn begin_speaking_chat_reply(&self, message_id: u64) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.spoken_chat_message_id = Some(message_id);
+            state.spoken_message_search_start_byte_offset = 0;
+            state.chat_speech_progress = None;
+        }
+        self.emit_chat_state();
+    }
+
+    /// A sentence's audio just started: light it up in the reply being spoken.
+    pub fn advance_chat_speech_progress(&self, spoken_sentence: &str) {
+        {
+            let mut state = self.state.lock().unwrap();
+            let Some(spoken_chat_message_id) = state.spoken_chat_message_id else { return };
+            let Some(message_text) = state.conversation.message_text(spoken_chat_message_id) else { return };
+            let Some(sentence_byte_range) =
+                find_spoken_sentence_byte_range(message_text, spoken_sentence, state.spoken_message_search_start_byte_offset)
+            else {
+                return;
+            };
+            let chat_speech_progress = ChatSpeechProgress {
+                message_id: spoken_chat_message_id,
+                sentence_start: utf16_offset_for_byte_offset(message_text, sentence_byte_range.start),
+                sentence_end: utf16_offset_for_byte_offset(message_text, sentence_byte_range.end),
+            };
+            state.spoken_message_search_start_byte_offset = sentence_byte_range.end;
+            state.chat_speech_progress = Some(chat_speech_progress);
+        }
+        self.emit_chat_state();
+    }
+
+    /// Speech stopped or finished: the reply reads normally again.
+    pub fn clear_chat_speech_progress(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.spoken_chat_message_id.is_none() && state.chat_speech_progress.is_none() {
+                return;
+            }
+            state.spoken_chat_message_id = None;
+            state.chat_speech_progress = None;
+        }
         self.emit_chat_state();
     }
 
@@ -619,6 +717,23 @@ pub fn get_chat_state(state: State<'_, AppState>) -> ChatStateSnapshot {
 #[tauri::command]
 pub fn send_chat_message(text: String, state: State<'_, AppState>) {
     state.companion_brain.send_typed_chat_message(text);
+}
+
+/// The "+" button or Ctrl+T.
+#[tauri::command]
+pub fn open_new_chat_tab(state: State<'_, AppState>) {
+    state.companion_brain.open_new_chat_tab();
+}
+
+#[tauri::command]
+pub fn switch_to_chat_tab(tab_id: u64, state: State<'_, AppState>) {
+    state.companion_brain.switch_to_chat_tab(tab_id);
+}
+
+/// A tab's x, or Ctrl+W for the active tab.
+#[tauri::command]
+pub fn close_chat_tab(tab_id: u64, state: State<'_, AppState>) {
+    state.companion_brain.close_chat_tab(tab_id);
 }
 
 #[tauri::command]
