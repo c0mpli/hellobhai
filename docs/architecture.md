@@ -90,24 +90,26 @@ When Claude decides a picture would help, the app asks Claude a second, focused 
 | Whiteboard and notes | WKWebView + rough.js, dagre, KaTeX, Prism | `VisualExplanationPanel.swift` |
 | 3D models | WKWebView + three.js | `Model3DOverlay.swift`, `VisualToolkit/model3d.html` |
 
-## The Windows app
+## The Windows and Linux app
 
-The Windows app (`tauri/`, Tauri 2: Rust + WebView2) follows the same flow and the same tag protocol, sends Claude the same prompts and draws with the same whiteboard, notes and 3D pages. Those pages and prompts are not copied by hand: `scripts/export-mac-web-assets-for-tauri.sh` builds them from the Mac sources into `tauri/generated/`, so the Mac code stays the single source of truth. It has no orb, typed chat or Codex yet; the blue pointer follows the mouse instead, and the default hotkey is ctrl + win. It has not been run on a real Windows PC yet.
+The Windows and Linux app (`tauri/`, one Tauri 2 crate: Rust + WebView2 on Windows, WebKitGTK on Linux) follows the same flow and the same tag protocol, sends Claude (or Codex) the same prompts and draws with the same whiteboard, notes, 3D and orb pages. Those pages and prompts are not copied by hand: `scripts/export-mac-web-assets-for-tauri.sh` builds them from the Mac sources into `tauri/generated/`, so the Mac code stays the single source of truth. It has the orb and the cursor voice style, the typed chat with both bhai modes and reply settings, and the Codex brain, like the Mac. Only `src-tauri/src/platform/` touches the OS, with the same functions in `windows/` and `linux/`. The default hotkey is ctrl + win (ctrl + super on Linux). It has been compile-checked for both targets and unit-tested, and CI builds the installers, but it has not been run on real Windows or Linux hardware yet.
 
-| Piece | Mac | Windows (file in `tauri/src-tauri/src/`) |
-|-------|-----|---------|
-| Conductor | `CompanionManager.swift` | `companion_brain.rs` |
-| Push-to-talk shortcut | `CGEvent` tap | low-level keyboard hook (`push_to_talk.rs`, `platform/windows/keyboard_hook.rs`) |
-| Ears | WhisperKit | whisper.cpp `whisper-server` with large-v3 turbo, run locally (`whisper_transcriber.rs`) |
-| Eyes | ScreenCaptureKit | GDI capture of every monitor (`screen_capture.rs`) |
-| Brain | `claude -p` | `claude -p`, same flags (`claude_cli.rs`) |
-| Mouth | Supertonic-3 via FluidAudio | Supertonic-3 via ONNX Runtime, Windows voice as fallback (`speech_player.rs`, `supertonic.rs`) |
-| Hands | `CGEvent`; `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `SendInput`; read-only Read/Glob/Grep tools plus an `[OPEN:target]` tag checked in Rust and run with ShellExecuteW (`computer_control.rs`, `platform/windows/claude_tools.rs`) |
-| Pointer, circles, speaking pill | `OverlayWindow.swift` | one transparent window per monitor (`overlay_windows.rs`, `ui/overlay.js`) |
-| Whiteboard, notes, 3D | WKWebView | WebView2 windows showing the exported pages (`board_panel.rs`, `model3d_window.rs`) |
-| Settings | menu bar panel | tray icon panel (`tray_and_settings.rs`, `ui/settings.html`) |
+| Piece | Mac | Windows (file in `tauri/src-tauri/src/`) | Linux |
+|-------|-----|---------|-------|
+| Conductor | `CompanionManager.swift` | `companion_brain.rs` | same |
+| Push-to-talk shortcut | `CGEvent` tap | low-level keyboard hook (`push_to_talk.rs`, `platform/windows/keyboard_hook.rs`) | XInput2 raw keys; `/dev/input` on Wayland (`platform/linux/keyboard_hook.rs`) |
+| Ears | WhisperKit | whisper.cpp `whisper-server` with large-v3 turbo, run locally (`whisper_transcriber.rs`) | same, Linux build |
+| Eyes | ScreenCaptureKit | GDI capture of every monitor (`screen_capture.rs`); own windows excluded | XGetImage, or the screenshot portal on Wayland; own windows hidden for the moment of capture |
+| Brain | `claude -p` or `codex exec` | `claude -p`, same flags (`claude_cli.rs`), or `codex exec` (`codex_cli.rs`) | same |
+| Mouth | Supertonic-3 via FluidAudio | Supertonic-3 via ONNX Runtime, Windows voice as fallback (`speech_player.rs`, `supertonic.rs`) | same, `espeak-ng` as fallback |
+| Hands | `CGEvent`; `osascript`, `open`, `mdfind`, `shortcuts`, `ls` | `SendInput`; read-only Read/Glob/Grep tools plus an `[OPEN:target]` tag checked in Rust and run with ShellExecuteW (`computer_control.rs`, `platform/windows/claude_tools.rs`) | XTest; the same tools and `[OPEN]` tag run with `xdg-open` / `gtk-launch` |
+| Orb | `OrbWindow.swift` | the exported Rive page in a small topmost window (`orb_window.rs`) | same (window order on Wayland via XWayland) |
+| Typed chat | `ChatPanel.swift` | a sliding topmost window (`chat_panel.rs`, `ui/chat.*`) | same |
+| Pointer, circles, speaking pill | `OverlayWindow.swift` | one transparent window per monitor (`overlay_windows.rs`, `ui/overlay.js`) | same |
+| Whiteboard, notes, 3D | WKWebView | WebView2 windows showing the exported pages (`board_panel.rs`, `model3d_window.rs`) | WebKitGTK windows |
+| Settings | menu bar panel | tray icon panel with General / Voice / Chat / Buddy tabs (`tray_and_settings.rs`, `ui/settings.html`) | same |
 
-What leaves the machine is the same as on the Mac. Its first-launch downloads (about 1.1 GB) come from GitHub releases (whisper-server, ONNX Runtime) and Hugging Face (the models).
+What leaves the machine is the same as on the Mac. The first-launch downloads (about 1.1 GB) come from GitHub releases (whisper-server, ONNX Runtime) and Hugging Face (the models), each checked by size and SHA-256.
 
 ## What leaves your Mac
 

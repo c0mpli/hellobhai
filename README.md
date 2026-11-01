@@ -46,7 +46,8 @@ The full walkthrough, diagrams, the pieces and where they live, and exactly what
 | Platform | Status | Folder |
 |----------|--------|--------|
 | macOS (Apple Silicon, 14.2+) | Ready | [`macos/`](macos) |
-| Windows 10/11 (x64) | Preview: built, not yet tested on a real PC | [`tauri/`](tauri) |
+| Windows 10/11 (x64) | Preview: built in CI, not yet tested on real hardware | [`tauri/`](tauri) |
+| Linux (x64; X11 full, Wayland best effort) | Preview: built in CI, not yet tested on real hardware | [`tauri/`](tauri) |
 
 ## Setup (macOS)
 
@@ -79,7 +80,7 @@ cd macos
 
 ## Setup (Windows, preview)
 
-The Windows app does the same things as the Mac app (voice in Hindi/English/Hinglish, screenshots, pointing, circles, your own drawings, clicks and typing, whiteboard, notes, 3D models, on-device Whisper and Supertonic-3) except the orb, the typed chat and Codex. The blue pointer follows your mouse instead. It has only been compile-checked so far; expect rough edges.
+The Windows app does the same things as the Mac app: the orb (or the cursor style), the typed chat, voice in Hindi/English/Hinglish, screenshots, pointing, circles, your own drawings, clicks and typing, whiteboard, notes, 3D models, Claude or Codex, on-device Whisper and Supertonic-3. It has only been compile-checked and unit-tested so far; expect rough edges.
 
 1. Windows 10/11 x64 with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (run `claude` once).
 2. Get the installer from the `hellobhai-windows-installer` artifact of the latest `tauri` GitHub Actions run, or build it: `cd tauri && npm install && npx tauri build --bundles nsis`.
@@ -87,6 +88,17 @@ The Windows app does the same things as the Mac app (voice in Hindi/English/Hing
 4. Hold **ctrl + win** and talk. Click the tray icon for settings.
 
 Details: [`tauri/README.md`](tauri/README.md).
+
+## Setup (Linux, preview)
+
+Same app and features as Windows, from the same code. X11 sessions get everything; on Wayland it runs through XWayland, screenshots go through the desktop's screenshot portal, push-to-talk outside X11 windows needs your user in the `input` group, and clicks and typing only reach X11 apps (the settings panel explains this). It has only been compile-checked and unit-tested so far.
+
+1. x64 Linux (Ubuntu 22.04 or newer, or similar) with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and logged in (run `claude` once).
+2. Get the `.deb` or AppImage from the `hellobhai-linux-packages` artifact of the latest `tauri` GitHub Actions run.
+3. Install or run it. A tray icon appears; on first launch it downloads the speech models once (`espeak-ng` speaks until the voice is ready).
+4. Hold **ctrl + super** and talk. Click the tray icon for settings.
+
+Details: the "Linux" section of [`tauri/README.md`](tauri/README.md).
 
 ## Using it
 
@@ -117,9 +129,9 @@ macos/                     Mac app (Swift; legacy Xcode name leanring-buddy)
   leanring-buddy.xcodeproj
   scripts/                   create-signing-cert.sh, build-and-run.sh
   CLAUDE.md                  Mac architecture for coding agents
-tauri/                     Windows app (Tauri; Linux later), preview
-  src-tauri/                 Rust crate; OS code only in src/platform/
-  ui/                        overlay and tray settings pages
+tauri/                     Windows and Linux app (Tauri), preview
+  src-tauri/                 Rust crate; OS code only in src/platform/{windows,linux}/
+  ui/                        overlay, orb bridge, chat and tray settings pages
   generated/                 Mac pages and prompts, exported (never edit)
 scripts/                   cross-platform scripts (Mac -> tauri/generated exporter)
 docs/                      architecture.md, mobile-plan.md

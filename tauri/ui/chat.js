@@ -23,7 +23,7 @@ function createElement(tagName, className, textContent) {
 
 function createLogoImage(className) {
   const logoImage = createElement('img', `bhai-logo ${className}`);
-  logoImage.src = 'bhai-logo.png';
+  logoImage.src = 'logo.png';
   logoImage.alt = 'bhai';
   return logoImage;
 }

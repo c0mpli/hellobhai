@@ -1,6 +1,6 @@
-# hellobhai for Windows (Tauri)
+# hellobhai for Windows and Linux (Tauri)
 
-The Windows version of hellobhai, built with Tauri 2 (Rust + WebView2) and plain HTML/JS with no framework or bundler. Linux may follow from the same crate later. Status: feature-complete port, compile-checked and unit-tested from a Mac; **nothing here has run on Windows yet** (see "What is verified" below).
+The Windows and Linux version of hellobhai, one crate built with Tauri 2 (Rust + WebView2 on Windows, WebKitGTK on Linux) and plain HTML/JS with no framework or bundler. Status: feature-complete port of the Mac app (orb and cursor voice styles, typed chat and bhai modes, Claude or Codex), compile-checked for both targets and unit-tested from a Mac, installers built in CI; **nothing here has run on real Windows or Linux hardware yet** (see "What is verified" below and the "Linux" section).
 
 ## Requirements
 
@@ -12,7 +12,7 @@ The Windows version of hellobhai, built with Tauri 2 (Rust + WebView2) and plain
 
 ## Using it
 
-Hold **ctrl + win** and talk (Hindi, English or Hinglish); let go to send. Pressing it again interrupts whatever bhai is doing. While holding it you can drag on the screen to circle something; drawing without speaking asks "What is this?". Click the tray icon for the settings panel: Claude model (Fable, Opus, Sonnet or Haiku), voice with preview, shortcut (ctrl + win, ctrl + left alt, shift + ctrl, ctrl + alt + space, shift + ctrl + space), status of Claude, speech model, voice and microphone, launch at login, replay onboarding, quit. ctrl + alt is not offered alone because Windows reports AltGr as ctrl + alt.
+Hold **ctrl + win** and talk (Hindi, English or Hinglish); let go to send. Pressing it again interrupts whatever bhai is doing. While holding it you can drag on the screen to circle something; drawing without speaking asks "What is this?". In voice mode the orb sits at the right end of the taskbar (drag it anywhere; a click is tap to talk), or pick the cursor style to have the blue pointer follow the mouse. In chat mode the hotkey opens a typed chat that slides in from a screen edge. Click the tray icon for the settings panel: General (bhai mode, brain Claude or Codex with the Claude model or Codex effort, shortcut presets or a recorded combination, microphone, launch at login, replay onboarding), Voice (voice with preview), Chat (how spoken and typed questions are answered, chat side), Buddy (voice style, orb size and colour). ctrl + alt is not offered alone because Windows reports AltGr as ctrl + alt.
 
 ## First-launch downloads
 
@@ -38,13 +38,13 @@ Not verified (no Windows machine): anything at runtime on Windows, including the
 | Path | What it is |
 |------|------------|
 | `src-tauri/` | The Rust crate (`hellobhai`, library `hellobhai_lib`), `tauri.conf.json`, capabilities, icons. |
-| `src-tauri/src/platform/` | The only code that calls OS APIs. `windows/` is the real implementation; `unsupported/` holds stubs with the same function names so the crate builds and tests run on a Mac. Linux later means adding `platform/linux/`. |
-| `ui/` | Our own pages: per-monitor overlay, tray settings panel, and `page-host-bridge.js`. |
-| `generated/` | **Generated, never edit by hand.** The Mac app's board, notes and 3D pages, and `generated/prompts/*.txt` (system prompts with Windows wording). |
+| `src-tauri/src/platform/` | The only code that calls OS APIs. `windows/` and `linux/` are the real implementations; `unsupported/` holds stubs with the same function names so the crate builds and tests run on a Mac. |
+| `ui/` | Our own pages: per-monitor overlay, typed chat, tray settings panel, `page-host-bridge.js` and `orb-host-bridge.js`. |
+| `generated/` | **Generated, never edit by hand.** The Mac app's board, notes, 3D and orb pages, and `generated/prompts/*.txt` (system prompts with Windows wording). |
 | `prompt-substitutions.json` | The Windows edits the exporter makes to the Mac prompts (each must match exactly once). |
-| `scripts/check-windows-target.sh` | Type-checks the Windows target from a Mac. |
+| `scripts/check-windows-target.sh`, `check-linux-target.sh` | Type-check the Windows and Linux targets from a Mac. |
 
-`tauri.conf.json` embeds `ui/` and the three generated pages as the app's frontend; the prompts are compiled in with `include_str!`.
+`tauri.conf.json` embeds `ui/` and the four generated pages as the app's frontend; the prompts are compiled in with `include_str!`.
 
 ## Regenerating `generated/`
 
