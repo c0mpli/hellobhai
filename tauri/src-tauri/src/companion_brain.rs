@@ -25,6 +25,7 @@ use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
 use crate::model3d_window::Model3DWindow;
 use crate::narrated_step_queue::{NarratedStepQueue, StreamedLineForwarder};
+use crate::orb_window::OrbClickThroughWhileActing;
 use crate::overlay_windows;
 use crate::page_bridge::emit_to_overlays;
 use crate::prompts::{self, SystemPromptKind};
@@ -530,6 +531,8 @@ impl CompanionBrain {
     /// Replays Claude's [CLICK]/[TYPE]/[KEY] actions in order. Runs inside the
     /// response task, so pressing the hotkey again cancels whatever is left.
     async fn perform_computer_actions(&self, computer_actions: &[ComputerAction], screen_captures: &[ScreenCapture]) {
+        // Screenshots leave the orb out, so a click may aim at something behind it.
+        let _orb_click_through_guard = OrbClickThroughWhileActing::start(&self.app);
         for computer_action in computer_actions {
             match computer_action {
                 ComputerAction::Click { screenshot_x, screenshot_y, label, screen_number } => {

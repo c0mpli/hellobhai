@@ -22,6 +22,7 @@ pub mod screen_mapping;
 // (D) windows + pages
 pub mod board_panel;
 pub mod model3d_window;
+pub mod orb_window;
 pub mod overlay_windows;
 pub mod page_bridge;
 pub mod tray_and_settings;
@@ -49,6 +50,7 @@ use crate::app_state::AppState;
 use crate::board_panel::BoardPanel;
 use crate::companion_brain::CompanionBrain;
 use crate::model3d_window::Model3DWindow;
+use crate::orb_window::OrbWindow;
 use crate::speech_player::SpeechPlayer;
 use crate::whisper_transcriber::WhisperTranscriber;
 
@@ -61,6 +63,16 @@ pub fn run() {
             page_bridge::page_message,
             overlay_windows::overlay_ready,
             overlay_windows::user_stroke_added,
+            overlay_windows::overlay_pointer_away_changed,
+            orb_window::orb_pointer_pressed,
+            orb_window::orb_pointer_moved,
+            orb_window::orb_pointer_released,
+            orb_window::orb_hover_changed,
+            orb_window::buddy_home_state,
+            orb_window::get_buddy_settings,
+            orb_window::set_voice_buddy_style,
+            orb_window::set_orb_side_length,
+            orb_window::set_orb_color,
             ui_commands::get_settings,
             ui_commands::get_status,
             ui_commands::set_claude_model,
@@ -92,6 +104,9 @@ pub fn run() {
             let speech_player = SpeechPlayer::start(app_handle.clone(), initial_voice);
             let board_panel = Arc::new(BoardPanel::new());
             let model3d_window = Arc::new(Model3DWindow::new());
+            // Created before the orb: a click on the orb in voice mode is a tap on the hotkey.
+            let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
+            let orb_window = OrbWindow::new(app_handle.clone(), shared_settings.clone(), hotkey_sender.clone());
 
             let companion_brain = CompanionBrain::new(
                 app_handle.clone(),
@@ -109,9 +124,11 @@ pub fn run() {
                 whisper_transcriber,
                 board_panel,
                 model3d_window,
+                orb_window: orb_window.clone(),
             });
+            // After the overlays, so the orb is ordered above them.
+            orb_window.start();
 
-            let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
             push_to_talk::start_push_to_talk_listener(shared_settings.clone(), hotkey_sender);
             tauri::async_runtime::spawn(companion_brain.clone().run_hotkey_loop(hotkey_receiver));
 

@@ -8,7 +8,8 @@
       "../ui",
       "../generated/board.html",
       "../generated/notes.html",
-      "../generated/model3d.html"
+      "../generated/model3d.html",
+      "../generated/orb.html"
     ]
   },
   "app": {

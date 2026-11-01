@@ -1,7 +1,9 @@
-// Per-monitor overlay: the blue buddy that follows the pointer, flies to
-// [POINT] targets with a label bubble, the waveform while listening, the
-// spinner while thinking, gold [CIRCLE] ellipses, the user's own gold strokes
-// while the hotkey is held, the onboarding bubble and the speaking pill.
+// Per-monitor overlay: the blue pointer that launches out of the orb (orb voice
+// style) or follows the mouse with a waveform while listening and a spinner
+// while thinking (cursor voice style), flies to [POINT] targets with a label
+// bubble and rides the board/3D pen, gold [CIRCLE] ellipses, the user's own
+// gold strokes while the hotkey is held, the onboarding bubbles (by the orb,
+// or by the pointer in the cursor style) and the speaking pill.
 // Port of macos/leanring-buddy/OverlayWindow.swift (same constants).
 //
 // All positions from Rust are global physical pixels; convert with
@@ -31,10 +33,8 @@ const NAVIGATION_POINTER_PHRASES = ['right here!', 'this one!', 'over here!', 'c
 // Spring for following the pointer: SwiftUI .spring(response: 0.2, dampingFraction: 0.6).
 const FOLLOW_SPRING_STIFFNESS = (2 * Math.PI / 0.2) ** 2;
 const FOLLOW_SPRING_DAMPING = 2 * 0.6 * Math.sqrt(FOLLOW_SPRING_STIFFNESS);
-// The overlays can't see each other's flights, so while another monitor's buddy
-// is pointing this one stays hidden for about one full point-and-return.
-// ponytail: fixed guess; send a "pointing-finished" event if it ever looks wrong.
-const OTHER_MONITOR_POINTING_HIDE_MILLISECONDS = 6000;
+// The pen rests between strokes for a moment; the pointer only flies home once it has been gone this long.
+const DRAWING_PEN_REST_SECONDS_BEFORE_RETURNING = 1.2;
 const SPEAKING_PILL_EAR_WIDTH = 58;
 const SPEAKING_PILL_HEIGHT = 26; // No notch on Windows: one menu-bar-like height, hanging from the top centre.
 const SPEAKING_PILL_VOICE_BAR_COUNT = 5;
@@ -77,26 +77,42 @@ let smoothedAudioLevel = 0;
 let isSpeaking = false;
 let penGlobal = null; // { x, y } while the board or 3D pen is drawing
 let isDrawingEnabled = false;
-let anotherMonitorIsPointingUntil = 0;
+// buddy-home-changed: the voice style, chat mode and the orb's frame (global physical px).
+let voiceBuddyStyle = 'orb';
+let isChatMode = false;
+let orbFrameGlobal = null; // { x, y, width, height }
+// Monitors whose pointer is out (pointer-away-monitors), this one included.
+let monitorIndicesWithPointerAway = [];
 
-// ---- Buddy state (BlueCursorView) ----
+// The cursor voice style only applies in voice mode; chat mode keeps the
+// orb's spot as the launch point (the orb itself is hidden there).
+function isCursorStyle() {
+  return voiceBuddyStyle === 'cursor' && !isChatMode;
+}
+
+// ---- Pointer state (BlueCursorView) ----
+// restingAtHome: orb style = no pointer on screen; cursor style = beside the mouse.
+// navigatingToTarget: flying to a [POINT]/click target or the drawing pen.
+// pointingAtTarget: arrived, showing the label bubble.
+// followingDrawingPen: sitting on the board/3D pen's drawing head.
+// returningHome: flying back into the orb (shrinking) or to the mouse.
 const buddy = {
-  mode: 'following', // 'following' | 'navigating' | 'pointing'
+  mode: 'restingAtHome',
   position: { x: -1000, y: -1000 },
   velocity: { x: 0, y: 0 },
-  hasPlacedPosition: false,
   rotationDegrees: DEFAULT_TRIANGLE_ROTATION_DEGREES,
   targetRotationDegrees: DEFAULT_TRIANGLE_ROTATION_DEGREES,
   flightScale: 1,
-  isReturningToCursor: false,
-  pointerPositionWhenNavigationStarted: { x: 0, y: 0 },
-  flight: null, // { start, end, control, startSeconds, durationSeconds, onComplete }
-  navigationGeneration: 0, // invalidates bubble timers when a navigation is cancelled or replaced
+  pointerOpacity: 0, // fades the pointer as it shrinks into the orb
+  flight: null, // { start, end, control, startSeconds, durationSeconds, startScale, growsFromOrb, shrinksIntoOrb, onComplete }
+  pointingJobGeneration: 0, // invalidates bubble timers when a job is cancelled or replaced
+  lastSecondsDrawingPenWasSeen: -Infinity,
 };
-const triangleOpacity = createAnimatedValue(0, 0.25);
+let isMouseOnThisScreen = false;
+let isPointerHiddenBecauseSystemPointerIsHidden = false;
+const restingPointerOpacity = createAnimatedValue(0, 0.25);
 const waveformOpacity = createAnimatedValue(0, 0.15);
 const spinnerOpacity = createAnimatedValue(0, 0.15);
-const pointerHiddenFactor = createAnimatedValue(1, 0.3); // 1 = shown, 0 = hidden with the system pointer
 
 const navigationBubble = {
   text: '',
@@ -128,39 +144,87 @@ function resizeCanvasToWindow() {
 }
 window.addEventListener('resize', resizeCanvasToWindow);
 
-// ---- Buddy navigation (port of startNavigatingToElement and friends) ----
+// ---- Home (orb or mouse) ----
 function pointerPagePosition() {
   return { x: globalToPageX(pointerGlobal.x), y: globalToPageY(pointerGlobal.y) };
 }
 
+/// Cursor style: just below-right of the real mouse tip.
+function mouseFollowingPosition() {
+  const pointerPage = pointerPagePosition();
+  return { x: pointerPage.x + FOLLOW_OFFSET_X, y: pointerPage.y + FOLLOW_OFFSET_Y };
+}
+
+/// The orb's centre in this page's px; off this page when the orb is on another monitor.
+function orbCenterInThisPage() {
+  if (!orbFrameGlobal) return mouseFollowingPosition();
+  return {
+    x: globalToPageX(orbFrameGlobal.x + orbFrameGlobal.width / 2),
+    y: globalToPageY(orbFrameGlobal.y + orbFrameGlobal.height / 2),
+  };
+}
+
+function isOrbOnThisScreen() {
+  if (!orbFrameGlobal) return false;
+  return isGlobalPointOnThisMonitor(orbFrameGlobal.x + orbFrameGlobal.width / 2, orbFrameGlobal.y + orbFrameGlobal.height / 2);
+}
+
+/// Where the pointer launches from and returns to.
+function pointerHomePosition() {
+  return isCursorStyle() ? mouseFollowingPosition() : orbCenterInThisPage();
+}
+
+function setBuddyMode(newMode) {
+  const wasAway = buddy.mode !== 'restingAtHome';
+  buddy.mode = newMode;
+  const isAway = newMode !== 'restingAtHome';
+  // Shared with the other overlays so the mouse's screen hides its following pointer while this one is out.
+  if (wasAway !== isAway) {
+    invoke('overlay_pointer_away_changed', { monitorIndex, isAway }).catch(() => {});
+  }
+}
+
+/// Visible at home, ready to fly out: small inside the orb, or full size beside the mouse.
+function placePointerAtHomeReadyToLaunch() {
+  buddy.position = pointerHomePosition();
+  buddy.velocity = { x: 0, y: 0 };
+  buddy.flightScale = isCursorStyle() ? 1 : 0.3;
+  buddy.pointerOpacity = 1;
+}
+
+// ---- Flights (port of startNavigatingToElement and friends) ----
 function startNavigatingToElement(targetPageX, targetPageY, bubbleText) {
   // Beside the element rather than on top of it: 8 px right, 12 px below; 20 px inside the screen.
   const clampedTarget = {
     x: clamp(targetPageX + 8, 20, pageWidth() - 20),
     y: clamp(targetPageY + 12, 20, pageHeight() - 20),
   };
-  buddy.pointerPositionWhenNavigationStarted = pointerPagePosition();
-  buddy.mode = 'navigating';
-  buddy.isReturningToCursor = false;
-  buddy.navigationGeneration += 1;
+  if (buddy.mode === 'restingAtHome') placePointerAtHomeReadyToLaunch();
+  buddy.pointingJobGeneration += 1;
   navigationBubble.text = '';
   navigationBubble.opacity.value = navigationBubble.opacity.target = 0;
-  const navigationGeneration = buddy.navigationGeneration;
-  animateBezierFlightArc(clampedTarget, () => {
-    if (buddy.mode !== 'navigating' || buddy.navigationGeneration !== navigationGeneration) return;
-    startPointingAtElement(bubbleText, navigationGeneration);
+  setBuddyMode('navigatingToTarget');
+  const pointingJobGeneration = buddy.pointingJobGeneration;
+  // Only an orb launch starts small (placePointerAtHomeReadyToLaunch).
+  animateBezierFlightArc(clampedTarget, { growsFromOrb: buddy.flightScale < 1 }, () => {
+    if (buddy.mode !== 'navigatingToTarget' || buddy.pointingJobGeneration !== pointingJobGeneration) return;
+    startPointingAtElement(bubbleText, pointingJobGeneration);
   });
 }
 
-function animateBezierFlightArc(destination, onComplete) {
+/// `growsFromOrb` starts small (leaving the orb); `shrinksIntoOrb` shrinks and fades to nothing on arrival.
+function animateBezierFlightArc(destination, { growsFromOrb = false, shrinksIntoOrb = false }, onComplete) {
   const start = { ...buddy.position };
   const distance = Math.hypot(destination.x - start.x, destination.y - start.y);
   // Short hops are quick, long flights more dramatic: 0.6 s to 1.4 s.
   const durationSeconds = clamp(distance / 800, 0.6, 1.4);
-  // Midpoint raised so the buddy flies in a parabolic arc.
+  // Midpoint raised so the pointer flies in a parabolic arc.
   const arcHeight = Math.min(distance * 0.2, 80);
   const control = { x: (start.x + destination.x) / 2, y: (start.y + destination.y) / 2 - arcHeight };
-  buddy.flight = { start, end: destination, control, startSeconds: nowInSeconds(), durationSeconds, onComplete };
+  buddy.flight = {
+    start, end: destination, control, startSeconds: nowInSeconds(), durationSeconds,
+    startScale: buddy.flightScale, growsFromOrb, shrinksIntoOrb, onComplete,
+  };
 }
 
 function stepFlight(currentSeconds) {
@@ -170,12 +234,13 @@ function stepFlight(currentSeconds) {
   if (linearProgress >= 1) {
     buddy.position = { ...flight.end };
     buddy.velocity = { x: 0, y: 0 };
-    buddy.flightScale = 1;
+    buddy.flightScale = flight.shrinksIntoOrb ? 0 : 1;
     buddy.flight = null;
     flight.onComplete();
     return;
   }
-  const easedProgress = smoothstep(Math.max(linearProgress, 0));
+  const clampedProgress = Math.max(linearProgress, 0);
+  const easedProgress = smoothstep(clampedProgress);
   const oneMinus = 1 - easedProgress;
   buddy.position = {
     x: oneMinus * oneMinus * flight.start.x + 2 * oneMinus * easedProgress * flight.control.x + easedProgress * easedProgress * flight.end.x,
@@ -186,11 +251,22 @@ function stepFlight(currentSeconds) {
   const tangentY = 2 * oneMinus * (flight.control.y - flight.start.y) + 2 * easedProgress * (flight.end.y - flight.control.y);
   buddy.rotationDegrees = buddy.targetRotationDegrees = Math.atan2(tangentY, tangentX) * 180 / Math.PI + 90;
   // Grows to 1.3x at the apex and back to 1x on landing.
-  buddy.flightScale = 1 + Math.sin(Math.max(linearProgress, 0) * Math.PI) * 0.3;
+  let flightScale = 1 + Math.sin(clampedProgress * Math.PI) * 0.3;
+  if (flight.growsFromOrb) {
+    // Pops out of the orb over the first third of the flight.
+    flightScale *= flight.startScale + (1 - flight.startScale) * Math.min(1, clampedProgress * 3);
+  }
+  if (flight.shrinksIntoOrb) {
+    // Shrinks and fades into the orb over the last 40 %.
+    const remainingFraction = Math.min(1, (1 - clampedProgress) / 0.4);
+    flightScale *= remainingFraction;
+    buddy.pointerOpacity = remainingFraction;
+  }
+  buddy.flightScale = flightScale;
 }
 
-function startPointingAtElement(bubbleText, navigationGeneration) {
-  buddy.mode = 'pointing';
+function startPointingAtElement(bubbleText, pointingJobGeneration) {
+  setBuddyMode('pointingAtTarget');
   buddy.targetRotationDegrees = DEFAULT_TRIANGLE_ROTATION_DEGREES;
   navigationBubble.text = '';
   navigationBubble.opacity.value = navigationBubble.opacity.target = 1;
@@ -198,16 +274,16 @@ function startPointingAtElement(bubbleText, navigationGeneration) {
   const pointerPhrase = bubbleText
     || NAVIGATION_POINTER_PHRASES[Math.floor(Math.random() * NAVIGATION_POINTER_PHRASES.length)];
   const phraseCharacters = Array.from(pointerPhrase);
-  const isStillThisNavigation = () => buddy.mode === 'pointing' && buddy.navigationGeneration === navigationGeneration;
+  const isStillThisJob = () => buddy.mode === 'pointingAtTarget' && buddy.pointingJobGeneration === pointingJobGeneration;
 
   const streamNextCharacter = (characterIndex) => {
-    if (!isStillThisNavigation()) return;
+    if (!isStillThisJob()) return;
     if (characterIndex >= phraseCharacters.length) {
-      // Hold for 3 s, fade 0.5 s, then fly back to the pointer.
+      // Hold for 3 s, fade 0.5 s, then fly home.
       setTimeout(() => {
-        if (!isStillThisNavigation()) return;
+        if (!isStillThisJob()) return;
         navigationBubble.opacity.target = 0;
-        setTimeout(() => { if (isStillThisNavigation()) startFlyingBackToCursor(); }, 500);
+        setTimeout(() => { if (isStillThisJob()) startFlyingBackHome(); }, 500);
       }, 3000);
       return;
     }
@@ -219,38 +295,49 @@ function startPointingAtElement(bubbleText, navigationGeneration) {
   streamNextCharacter(0);
 }
 
-function startFlyingBackToCursor() {
-  const pointerPage = pointerPagePosition();
-  buddy.pointerPositionWhenNavigationStarted = pointerPage;
-  buddy.mode = 'navigating';
-  buddy.isReturningToCursor = true;
-  animateBezierFlightArc({ x: pointerPage.x + FOLLOW_OFFSET_X, y: pointerPage.y + FOLLOW_OFFSET_Y }, finishNavigationAndResumeFollowing);
-}
-
-function finishNavigationAndResumeFollowing() {
-  buddy.flight = null;
-  buddy.mode = 'following';
-  buddy.isReturningToCursor = false;
-  buddy.targetRotationDegrees = DEFAULT_TRIANGLE_ROTATION_DEGREES;
-  buddy.flightScale = 1;
-  buddy.navigationGeneration += 1;
+/// Back home, wherever home is now (even on another screen): into the orb, or beside the mouse.
+function startFlyingBackHome() {
+  setBuddyMode('returningHome');
   navigationBubble.text = '';
   navigationBubble.opacity.value = navigationBubble.opacity.target = 0;
   navigationBubble.scale.value = navigationBubble.scale.target = 1;
+  animateBezierFlightArc(pointerHomePosition(), { shrinksIntoOrb: !isCursorStyle() }, () => {
+    if (buddy.mode === 'returningHome') finishNavigationAndRestAtHome();
+  });
 }
 
-// ---- Per-frame update (port of startTrackingCursor) ----
-let buddyIsOnThisMonitor = false;
-let isBuddyHiddenBecauseSystemPointerIsHidden = false;
+/// Hidden in the orb until the next job, or (cursor style) following the mouse again.
+function finishNavigationAndRestAtHome() {
+  buddy.flight = null;
+  setBuddyMode('restingAtHome');
+  buddy.targetRotationDegrees = buddy.rotationDegrees = DEFAULT_TRIANGLE_ROTATION_DEGREES;
+  buddy.flightScale = 1;
+  buddy.pointerOpacity = 0;
+  buddy.pointingJobGeneration += 1;
+  navigationBubble.text = '';
+  navigationBubble.opacity.value = navigationBubble.opacity.target = 0;
+  navigationBubble.scale.value = navigationBubble.scale.target = 1;
+  if (isCursorStyle()) buddy.position = mouseFollowingPosition();
+}
 
-function springBuddyToward(targetX, targetY, elapsedSeconds) {
-  // Snap when the buddy arrives from another monitor, so it never sweeps across this one.
-  if (!buddy.hasPlacedPosition || !buddyIsOnThisMonitor) {
-    buddy.position = { x: targetX, y: targetY };
+/// The style switched live, or chat mode switched to voice mode: move a resting
+/// pointer to its new home without flying it across the screen, and re-aim a
+/// return flight that is underway.
+function handleHomeChanged(wasCursorStyle) {
+  if (wasCursorStyle === isCursorStyle()) return;
+  if (buddy.mode === 'restingAtHome') {
+    isMouseOnThisScreen = isGlobalPointOnThisMonitor(pointerGlobal.x, pointerGlobal.y);
+    buddy.position = pointerHomePosition();
     buddy.velocity = { x: 0, y: 0 };
-    buddy.hasPlacedPosition = true;
-    return;
+  } else if (buddy.mode === 'returningHome') {
+    // Undo a half-done fade into the orb before re-aiming.
+    buddy.pointerOpacity = 1;
+    startFlyingBackHome();
   }
+}
+
+// ---- Per-frame update (port of startTrackingDrawingPen and followMouseWhileResting) ----
+function springBuddyToward(targetX, targetY, elapsedSeconds) {
   for (const axis of ['x', 'y']) {
     const target = axis === 'x' ? targetX : targetY;
     const springForce = FOLLOW_SPRING_STIFFNESS * (target - buddy.position[axis]) - FOLLOW_SPRING_DAMPING * buddy.velocity[axis];
@@ -259,67 +346,116 @@ function springBuddyToward(targetX, targetY, elapsedSeconds) {
   }
 }
 
-function updateBuddy(elapsedSeconds, currentSeconds) {
-  stepFlight(currentSeconds);
-
-  // While the whiteboard or 3D model draws, the buddy is the pen: its tip sits on the drawing head.
-  if (penGlobal && buddy.mode === 'following') {
-    const wasOnThisMonitor = buddyIsOnThisMonitor;
-    buddyIsOnThisMonitor = isGlobalPointOnThisMonitor(penGlobal.x, penGlobal.y);
-    isBuddyHiddenBecauseSystemPointerIsHidden = false;
-    if (!wasOnThisMonitor) buddy.hasPlacedPosition = false;
-    springBuddyToward(globalToPageX(penGlobal.x) + PEN_TIP_OFFSET_X, globalToPageY(penGlobal.y) + PEN_TIP_OFFSET_Y, elapsedSeconds);
-    return;
-  }
-
-  const wasOnThisMonitor = buddyIsOnThisMonitor;
-  buddyIsOnThisMonitor = isGlobalPointOnThisMonitor(pointerGlobal.x, pointerGlobal.y);
-  if (!wasOnThisMonitor) buddy.hasPlacedPosition = false;
-
-  // Follow the real pointer's visibility, but never hide mid-answer, mid-point or mid-flight.
-  isBuddyHiddenBecauseSystemPointerIsHidden = !pointerGlobal.visible && voiceState === 'idle' && buddy.mode === 'following';
-
-  // Only the return flight can be cancelled, by moving the pointer more than 100 px.
-  if (buddy.mode === 'navigating' && buddy.isReturningToCursor) {
-    const pointerPage = pointerPagePosition();
-    const distanceFromNavigationStart = Math.hypot(
-      pointerPage.x - buddy.pointerPositionWhenNavigationStarted.x,
-      pointerPage.y - buddy.pointerPositionWhenNavigationStarted.y,
-    );
-    if (distanceFromNavigationStart > 100) finishNavigationAndResumeFollowing();
-    return;
-  }
-  if (buddy.mode !== 'following') return;
-
-  const pointerPage = pointerPagePosition();
-  springBuddyToward(pointerPage.x + FOLLOW_OFFSET_X, pointerPage.y + FOLLOW_OFFSET_Y, elapsedSeconds);
+/// The pointer's centre for its tip to sit on the drawing head.
+function pointerPositionOnDrawingHead() {
+  return { x: globalToPageX(penGlobal.x) + PEN_TIP_OFFSET_X, y: globalToPageY(penGlobal.y) + PEN_TIP_OFFSET_Y };
 }
 
-function isBuddyVisibleOnThisMonitor() {
-  if (buddy.mode !== 'following') return true;
-  // Another monitor's buddy is pointing: only one buddy is ever visible.
-  if (performance.now() < anotherMonitorIsPointingUntil) return false;
-  return buddyIsOnThisMonitor;
+/// Cursor style at rest: keep the pointer beside the mouse and hide it while
+/// the real pointer is hidden (never mid-answer).
+function followMouseWhileResting(elapsedSeconds) {
+  const mouseIsOnThisScreen = isGlobalPointOnThisMonitor(pointerGlobal.x, pointerGlobal.y);
+  const mouseJustEnteredThisScreen = mouseIsOnThisScreen && !isMouseOnThisScreen;
+  isMouseOnThisScreen = mouseIsOnThisScreen;
+  isPointerHiddenBecauseSystemPointerIsHidden = !pointerGlobal.visible && voiceState === 'idle';
+  if (!mouseIsOnThisScreen) return;
+  const followingPosition = mouseFollowingPosition();
+  if (mouseJustEnteredThisScreen) {
+    // Jump into place instead of springing in from a stale spot.
+    buddy.position = followingPosition;
+    buddy.velocity = { x: 0, y: 0 };
+  } else {
+    springBuddyToward(followingPosition.x, followingPosition.y, elapsedSeconds);
+  }
+}
+
+function updateBuddy(elapsedSeconds, currentSeconds) {
+  stepFlight(currentSeconds);
+  const isPenOnThisScreen = penGlobal !== null && isGlobalPointOnThisMonitor(penGlobal.x, penGlobal.y);
+
+  switch (buddy.mode) {
+    case 'restingAtHome':
+    case 'returningHome':
+      if (!isPenOnThisScreen) {
+        if (buddy.mode === 'restingAtHome' && isCursorStyle()) followMouseWhileResting(elapsedSeconds);
+        return;
+      }
+      // The pen started drawing on this screen: the pointer flies out to it.
+      if (buddy.mode === 'restingAtHome') placePointerAtHomeReadyToLaunch();
+      buddy.lastSecondsDrawingPenWasSeen = currentSeconds;
+      setBuddyMode('navigatingToTarget');
+      animateBezierFlightArc(pointerPositionOnDrawingHead(), { growsFromOrb: buddy.flightScale < 1 }, () => {
+        if (buddy.mode !== 'navigatingToTarget') return;
+        setBuddyMode('followingDrawingPen');
+        buddy.targetRotationDegrees = DEFAULT_TRIANGLE_ROTATION_DEGREES;
+      });
+      return;
+    case 'followingDrawingPen':
+      if (penGlobal) {
+        buddy.lastSecondsDrawingPenWasSeen = currentSeconds;
+        const drawingHeadPosition = pointerPositionOnDrawingHead();
+        springBuddyToward(drawingHeadPosition.x, drawingHeadPosition.y, elapsedSeconds);
+      } else if (currentSeconds - buddy.lastSecondsDrawingPenWasSeen > DRAWING_PEN_REST_SECONDS_BEFORE_RETURNING) {
+        startFlyingBackHome();
+      }
+      return;
+    default:
+      // navigatingToTarget, pointingAtTarget: the flight and the bubble timers drive it.
+      return;
+  }
+}
+
+/// Cursor style at rest: only the mouse's screen shows the following pointer,
+/// and not while another screen's pointer is out, so only one is visible.
+function isFollowingPointerShownOnThisScreen() {
+  return isCursorStyle() && buddy.mode === 'restingAtHome' && isMouseOnThisScreen && monitorIndicesWithPointerAway.length === 0;
+}
+
+/// Cursor style: the waveform/spinner show beside the mouse at rest, or wherever
+/// this screen's pointer is while it is out (a hotkey press mid-pointing still shows listening).
+function isCursorStyleIndicatorShownOnThisScreen() {
+  return isFollowingPointerShownOnThisScreen() || (isCursorStyle() && buddy.mode !== 'restingAtHome');
+}
+
+/// Cursor style: the arrow gives way to the waveform and spinner.
+function isVoiceStateShowingArrow() {
+  return voiceState === 'idle' || voiceState === 'responding';
+}
+
+function pointerDisplayOpacity() {
+  if (buddy.mode !== 'restingAtHome') {
+    return isCursorStyle() && !isVoiceStateShowingArrow() ? 0 : buddy.pointerOpacity;
+  }
+  return restingPointerOpacity.value;
+}
+
+/// The onboarding bubbles sit by the orb, or by the pointer in the cursor style
+/// (waiting while it is out, so they never ride the "right here!" flight).
+function isBubbleHomeOnThisScreen() {
+  return isCursorStyle() ? isMouseOnThisScreen && buddy.mode === 'restingAtHome' : isOrbOnThisScreen();
 }
 
 function updateAnimatedValues(elapsedSeconds, currentSeconds) {
-  const isVisibleHere = isBuddyVisibleOnThisMonitor();
-  triangleOpacity.target = isVisibleHere && (voiceState === 'idle' || voiceState === 'responding') ? 1 : 0;
-  waveformOpacity.target = isVisibleHere && voiceState === 'listening' ? 1 : 0;
-  spinnerOpacity.target = isVisibleHere && voiceState === 'processing' ? 1 : 0;
-  // Changing monitors is instant; voice state changes cross-fade.
-  if (!isVisibleHere) triangleOpacity.value = waveformOpacity.value = spinnerOpacity.value = 0;
-  pointerHiddenFactor.target = isBuddyHiddenBecauseSystemPointerIsHidden ? 0 : 1;
-  speakingPillProgress.target = isSpeaking && buddyIsOnThisMonitor ? 1 : 0;
-  onboardingBubble.opacity.target = onboardingBubble.isVisible && onboardingBubble.fullText && buddyIsOnThisMonitor ? 1 : 0;
+  const isShowingFollowingArrow = isFollowingPointerShownOnThisScreen()
+    && isVoiceStateShowingArrow()
+    && !isPointerHiddenBecauseSystemPointerIsHidden;
+  restingPointerOpacity.target = isShowingFollowingArrow ? 1 : 0;
+  // Leaving the following state (a launch, a style switch) is instant; voice state changes cross-fade.
+  if (buddy.mode !== 'restingAtHome' || !isCursorStyle()) restingPointerOpacity.value = restingPointerOpacity.target;
+  const isIndicatorShown = isCursorStyleIndicatorShownOnThisScreen();
+  waveformOpacity.target = isIndicatorShown && voiceState === 'listening' ? 1 : 0;
+  spinnerOpacity.target = isIndicatorShown && voiceState === 'processing' ? 1 : 0;
+  // The pill hangs from the top of every screen while bhai speaks, like the Mac's notch pill.
+  speakingPillProgress.target = isSpeaking ? 1 : 0;
+  onboardingBubble.opacity.target = onboardingBubble.isVisible && onboardingBubble.fullText && isBubbleHomeOnThisScreen() ? 1 : 0;
 
-  for (const animatedValue of [triangleOpacity, waveformOpacity, spinnerOpacity, pointerHiddenFactor,
+  for (const animatedValue of [restingPointerOpacity, waveformOpacity, spinnerOpacity,
     speakingPillProgress, onboardingBubble.opacity, navigationBubble.opacity, navigationBubble.scale]) {
     stepAnimatedValue(animatedValue, elapsedSeconds);
   }
 
   // Rotation eases back to the pointer angle over 0.3 s, except mid-flight where the tangent drives it.
-  if (buddy.mode !== 'navigating') {
+  if (!buddy.flight) {
     buddy.rotationDegrees += (buddy.targetRotationDegrees - buddy.rotationDegrees) * clamp(elapsedSeconds * 10, 0, 1);
   }
 
@@ -341,16 +477,17 @@ function updateAnimatedValues(elapsedSeconds, currentSeconds) {
 }
 
 // ---- Drawing ----
-function drawTriangle(centerX, centerY, opacity) {
-  if (opacity <= 0.001) return;
+/// Extra glow while flying (0 at rest), like the Mac's extraGlowRadius.
+function extraPointerGlowRadius() {
+  return Math.max(0, buddy.flightScale - 1) * 20;
+}
+
+/// Cursor style: the original pointer, a 16 px equilateral triangle in the
+/// overlay blue with a blue glow (ClassicTrianglePointerView).
+function drawClassicTrianglePointer() {
   const triangleHeight = TRIANGLE_SIZE * Math.sqrt(3) / 2;
-  drawingContext.save();
-  drawingContext.globalAlpha = opacity;
-  drawingContext.translate(centerX, centerY);
-  drawingContext.rotate(buddy.rotationDegrees * Math.PI / 180);
-  drawingContext.scale(buddy.flightScale, buddy.flightScale);
   drawingContext.shadowColor = CURSOR_COLOR;
-  drawingContext.shadowBlur = (8 + (buddy.flightScale - 1) * 20) * (window.devicePixelRatio || 1);
+  drawingContext.shadowBlur = (8 + extraPointerGlowRadius()) * (window.devicePixelRatio || 1);
   drawingContext.fillStyle = CURSOR_COLOR;
   drawingContext.beginPath();
   drawingContext.moveTo(0, -triangleHeight / 1.5);
@@ -358,6 +495,66 @@ function drawTriangle(centerX, centerY, opacity) {
   drawingContext.lineTo(TRIANGLE_SIZE / 2, triangleHeight / 3);
   drawingContext.closePath();
   drawingContext.fill();
+}
+
+/// Orb style: the soft rounded arrow that launches out of the orb, 16 x 19,
+/// tip up at 0 degrees (BuddyPointerArrowShape), drawn around its centre.
+function traceBuddyPointerArrowPath() {
+  const arrowWidth = 16;
+  const arrowHeight = 19;
+  const left = -arrowWidth / 2;
+  const top = -arrowHeight / 2;
+  const tipPoint = { x: 0, y: top };
+  const rightWingPoint = { x: left + arrowWidth * 0.94, y: top + arrowHeight * 0.9 };
+  const tailNotchPoint = { x: 0, y: top + arrowHeight * 0.7 };
+  const leftWingPoint = { x: left + arrowWidth * 0.06, y: top + arrowHeight * 0.9 };
+  const cornerPoints = [tipPoint, rightWingPoint, tailNotchPoint, leftWingPoint];
+  const cornerRadii = [1.6, 2.6, 1.4, 2.6];
+  drawingContext.beginPath();
+  // Start halfway along the left edge so every corner gets an arc.
+  drawingContext.moveTo((leftWingPoint.x + tipPoint.x) / 2, (leftWingPoint.y + tipPoint.y) / 2);
+  cornerPoints.forEach((cornerPoint, cornerIndex) => {
+    const nextCornerPoint = cornerPoints[(cornerIndex + 1) % cornerPoints.length];
+    drawingContext.arcTo(cornerPoint.x, cornerPoint.y, nextCornerPoint.x, nextCornerPoint.y, cornerRadii[cornerIndex]);
+  });
+  drawingContext.closePath();
+}
+
+/// Gradient fill, thin white outline, soft blue glow plus a faint drop shadow (BuddyPointerView).
+function drawBuddyPointerArrow() {
+  const devicePixelRatio = window.devicePixelRatio || 1;
+  const pointerGradient = drawingContext.createLinearGradient(0, -9.5, 0, 9.5);
+  pointerGradient.addColorStop(0, '#3380FF');
+  pointerGradient.addColorStop(1, '#2563EB');
+  traceBuddyPointerArrowPath();
+  drawingContext.fillStyle = pointerGradient;
+  drawingContext.shadowColor = 'rgba(0, 0, 0, 0.18)';
+  drawingContext.shadowBlur = 1.5 * devicePixelRatio;
+  drawingContext.shadowOffsetY = 1 * devicePixelRatio;
+  drawingContext.fill();
+  drawingContext.shadowOffsetY = 0;
+  drawingContext.shadowColor = `rgba(${CURSOR_COLOR_RGB}, 0.55)`;
+  drawingContext.shadowBlur = (5 + extraPointerGlowRadius()) * devicePixelRatio;
+  drawingContext.fill();
+  drawingContext.shadowColor = 'transparent';
+  drawingContext.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+  drawingContext.lineWidth = 1.3;
+  drawingContext.lineJoin = 'round';
+  drawingContext.stroke();
+}
+
+function drawPointer(centerX, centerY, opacity) {
+  if (opacity <= 0.001 || buddy.flightScale <= 0.001) return;
+  drawingContext.save();
+  drawingContext.globalAlpha = opacity;
+  drawingContext.translate(centerX, centerY);
+  drawingContext.rotate(buddy.rotationDegrees * Math.PI / 180);
+  drawingContext.scale(buddy.flightScale, buddy.flightScale);
+  if (isCursorStyle()) {
+    drawClassicTrianglePointer();
+  } else {
+    drawBuddyPointerArrow();
+  }
   drawingContext.restore();
 }
 
@@ -406,17 +603,43 @@ function drawSpinner(centerX, centerY, opacity, currentSeconds) {
   drawingContext.restore();
 }
 
-/// The blue rounded label next to the buddy (navigation and onboarding bubbles).
-function drawBubble(bubbleText, opacity, scale, glowBoost) {
+const BUBBLE_HEIGHT = 22;
+
+function bubbleWidthFor(bubbleText) {
+  drawingContext.save();
+  drawingContext.font = BUBBLE_FONT;
+  const bubbleWidth = drawingContext.measureText(bubbleText).width + 16;
+  drawingContext.restore();
+  return bubbleWidth;
+}
+
+/// Left edge 10 px right of the pointer, vertically centred 18 px below it.
+function bubbleCenterNextToPointer(bubbleWidth) {
+  return { x: buddy.position.x + 10 + bubbleWidth / 2, y: buddy.position.y + 18 };
+}
+
+/// Just above the orb (below it when the orb is near the top), kept fully on screen.
+function bubbleCenterNextToOrb(bubbleWidth) {
+  const orbCenter = orbCenterInThisPage();
+  const orbHalfHeight = orbFrameGlobal.height / monitorConfig.scaleFactor / 2;
+  const gapBetweenOrbAndBubble = 6;
+  const screenEdgePadding = 8;
+  const centerAboveOrbY = orbCenter.y - orbHalfHeight - gapBetweenOrbAndBubble - BUBBLE_HEIGHT / 2;
+  const centerBelowOrbY = orbCenter.y + orbHalfHeight + gapBetweenOrbAndBubble + BUBBLE_HEIGHT / 2;
+  const bubbleCenterY = centerAboveOrbY - BUBBLE_HEIGHT / 2 < screenEdgePadding ? centerBelowOrbY : centerAboveOrbY;
+  const bubbleCenterX = clamp(orbCenter.x, screenEdgePadding + bubbleWidth / 2, pageWidth() - screenEdgePadding - bubbleWidth / 2);
+  return { x: bubbleCenterX, y: bubbleCenterY };
+}
+
+/// The blue rounded label (navigation and onboarding bubbles), centred at `bubbleCenter`.
+function drawBubble(bubbleText, bubbleCenter, opacity, scale, glowBoost) {
   if (!bubbleText || opacity <= 0.001) return;
   drawingContext.save();
   drawingContext.font = BUBBLE_FONT;
-  const textWidth = drawingContext.measureText(bubbleText).width;
-  const bubbleWidth = textWidth + 16;
-  const bubbleHeight = 22;
-  // Left edge 10 px right of the buddy, vertically centred 18 px below it.
-  const bubbleCenterX = buddy.position.x + 10 + bubbleWidth / 2;
-  const bubbleCenterY = buddy.position.y + 18;
+  const bubbleWidth = bubbleWidthFor(bubbleText);
+  const bubbleHeight = BUBBLE_HEIGHT;
+  const bubbleCenterX = bubbleCenter.x;
+  const bubbleCenterY = bubbleCenter.y;
   drawingContext.globalAlpha = opacity;
   drawingContext.translate(bubbleCenterX, bubbleCenterY);
   drawingContext.scale(scale, scale);
@@ -589,13 +812,19 @@ function drawFrame(currentSeconds) {
   drawSpeakingPill(currentSeconds);
 
   const onboardingText = Array.from(onboardingBubble.fullText).slice(0, onboardingBubble.shownCharacterCount).join('');
-  drawBubble(onboardingText, onboardingBubble.opacity.value, 1, 0);
-  if (buddy.mode === 'pointing') {
-    drawBubble(navigationBubble.text, navigationBubble.opacity.value, navigationBubble.scale.value, 1 - navigationBubble.scale.value);
+  if (onboardingText) {
+    const onboardingBubbleWidth = bubbleWidthFor(onboardingText);
+    const onboardingBubbleCenter = isCursorStyle() || !orbFrameGlobal
+      ? bubbleCenterNextToPointer(onboardingBubbleWidth)
+      : bubbleCenterNextToOrb(onboardingBubbleWidth);
+    drawBubble(onboardingText, onboardingBubbleCenter, onboardingBubble.opacity.value, 1, 0);
+  }
+  if (buddy.mode === 'pointingAtTarget' && navigationBubble.text) {
+    const navigationBubbleCenter = bubbleCenterNextToPointer(bubbleWidthFor(navigationBubble.text));
+    drawBubble(navigationBubble.text, navigationBubbleCenter, navigationBubble.opacity.value, navigationBubble.scale.value, 1 - navigationBubble.scale.value);
   }
 
-  const buddyOpacity = pointerHiddenFactor.value;
-  drawTriangle(buddy.position.x, buddy.position.y, triangleOpacity.value * buddyOpacity);
+  drawPointer(buddy.position.x, buddy.position.y, pointerDisplayOpacity());
   drawWaveform(buddy.position.x, buddy.position.y, waveformOpacity.value, currentSeconds);
   drawSpinner(buddy.position.x, buddy.position.y, spinnerOpacity.value, currentSeconds);
 }
@@ -646,27 +875,27 @@ window.addEventListener('contextmenu', (event) => event.preventDefault());
 // ---- Rust events ----
 async function startOverlay() {
   monitorConfig = await invoke('overlay_ready', { monitorIndex });
+  ({ voiceBuddyStyle, isChatMode, orbFrame: orbFrameGlobal } = await invoke('buddy_home_state'));
   resizeCanvasToWindow();
+  isMouseOnThisScreen = isGlobalPointOnThisMonitor(pointerGlobal.x, pointerGlobal.y);
+  buddy.position = pointerHomePosition();
 
   await listen('pointer-state', (event) => { pointerGlobal = event.payload; });
   await listen('buddy-voice-state', (event) => { voiceState = event.payload.state; });
   await listen('audio-level', (event) => { rawAudioLevel = event.payload.level; });
   await listen('point-at', (event) => {
     const { x, y, bubbleText } = event.payload;
-    if (!isGlobalPointOnThisMonitor(x, y)) {
-      // The buddy on the target's monitor flies; this one steps aside.
-      anotherMonitorIsPointingUntil = performance.now() + OTHER_MONITOR_POINTING_HIDE_MILLISECONDS;
-      if (buddy.mode !== 'following') finishNavigationAndResumeFollowing();
-      return;
-    }
-    anotherMonitorIsPointingUntil = 0;
-    // The buddy flies from wherever it is shown on this monitor.
-    if (!buddyIsOnThisMonitor) {
-      const pointerPage = pointerPagePosition();
-      buddy.position = { x: clamp(pointerPage.x, 0, pageWidth()), y: clamp(pointerPage.y, 0, pageHeight()) };
-    }
+    // Only the screen holding the target animates; the pointer flies in from its
+    // home, off this screen's edge when home is on another monitor.
+    if (!isGlobalPointOnThisMonitor(x, y)) return;
     startNavigatingToElement(globalToPageX(x), globalToPageY(y), bubbleText);
   });
+  await listen('buddy-home-changed', (event) => {
+    const wasCursorStyle = isCursorStyle();
+    ({ voiceBuddyStyle, isChatMode, orbFrame: orbFrameGlobal } = event.payload);
+    handleHomeChanged(wasCursorStyle);
+  });
+  await listen('pointer-away-monitors', (event) => { monitorIndicesWithPointerAway = event.payload.monitorIndices; });
   await listen('pen-position', (event) => { penGlobal = event.payload; });
   await listen('screen-circles', (event) => {
     const currentSeconds = nowInSeconds();
@@ -681,8 +910,8 @@ async function startOverlay() {
   });
   await listen('fade-annotations', () => { if (annotationFadeStartSeconds === null) annotationFadeStartSeconds = nowInSeconds(); });
   await listen('clear-annotations', () => {
-    // The hotkey also cancels a pointing flight in progress, like the Mac.
-    if (buddy.mode !== 'following') finishNavigationAndResumeFollowing();
+    // The hotkey also cancels a pointing flight in progress.
+    if (buddy.mode !== 'restingAtHome') finishNavigationAndRestAtHome();
     screenCircles = [];
     userStrokes = [];
     currentStrokeGlobalPoints = null;

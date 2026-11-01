@@ -1,5 +1,6 @@
 //! User settings, stored as JSON at `app_config_dir/settings.json`.
-//! A missing or corrupt file means defaults (sonnet, voice F2, ctrl + win).
+//! A missing or corrupt file means defaults (sonnet, voice F2, ctrl + win, orb
+//! style, 88 px Aurora orb in its default spot).
 
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -7,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::orb_window::{VoiceBuddyStyle, DEFAULT_ORB_COLOR, DEFAULT_ORB_SIDE_LENGTH};
 use crate::push_to_talk::PushToTalkShortcutOption;
 use crate::supertonic::SupertonicVoice;
 
@@ -18,6 +20,13 @@ pub struct Settings {
     pub supertonic_voice: SupertonicVoice,
     pub push_to_talk_shortcut: PushToTalkShortcutOption,
     pub has_completed_onboarding: bool,
+    pub voice_buddy_style: VoiceBuddyStyle,
+    /// Logical pixels, 48-160 (`orb_window::clamped_orb_side_length` on use).
+    pub orb_side_length: f64,
+    /// orb.riv color variant 0-9.
+    pub orb_color: u8,
+    /// Global physical pixels of the orb's top-left corner after the user dragged it; None = default spot.
+    pub orb_window_origin: Option<(i32, i32)>,
 }
 
 impl Default for Settings {
@@ -27,6 +36,10 @@ impl Default for Settings {
             supertonic_voice: SupertonicVoice::default(),
             push_to_talk_shortcut: PushToTalkShortcutOption::default(),
             has_completed_onboarding: false,
+            voice_buddy_style: VoiceBuddyStyle::Orb,
+            orb_side_length: DEFAULT_ORB_SIDE_LENGTH,
+            orb_color: DEFAULT_ORB_COLOR,
+            orb_window_origin: None,
         }
     }
 }
@@ -80,6 +93,10 @@ mod tests {
                 "supertonicVoice": "F2",
                 "pushToTalkShortcut": "ctrlWin",
                 "hasCompletedOnboarding": false,
+                "voiceBuddyStyle": "orb",
+                "orbSideLength": 88.0,
+                "orbColor": 8,
+                "orbWindowOrigin": null,
             })
         );
 
