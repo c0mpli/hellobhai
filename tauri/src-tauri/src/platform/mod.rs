@@ -1,19 +1,26 @@
 //! The only place that calls OS APIs. Each OS folder exposes the same free
 //! functions and types (no traits); the compiler checks them on each target.
 //! `unsupported/` holds harmless stubs so the crate builds and `cargo test`
-//! runs on any other host (e.g. a Mac). Linux later: add `linux/` with the
-//! same file names and a `#[cfg(target_os = "linux")]` line here.
+//! runs on any other host (e.g. a Mac). `linux/` is X11 first, Wayland best effort.
 
 // Named `os` rather than `windows` so it never clashes with the `windows` crate.
 #[cfg(windows)]
 #[path = "windows/mod.rs"]
 mod os;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+#[path = "linux/mod.rs"]
+mod os;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 #[path = "unsupported/mod.rs"]
 mod os;
 
 pub use os::*;
+
+/// Linux wording for the Windows-worded prompts (compiled everywhere so its
+/// tests run on any host).
+pub mod linux_prompt_wording;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformError {

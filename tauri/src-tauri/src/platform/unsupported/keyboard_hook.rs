@@ -1,6 +1,9 @@
 use crate::platform::PlatformError;
 use crate::push_to_talk::{PhysicalKey, RawKeyEvent};
 
+/// How the Super key is written in shortcut labels on this OS.
+pub const SUPER_KEY_DISPLAY_NAME: &str = "win";
+
 pub fn start_keyboard_hook(_on_key_event: Box<dyn Fn(RawKeyEvent) + Send + 'static>) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }

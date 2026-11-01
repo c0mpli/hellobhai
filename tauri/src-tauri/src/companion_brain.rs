@@ -175,10 +175,13 @@ fn labeled_images_for_captures(screen_captures: &[ScreenCapture]) -> Vec<Labeled
 }
 
 async fn capture_all_screens_off_the_async_threads(app: &AppHandle) -> Result<Vec<ScreenCapture>, String> {
+    let windows_hidden_for_capture = screen_capture::hide_own_windows_the_capture_would_see(app).await;
     let app_for_capture = app.clone();
-    tokio::task::spawn_blocking(move || screen_capture::capture_all_screens(&app_for_capture))
+    let capture_result = tokio::task::spawn_blocking(move || screen_capture::capture_all_screens(&app_for_capture))
         .await
-        .map_err(|join_error| format!("screen capture task failed: {join_error}"))?
+        .map_err(|join_error| format!("screen capture task failed: {join_error}"));
+    screen_capture::show_windows_hidden_for_capture(windows_hidden_for_capture);
+    capture_result?
 }
 
 impl CompanionBrain {

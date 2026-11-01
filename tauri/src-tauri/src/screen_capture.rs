@@ -1,11 +1,14 @@
 //! Screenshots of every monitor (cursor screen first) as downscaled JPEGs, and
 //! native-resolution crops of the regions the user draws around. Our own
-//! windows are hidden from capture by `content_protected(true)`.
+//! windows are left out like on the Mac: on Windows by `content_protected(true)`;
+//! on Linux, which has no such flag, by hiding them for the moment of capture.
 
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
-use tauri::AppHandle;
+use std::time::Duration;
+
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 use crate::platform;
 use crate::screen_mapping::{downscaled_screenshot_size, monitors_from_tauri, MonitorDescription, PhysicalRect};
@@ -13,6 +16,49 @@ use crate::screen_mapping::{downscaled_screenshot_size, monitors_from_tauri, Mon
 const MAXIMUM_SCREENSHOT_DIMENSION: u32 = 1280;
 const SCREENSHOT_JPEG_QUALITY: u8 = 80;
 const REGION_CROP_JPEG_QUALITY: u8 = 85;
+/// Time for the compositor to repaint after our windows hide (two 60 Hz frames, plus slack).
+const WAIT_FOR_REPAINT_AFTER_HIDING: Duration = Duration::from_millis(60);
+
+/// A window hidden for a screenshot, and whether it had the keyboard.
+pub struct WindowHiddenForCapture {
+    window: WebviewWindow,
+    was_focused: bool,
+}
+
+/// Where the OS can't leave our windows out of screenshots (Linux), hides the
+/// visible ones (orb, chat, board, 3D, settings) and waits for the repaint, so
+/// Claude sees the screen without bhai, as on the Mac. The overlays stay: they
+/// are transparent and empty while bhai is looking.
+pub async fn hide_own_windows_the_capture_would_see(app: &AppHandle) -> Vec<WindowHiddenForCapture> {
+    if platform::CAPTURE_EXCLUDES_OWN_WINDOWS {
+        return Vec::new();
+    }
+    let windows_hidden_for_capture: Vec<WindowHiddenForCapture> = app
+        .webview_windows()
+        .into_iter()
+        .filter(|(window_label, window)| {
+            !window_label.starts_with(crate::page_bridge::OVERLAY_WINDOW_LABEL_PREFIX) && window.is_visible().unwrap_or(false)
+        })
+        .map(|(_, window)| WindowHiddenForCapture { was_focused: window.is_focused().unwrap_or(false), window })
+        .collect();
+    if windows_hidden_for_capture.is_empty() {
+        return windows_hidden_for_capture;
+    }
+    for hidden_window in &windows_hidden_for_capture {
+        let _ = hidden_window.window.hide();
+    }
+    tokio::time::sleep(WAIT_FOR_REPAINT_AFTER_HIDING).await;
+    windows_hidden_for_capture
+}
+
+pub fn show_windows_hidden_for_capture(windows_hidden_for_capture: Vec<WindowHiddenForCapture>) {
+    for hidden_window in windows_hidden_for_capture {
+        let _ = hidden_window.window.show();
+        if hidden_window.was_focused {
+            let _ = hidden_window.window.set_focus();
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ScreenCapture {

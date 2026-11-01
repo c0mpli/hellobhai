@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::platform;
 use crate::settings::SharedSettings;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,7 +57,7 @@ impl ShortcutModifiers {
             key_labels.push("shift");
         }
         if self.win {
-            key_labels.push("win");
+            key_labels.push(platform::SUPER_KEY_DISPLAY_NAME);
         }
         key_labels
     }
@@ -102,7 +103,7 @@ impl PushToTalkShortcutOption {
     /// One label per key capsule in the settings panel's hint and recorder.
     pub fn key_capsule_labels(self) -> Vec<&'static str> {
         match self {
-            PushToTalkShortcutOption::CtrlWin => vec!["ctrl", "win"],
+            PushToTalkShortcutOption::CtrlWin => vec!["ctrl", platform::SUPER_KEY_DISPLAY_NAME],
             PushToTalkShortcutOption::CtrlLeftAlt => vec!["ctrl", "left alt"],
             PushToTalkShortcutOption::ShiftCtrl => vec!["shift", "ctrl"],
             PushToTalkShortcutOption::CtrlAltSpace => vec!["ctrl", "alt", "space"],
@@ -606,7 +607,7 @@ mod tests {
 
     #[test]
     fn labels_and_hint_text_for_built_in_and_custom_shortcuts() {
-        assert_eq!(PushToTalkShortcutOption::CtrlWin.display_text(), "ctrl + win");
+        assert_eq!(PushToTalkShortcutOption::CtrlWin.display_text(), format!("ctrl + {}", platform::SUPER_KEY_DISPLAY_NAME));
         assert_eq!(PushToTalkShortcutOption::CtrlAltSpace.key_capsule_labels(), vec!["ctrl", "alt", "space"]);
         let custom = PushToTalkShortcutOption::CustomModifiers(modifiers(true, true, true, false));
         assert_eq!(custom.display_text(), "ctrl + left alt + shift");
