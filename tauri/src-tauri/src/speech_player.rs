@@ -18,7 +18,7 @@ use rodio::{DeviceSinkBuilder, Player};
 use tauri::{AppHandle, Emitter};
 
 use crate::app_paths;
-use crate::downloads::{download_file_if_missing, extract_zip_entries};
+use crate::downloads::{download_file_if_missing, extract_archive_entries};
 use crate::platform;
 use crate::sentence_splitter::split_into_sentences;
 use crate::supertonic::{language_code_for_sentence, load_voice_style, SupertonicEngine, SupertonicVoice, VoiceStyle};
@@ -210,16 +210,16 @@ impl SpeechPlayer {
         let models_directory = app_paths::models_directory(&self.app);
         let onnxruntime_directory = models_directory.join("onnxruntime");
         let onnxruntime_dll = onnxruntime_directory.join(onnxruntime_download.executable_or_library_file_name);
-        let onnxruntime_zip = models_directory.join("onnxruntime.zip");
+        let onnxruntime_archive = models_directory.join(onnxruntime_download.archive_file_name);
         let supertonic_directory = supertonic_directory(&models_directory);
 
         // (url, destination, size, sha256)
         let mut files_to_download: Vec<(String, PathBuf, u64, &str)> = Vec::new();
-        // The folder only appears once extraction has finished (extract_zip_entries renames it into place).
+        // The folder only appears once extraction has finished (extract_archive_entries renames it into place).
         if !onnxruntime_dll.exists() {
             files_to_download.push((
                 onnxruntime_download.url.to_string(),
-                onnxruntime_zip.clone(),
+                onnxruntime_archive.clone(),
                 onnxruntime_download.size_bytes,
                 onnxruntime_download.sha256,
             ));
@@ -252,13 +252,8 @@ impl SpeechPlayer {
             finished_bytes += size_bytes;
         }
         if !onnxruntime_dll.exists() {
-            extract_zip_entries(
-                &onnxruntime_zip,
-                &onnxruntime_directory,
-                |entry_name| entry_name.ends_with("/lib/onnxruntime.dll") || entry_name.ends_with("/lib/onnxruntime_providers_shared.dll"),
-                true,
-            )?;
-            let _ = std::fs::remove_file(&onnxruntime_zip);
+            extract_archive_entries(&onnxruntime_archive, &onnxruntime_directory, onnxruntime_download.keep_archive_entry, true)?;
+            let _ = std::fs::remove_file(&onnxruntime_archive);
         }
 
         self.set_load_state(NeuralVoiceLoadState::Loading);

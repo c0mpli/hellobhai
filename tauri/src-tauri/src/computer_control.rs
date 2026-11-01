@@ -88,10 +88,14 @@ const ALLOWED_LINK_SCHEMES: [&str; 11] =
 /// Built-in apps that have no Start menu shortcut on every Windows version.
 const ALLOWED_BUILT_IN_APPS: [&str; 4] = ["notepad", "calc", "mspaint", "explorer"];
 /// Files that run code when opened. Documents, media and folders are fine.
-const BLOCKED_FILE_EXTENSIONS: [&str; 27] = [
+/// The second line is Linux: scripts, launchers and installers.
+const BLOCKED_FILE_EXTENSIONS: &[&str] = &[
     "exe", "com", "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi", "msp", "scr", "lnk", "url",
     "pif", "cpl", "hta", "jar", "reg", "inf", "scf", "msc", "application", "appref-ms",
+    "sh", "bash", "zsh", "fish", "py", "pl", "rb", "desktop", "appimage", "run", "bin", "deb", "rpm", "snap", "flatpakref",
 ];
+/// Installed apps are Start menu shortcuts on Windows and .desktop files on Linux.
+const APP_SHORTCUT_FILE_EXTENSION: &str = if cfg!(target_os = "linux") { "desktop" } else { "lnk" };
 
 /// What [OPEN] may open, as the string to hand to the shell:
 /// - an http(s), mailto or allowed app link (`whatsapp://send?...`)
@@ -145,6 +149,9 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
         if canonical_target.is_file() && extension.is_some_and(|extension| BLOCKED_FILE_EXTENSIONS.contains(&extension.as_str())) {
             return Err("programs and scripts can't be opened".into());
         }
+        if canonical_target.is_file() && is_executable_file(&canonical_target) {
+            return Err("programs and scripts can't be opened".into());
+        }
         return Ok(target.to_string());
     }
 
@@ -156,18 +163,63 @@ pub fn allowed_open_target(target: &str, home_directory: &Path, start_menu_direc
     Err(format!("no app called {target} in the start menu"))
 }
 
-/// The first `<app name>.lnk` (any case) in `directory` or its subfolders.
+/// Unix: any execute bit (a script without an extension still runs when a file
+/// manager "opens" it). Windows decides by extension alone.
+fn is_executable_file(file_path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(file_path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file_path;
+        false
+    }
+}
+
+/// The app's name in a .desktop file: the `Name=` line of `[Desktop Entry]`.
+fn desktop_entry_name(desktop_file_contents: &str) -> Option<&str> {
+    let mut is_in_desktop_entry_group = false;
+    for line in desktop_file_contents.lines().map(str::trim) {
+        if line.starts_with('[') {
+            is_in_desktop_entry_group = line == "[Desktop Entry]";
+        } else if is_in_desktop_entry_group {
+            if let Some(app_name) = line.strip_prefix("Name=") {
+                return Some(app_name.trim());
+            }
+        }
+    }
+    None
+}
+
+/// The first `<app name>.lnk` (Windows) or `<app name>.desktop` (Linux, also
+/// matched by its `Name=` line: "Calculator" is `org.gnome.Calculator.desktop`),
+/// any case, in `directory` or its subfolders.
 fn find_start_menu_shortcut(directory: &Path, app_name: &str, folder_depth: usize) -> Option<PathBuf> {
     const MAXIMUM_FOLDER_DEPTH: usize = 4;
-    let wanted_file_name = format!("{app_name}.lnk").to_lowercase();
+    let wanted_file_name = format!("{app_name}.{APP_SHORTCUT_FILE_EXTENSION}").to_lowercase();
     let mut subdirectories = Vec::new();
+    let mut desktop_files_to_check_by_name = Vec::new();
     for directory_entry in std::fs::read_dir(directory).ok()?.flatten() {
         let entry_path = directory_entry.path();
+        let entry_file_name = directory_entry.file_name().to_string_lossy().to_lowercase();
         if entry_path.is_dir() {
             subdirectories.push(entry_path);
-        } else if directory_entry.file_name().to_string_lossy().to_lowercase() == wanted_file_name {
+        } else if entry_file_name == wanted_file_name {
             return Some(entry_path);
+        } else if APP_SHORTCUT_FILE_EXTENSION == "desktop" && entry_file_name.ends_with(".desktop") {
+            desktop_files_to_check_by_name.push(entry_path);
         }
+    }
+    // File names first (exact), then the display names.
+    let found_by_display_name = desktop_files_to_check_by_name.into_iter().find(|desktop_file_path| {
+        std::fs::read_to_string(desktop_file_path)
+            .ok()
+            .is_some_and(|desktop_file_contents| desktop_entry_name(&desktop_file_contents).is_some_and(|name| name.eq_ignore_ascii_case(app_name)))
+    });
+    if found_by_display_name.is_some() {
+        return found_by_display_name;
     }
     if folder_depth >= MAXIMUM_FOLDER_DEPTH {
         return None;
@@ -189,7 +241,7 @@ mod tests {
         std::fs::write(home_directory.join("Videos").join("clip.mp4"), b"").unwrap();
         std::fs::write(home_directory.join("setup.EXE"), b"").unwrap();
         std::fs::write(test_directory.join("outside.txt"), b"").unwrap();
-        std::fs::write(start_menu_directory.join("Spotify").join("Spotify.lnk"), b"").unwrap();
+        std::fs::write(start_menu_directory.join("Spotify").join(format!("Spotify.{APP_SHORTCUT_FILE_EXTENSION}")), b"").unwrap();
         let start_menu_directories = vec![start_menu_directory.clone()];
         let check = |target: &str| allowed_open_target(target, &home_directory, &start_menu_directories);
 
@@ -203,7 +255,7 @@ mod tests {
         assert!(check("Notepad").is_ok());
         assert!(check("cmd").is_err());
         assert!(check("powershell").is_err());
-        assert_eq!(check("spotify"), Ok(start_menu_directory.join("Spotify").join("Spotify.lnk").to_string_lossy().into_owned()));
+        assert_eq!(check("spotify"), Ok(start_menu_directory.join("Spotify").join(format!("Spotify.{APP_SHORTCUT_FILE_EXTENSION}")).to_string_lossy().into_owned()));
         let clip_path = home_directory.join("Videos").join("clip.mp4");
         assert!(check(&clip_path.to_string_lossy()).is_ok());
         assert!(check(&home_directory.join("Videos").to_string_lossy()).is_ok());
@@ -212,5 +264,27 @@ mod tests {
         assert!(check(&home_directory.join("Videos").join("..").join("..").join("outside.txt").to_string_lossy()).is_err());
         assert!(check("").is_err());
         let _ = std::fs::remove_dir_all(&test_directory);
+    }
+
+    #[test]
+    fn desktop_entry_name_comes_from_the_desktop_entry_group() {
+        let calculator_desktop_file = "[Desktop Entry]\nName=Calculator\nExec=gnome-calculator\n[Desktop Action new]\nName=New Window\n";
+        assert_eq!(desktop_entry_name(calculator_desktop_file), Some("Calculator"));
+        assert_eq!(desktop_entry_name("[Desktop Action x]\nName=Not the app\n"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_files_in_home_are_refused_whatever_their_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let home_directory = std::env::temp_dir().join(format!("hellobhai-open-exec-test-{}", std::process::id()));
+        std::fs::create_dir_all(&home_directory).unwrap();
+        let script_path = home_directory.join("notes");
+        std::fs::write(&script_path, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(allowed_open_target(&script_path.to_string_lossy(), &home_directory, &[]).is_err());
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(allowed_open_target(&script_path.to_string_lossy(), &home_directory, &[]).is_ok());
+        let _ = std::fs::remove_dir_all(&home_directory);
     }
 }

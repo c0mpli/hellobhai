@@ -5,6 +5,8 @@ pub struct RuntimeDownload {
     pub size_bytes: u64,
     pub sha256: &'static str,
     pub executable_or_library_file_name: &'static str,
+    pub archive_file_name: &'static str,
+    pub keep_archive_entry: fn(&str) -> bool,
 }
 
 pub fn whisper_server_download() -> Option<RuntimeDownload> {

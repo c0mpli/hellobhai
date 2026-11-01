@@ -1,6 +1,6 @@
 //! First-launch downloads (whisper-server, Whisper model, ONNX Runtime,
-//! Supertonic models and voices) with progress, plus zip extraction. Used by
-//! the speech-to-text and text-to-speech modules.
+//! Supertonic models and voices) with progress, plus zip (Windows) and .tar.gz
+//! (Linux) extraction. Used by the speech-to-text and text-to-speech modules.
 
 use std::fs::File;
 use std::io::Write;
@@ -103,12 +103,152 @@ pub fn extract_zip_entries(
     keep_entry: impl Fn(&str) -> bool,
     flatten: bool,
 ) -> Result<(), String> {
+    extract_into_partial_folder_then_rename(destination_dir, |partial_destination_dir| {
+        extract_zip_entries_into(zip_path, partial_destination_dir, keep_entry, flatten)
+    })
+}
+
+/// `extract_zip_entries` for a `.zip`, `extract_tar_gz_entries` for a `.tar.gz`
+/// or `.tgz` (the Linux runtimes), picked by the archive's file name.
+pub fn extract_archive_entries(
+    archive_path: &Path,
+    destination_dir: &Path,
+    keep_entry: impl Fn(&str) -> bool,
+    flatten: bool,
+) -> Result<(), String> {
+    let archive_file_name = archive_path.file_name().unwrap_or_default().to_string_lossy().to_ascii_lowercase();
+    if archive_file_name.ends_with(".tar.gz") || archive_file_name.ends_with(".tgz") {
+        extract_tar_gz_entries(archive_path, destination_dir, keep_entry, flatten)
+    } else {
+        extract_zip_entries(archive_path, destination_dir, keep_entry, flatten)
+    }
+}
+
+/// Same contract as `extract_zip_entries`. Symbolic links are kept only when
+/// they point at a plain file name in the same folder (the `libwhisper.so.1 ->
+/// libwhisper.so.1.9.5` soname links whisper-server loads through its
+/// `$ORIGIN` rpath); Unix permission bits are kept so executables stay executable.
+pub fn extract_tar_gz_entries(
+    tar_gz_path: &Path,
+    destination_dir: &Path,
+    keep_entry: impl Fn(&str) -> bool,
+    flatten: bool,
+) -> Result<(), String> {
+    extract_into_partial_folder_then_rename(destination_dir, |partial_destination_dir| {
+        extract_tar_gz_entries_into(tar_gz_path, partial_destination_dir, keep_entry, flatten)
+    })
+}
+
+fn extract_into_partial_folder_then_rename(
+    destination_dir: &Path,
+    extract_into: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
     let partial_destination_dir = partial_path_for(destination_dir);
     let _ = std::fs::remove_dir_all(&partial_destination_dir);
-    extract_zip_entries_into(zip_path, &partial_destination_dir, keep_entry, flatten)?;
+    extract_into(&partial_destination_dir)?;
     let _ = std::fs::remove_dir_all(destination_dir);
     std::fs::rename(&partial_destination_dir, destination_dir)
         .map_err(|error| format!("cannot move {} into place: {error}", partial_destination_dir.display()))
+}
+
+/// The entry's path relative to the archive root, or None when it is absolute
+/// or climbs out with `..` (a hostile archive must not write outside the folder).
+fn safe_relative_entry_path(entry_path: &Path) -> Option<PathBuf> {
+    let mut safe_relative_path = PathBuf::new();
+    for path_component in entry_path.components() {
+        match path_component {
+            std::path::Component::Normal(component_name) => safe_relative_path.push(component_name),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if safe_relative_path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(safe_relative_path)
+    }
+}
+
+fn extract_tar_gz_entries_into(
+    tar_gz_path: &Path,
+    destination_dir: &Path,
+    keep_entry: impl Fn(&str) -> bool,
+    flatten: bool,
+) -> Result<(), String> {
+    let tar_gz_file = File::open(tar_gz_path).map_err(|error| format!("cannot open {}: {error}", tar_gz_path.display()))?;
+    let mut tar_archive = tar::Archive::new(flate2::read::GzDecoder::new(tar_gz_file));
+    std::fs::create_dir_all(destination_dir).map_err(|error| format!("cannot create {}: {error}", destination_dir.display()))?;
+    let tar_entries = tar_archive.entries().map_err(|error| format!("cannot read {}: {error}", tar_gz_path.display()))?;
+
+    for tar_entry in tar_entries {
+        let mut tar_entry = tar_entry.map_err(|error| format!("bad tar entry: {error}"))?;
+        let entry_type = tar_entry.header().entry_type();
+        if !entry_type.is_file() && !entry_type.is_symlink() {
+            continue; // folders are created as needed; devices, fifos and hard links are never wanted
+        }
+        let entry_path = tar_entry.path().map_err(|error| format!("bad tar entry name: {error}"))?.into_owned();
+        let entry_name = entry_path.to_string_lossy().into_owned();
+        if !keep_entry(&entry_name) {
+            continue;
+        }
+        let Some(safe_relative_path) = safe_relative_entry_path(&entry_path) else {
+            continue;
+        };
+        let output_path = if flatten {
+            match safe_relative_path.file_name() {
+                Some(file_name) => destination_dir.join(file_name),
+                None => continue,
+            }
+        } else {
+            destination_dir.join(&safe_relative_path)
+        };
+        if let Some(parent_directory) = output_path.parent() {
+            std::fs::create_dir_all(parent_directory).map_err(|error| format!("cannot create {}: {error}", parent_directory.display()))?;
+        }
+
+        if entry_type.is_symlink() {
+            let link_target = tar_entry
+                .link_name()
+                .map_err(|error| format!("bad link in {entry_name}: {error}"))?
+                .map(|link_target| link_target.into_owned());
+            let Some(link_target) = link_target else {
+                continue;
+            };
+            // Only a sibling file name: a link to "/etc/..." or "../x" could make a later write escape.
+            let is_sibling_file_name = link_target.components().count() == 1
+                && matches!(link_target.components().next(), Some(std::path::Component::Normal(_)));
+            if is_sibling_file_name {
+                create_symbolic_link(&link_target, &output_path)?;
+            }
+            continue;
+        }
+
+        // A link of the same name from earlier in the archive must not redirect this write.
+        let _ = std::fs::remove_file(&output_path);
+        let mut output_file = File::create(&output_path).map_err(|error| format!("cannot create {}: {error}", output_path.display()))?;
+        std::io::copy(&mut tar_entry, &mut output_file).map_err(|error| format!("cannot extract {entry_name}: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // rwx bits only: setuid/setgid/sticky from an archive are never applied.
+            let permission_bits = tar_entry.header().mode().unwrap_or(0o644) & 0o777;
+            std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(permission_bits))
+                .map_err(|error| format!("cannot set permissions on {}: {error}", output_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symbolic_link(link_target: &Path, link_path: &Path) -> Result<(), String> {
+    let _ = std::fs::remove_file(link_path);
+    std::os::unix::fs::symlink(link_target, link_path).map_err(|error| format!("cannot create link {}: {error}", link_path.display()))
+}
+
+/// Tar archives are only used on Linux; elsewhere their links are skipped.
+#[cfg(not(unix))]
+fn create_symbolic_link(_link_target: &Path, _link_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn extract_zip_entries_into(
@@ -206,5 +346,57 @@ mod tests {
         assert_eq!(std::fs::read(output_directory.join("whisper-server.exe")).unwrap(), b"exe");
         assert!(!output_directory.join("readme.txt").exists());
         assert!(!output_directory.join("Release").exists());
+    }
+
+    fn append_tar_file(tar_builder: &mut tar::Builder<flate2::write::GzEncoder<File>>, path: &str, contents: &[u8], mode: u32) {
+        let mut tar_header = tar::Header::new_gnu();
+        tar_header.set_size(contents.len() as u64);
+        tar_header.set_mode(mode);
+        tar_header.set_entry_type(tar::EntryType::Regular);
+        tar_builder.append_data(&mut tar_header, path, contents).unwrap();
+    }
+
+    fn append_tar_symlink(tar_builder: &mut tar::Builder<flate2::write::GzEncoder<File>>, path: &str, link_target: &str) {
+        let mut tar_header = tar::Header::new_gnu();
+        tar_header.set_size(0);
+        tar_header.set_entry_type(tar::EntryType::Symlink);
+        tar_builder.append_link(&mut tar_header, path, link_target).unwrap();
+    }
+
+    #[test]
+    fn tar_gz_extract_keeps_matching_files_sibling_links_and_modes() {
+        let directory = fresh_temporary_directory("targz");
+        let tar_gz_path = directory.join("whisper-bin-ubuntu-x64.tar.gz");
+        {
+            let gzip_encoder = flate2::write::GzEncoder::new(File::create(&tar_gz_path).unwrap(), flate2::Compression::fast());
+            let mut tar_builder = tar::Builder::new(gzip_encoder);
+            append_tar_file(&mut tar_builder, "whisper-bin-ubuntu-x64/whisper-server", b"elf", 0o4755);
+            append_tar_file(&mut tar_builder, "whisper-bin-ubuntu-x64/libwhisper.so.1.9.5", b"so", 0o755);
+            append_tar_symlink(&mut tar_builder, "whisper-bin-ubuntu-x64/libwhisper.so.1", "libwhisper.so.1.9.5");
+            append_tar_symlink(&mut tar_builder, "whisper-bin-ubuntu-x64/libescape.so", "../../etc/passwd");
+            append_tar_file(&mut tar_builder, "whisper-bin-ubuntu-x64/README.md", b"txt", 0o644);
+            tar_builder.into_inner().unwrap().finish().unwrap();
+        }
+        let output_directory = directory.join("out");
+        extract_archive_entries(&tar_gz_path, &output_directory, |name| name.ends_with("/whisper-server") || name.contains(".so"), true)
+            .unwrap();
+        assert_eq!(std::fs::read(output_directory.join("whisper-server")).unwrap(), b"elf");
+        assert!(!output_directory.join("README.md").exists());
+        assert!(std::fs::symlink_metadata(output_directory.join("libescape.so")).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let server_mode = std::fs::metadata(output_directory.join("whisper-server")).unwrap().permissions().mode();
+            assert_eq!(server_mode & 0o7777, 0o755, "setuid is dropped, rwx kept");
+            assert_eq!(std::fs::read(output_directory.join("libwhisper.so.1")).unwrap(), b"so");
+        }
+    }
+
+    #[test]
+    fn archive_entry_paths_that_escape_are_rejected() {
+        assert_eq!(safe_relative_entry_path(Path::new("a/./b.so")), Some(PathBuf::from("a/b.so")));
+        assert_eq!(safe_relative_entry_path(Path::new("../b.so")), None);
+        assert_eq!(safe_relative_entry_path(Path::new("/etc/passwd")), None);
+        assert_eq!(safe_relative_entry_path(Path::new(".")), None);
     }
 }

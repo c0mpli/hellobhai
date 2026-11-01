@@ -46,9 +46,22 @@ fn system_prompt_text(kind: SystemPromptKind) -> &'static str {
 pub fn write_prompt_files(prompts_directory: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(prompts_directory)?;
     for kind in ALL_SYSTEM_PROMPT_KINDS {
-        std::fs::write(prompt_file_path(prompts_directory, kind), system_prompt_text(kind))?;
+        std::fs::write(prompt_file_path(prompts_directory, kind), prompt_file_text(kind))?;
     }
     Ok(())
+}
+
+/// The prompt as written to its file: Linux swaps the Windows wording for its own.
+fn prompt_file_text(kind: SystemPromptKind) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        let prompt_file_name = prompt_file_path(Path::new(""), kind);
+        crate::platform::linux_prompt_wording::adapt_prompt_for_linux(&prompt_file_name.to_string_lossy(), system_prompt_text(kind))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        system_prompt_text(kind).to_string()
+    }
 }
 
 pub fn prompt_file_path(prompts_directory: &Path, kind: SystemPromptKind) -> PathBuf {
@@ -170,7 +183,7 @@ mod tests {
         let prompts_directory = std::env::temp_dir().join(format!("hellobhai-prompts-test-{}", std::process::id()));
         write_prompt_files(&prompts_directory).unwrap();
         for kind in ALL_SYSTEM_PROMPT_KINDS {
-            assert_eq!(std::fs::read_to_string(prompt_file_path(&prompts_directory, kind)).unwrap(), system_prompt_text(kind));
+            assert_eq!(std::fs::read_to_string(prompt_file_path(&prompts_directory, kind)).unwrap(), prompt_file_text(kind));
         }
         std::fs::remove_dir_all(&prompts_directory).unwrap();
     }

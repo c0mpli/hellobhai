@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 
-use crate::downloads::{download_file_if_missing, extract_zip_entries};
+use crate::downloads::{download_file_if_missing, extract_archive_entries};
 
 const WHISPER_MODEL_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo-q5_0.bin";
@@ -84,28 +84,20 @@ impl WhisperTranscriber {
         let total_download_size_bytes = (whisper_server_download.size_bytes + WHISPER_MODEL_SIZE_BYTES) as f32;
         let runtime_share = whisper_server_download.size_bytes as f32 / total_download_size_bytes;
 
-        // The folder only appears once extraction has finished (extract_zip_entries renames it into place).
+        // The folder only appears once extraction has finished (extract_archive_entries renames it into place).
         if !whisper_server_executable.exists() {
-            let runtime_zip_path = models_directory.join("whisper-bin-x64.zip");
+            let runtime_archive_path = models_directory.join(whisper_server_download.archive_file_name);
             download_file_if_missing(
                 whisper_server_download.url,
-                &runtime_zip_path,
+                &runtime_archive_path,
                 whisper_server_download.size_bytes,
                 whisper_server_download.sha256,
                 |fraction| self.set_state(SpeechModelState::Downloading { fraction: fraction * runtime_share }),
             )
             .await?;
-            // Keep Release/whisper-server.exe and every Release/*.dll (unused DLLs are harmless).
-            extract_zip_entries(
-                &runtime_zip_path,
-                &whisper_server_directory,
-                |entry_name| {
-                    entry_name.starts_with("Release/")
-                        && (entry_name.ends_with(whisper_server_download.executable_or_library_file_name) || entry_name.ends_with(".dll"))
-                },
-                true,
-            )?;
-            let _ = std::fs::remove_file(&runtime_zip_path);
+            // The platform picks the entries: whisper-server plus its DLLs or shared libraries.
+            extract_archive_entries(&runtime_archive_path, &whisper_server_directory, whisper_server_download.keep_archive_entry, true)?;
+            let _ = std::fs::remove_file(&runtime_archive_path);
         }
 
         download_file_if_missing(WHISPER_MODEL_URL, &whisper_model_path, WHISPER_MODEL_SIZE_BYTES, WHISPER_MODEL_SHA256, |fraction| {
