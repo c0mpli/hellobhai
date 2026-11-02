@@ -5,6 +5,7 @@
 
 use crate::brain_engine::BrainEngine;
 use crate::conversation_history::ConversationHistory;
+use crate::memory_store::MemoryTag;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,6 +27,43 @@ pub struct ChatMessage {
     pub text: String,
     /// True while Claude's reply is still streaming in.
     pub is_streaming: bool,
+    /// Set on the app's own memory rows ("Remembered: ...", "Save this?").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_chat_row: Option<MemoryChatRow>,
+}
+
+/// A memory row in the chat, with its buttons if it has any (Mac `MemoryChatRow`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryChatRow {
+    pub action: Option<MemoryChatRowAction>,
+    /// True once a button was pressed, so it can't be pressed twice.
+    pub is_resolved: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemoryChatRowAction {
+    /// One "Undo" button.
+    UndoMemoryChange,
+    /// "Yes" / "No": a tag whose trigger word was missing from the request.
+    ConfirmSaveSuggestion(MemoryTag),
+    /// "Yes" / "No": a FORGET that matched more than one line.
+    ConfirmRemoveMatchingLines { matching_bullet_lines: Vec<String>, forget_match_text: String },
+}
+
+/// The page only needs which buttons to draw; what they do stays in Rust.
+impl Serialize for MemoryChatRow {
+    fn serialize<RowSerializer: serde::Serializer>(&self, serializer: RowSerializer) -> Result<RowSerializer::Ok, RowSerializer::Error> {
+        use serde::ser::SerializeStruct;
+        let buttons = match &self.action {
+            None => None,
+            Some(MemoryChatRowAction::UndoMemoryChange) => Some("undo"),
+            Some(_) => Some("yesNo"),
+        };
+        let mut row_serializer = serializer.serialize_struct("MemoryChatRow", 2)?;
+        row_serializer.serialize_field("buttons", &buttons)?;
+        row_serializer.serialize_field("isResolved", &self.is_resolved)?;
+        row_serializer.end()
+    }
 }
 
 /// Everything said and typed this session. Voice turns land here too, so the
@@ -43,8 +81,59 @@ impl ChatConversation {
     /// Adds a row and returns its id.
     pub fn append(&mut self, is_from_user: bool, text: String, is_streaming: bool) -> u64 {
         let message_id = NEXT_CHAT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
-        self.messages.push(ChatMessage { id: message_id, is_from_user, text, is_streaming });
+        self.messages.push(ChatMessage { id: message_id, is_from_user, text, is_streaming, memory_chat_row: None });
         message_id
+    }
+
+    /// Adds one of the app's memory rows and returns its id.
+    pub fn append_memory_row(&mut self, text: String, action: Option<MemoryChatRowAction>) -> u64 {
+        let message_id = NEXT_CHAT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
+        self.messages.push(ChatMessage {
+            id: message_id,
+            is_from_user: false,
+            text,
+            is_streaming: false,
+            memory_chat_row: Some(MemoryChatRow { action, is_resolved: false }),
+        });
+        message_id
+    }
+
+    /// Undo restores the single .bak (the state before the newest change), so
+    /// only the newest change's row keeps a working Undo button.
+    pub fn resolve_undo_memory_rows(&mut self) {
+        for message in self.messages.iter_mut() {
+            if let Some(memory_chat_row) = message.memory_chat_row.as_mut() {
+                if memory_chat_row.action == Some(MemoryChatRowAction::UndoMemoryChange) {
+                    memory_chat_row.is_resolved = true;
+                }
+            }
+        }
+    }
+
+    /// A button on a memory row was pressed: marks the row resolved and returns
+    /// what the button does, or None when the row has no live buttons.
+    pub fn take_unresolved_memory_row_action(&mut self, message_id: u64) -> Option<MemoryChatRowAction> {
+        let memory_chat_row = self.messages.iter_mut().find(|message| message.id == message_id)?.memory_chat_row.as_mut()?;
+        if memory_chat_row.is_resolved {
+            return None;
+        }
+        let row_action = memory_chat_row.action.clone()?;
+        memory_chat_row.is_resolved = true;
+        Some(row_action)
+    }
+
+    /// A tab put back by session restore: its stored requests and replies.
+    pub fn from_restored_exchanges(restored_exchanges: &[(String, String)]) -> ChatConversation {
+        let mut restored_conversation = ChatConversation::default();
+        for (request_text, reply_text) in restored_exchanges {
+            if !request_text.is_empty() {
+                restored_conversation.append(true, request_text.clone(), false);
+            }
+            if !reply_text.is_empty() {
+                restored_conversation.append(false, reply_text.clone(), false);
+            }
+        }
+        restored_conversation
     }
 
     pub fn update(&mut self, message_id: u64, text: String, is_streaming: bool) {
@@ -115,16 +204,47 @@ pub struct ChatTabs {
     tab_ids_in_order: Vec<u64>,
     active_tab_id: u64,
     parked_tabs: HashMap<u64, ParkedChatTab>,
-    next_tab_id: u64,
+}
+
+/// A random tab id, kept across launches (Mac: a `ChatTab` UUID): every
+/// episode records the tab it was asked in, so session restore can put a
+/// tab's turns back, and a new tab never picks up an old tab's turns.
+/// Below 2^53 so the chat page's JavaScript numbers hold it exactly.
+pub fn new_chat_tab_id() -> u64 {
+    rand::random_range(1..(1u64 << 53))
 }
 
 impl Default for ChatTabs {
     fn default() -> Self {
-        ChatTabs { tab_ids_in_order: vec![1], active_tab_id: 1, parked_tabs: HashMap::new(), next_tab_id: 2 }
+        let first_tab_id = new_chat_tab_id();
+        ChatTabs { tab_ids_in_order: vec![first_tab_id], active_tab_id: first_tab_id, parked_tabs: HashMap::new() }
     }
 }
 
 impl ChatTabs {
+    /// The tabs session restore put back: the active one's rows and history go
+    /// to their owners; every other tab is parked with its own.
+    pub fn restored(tab_ids_in_order: Vec<u64>, active_tab_id: u64, parked_tabs: Vec<(u64, ChatConversation, ConversationHistory)>) -> ChatTabs {
+        ChatTabs {
+            tab_ids_in_order,
+            active_tab_id,
+            parked_tabs: parked_tabs
+                .into_iter()
+                .map(|(tab_id, conversation, conversation_history)| (tab_id, ParkedChatTab { conversation, conversation_history }))
+                .collect(),
+        }
+    }
+
+    pub fn tab_ids_in_order(&self) -> &[u64] {
+        &self.tab_ids_in_order
+    }
+
+    pub fn resolve_undo_memory_rows_in_parked_tabs(&mut self) {
+        for parked_tab in self.parked_tabs.values_mut() {
+            parked_tab.conversation.resolve_undo_memory_rows();
+        }
+    }
+
     pub fn active_tab_id(&self) -> u64 {
         self.active_tab_id
     }
@@ -154,8 +274,7 @@ impl ChatTabs {
 
     /// Adds an empty tab after the active one and returns its id (not switched to yet).
     pub fn insert_empty_tab_after_active(&mut self) -> u64 {
-        let new_tab_id = self.next_tab_id;
-        self.next_tab_id += 1;
+        let new_tab_id = new_chat_tab_id();
         let active_tab_index = self
             .tab_ids_in_order
             .iter()
@@ -260,7 +379,7 @@ pub fn utf16_offset_for_byte_offset(text: &str, byte_offset: usize) -> usize {
 }
 
 // Only bhai's own tags, so ordinary brackets like [1] or arr[0] stay.
-const KNOWN_TAG_NAMES: &str = "(POINT|CIRCLE|CLICK|TYPE|KEY|OPEN|SHOW|NOTES|MODEL3D|CLOSE_DRAWING)";
+const KNOWN_TAG_NAMES: &str = "(POINT|CIRCLE|CLICK|TYPE|KEY|OPEN|SHOW|NOTES|MODEL3D|CLOSE_DRAWING|REMEMBER|FORGET|STYLE)";
 
 static FINISHED_TAG_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"\[{KNOWN_TAG_NAMES}(:[^\]]*)?\]")).expect("valid tag pattern"));
@@ -412,6 +531,55 @@ mod tests {
         chat_tabs.remove_parked_tab(second_tab_id);
         assert_eq!(chat_tabs.tab_count(), 1);
         assert!(!chat_tabs.switch_to_tab(second_tab_id, &mut active_conversation, &mut active_history));
+    }
+
+    #[test]
+    fn memory_tags_are_hidden_while_streaming() {
+        assert_eq!(chat_display_text_for_partial_reply("याद रख लिया। [REMEMBER:style:Use metric units.]"), "याद रख लिया।");
+        assert_eq!(chat_display_text_for_partial_reply("ok [STYLE:reply_length=short] [FORGET:last]"), "ok");
+        assert_eq!(chat_display_text_for_partial_reply("ok [REMEMBER:about:Riya is"), "ok");
+    }
+
+    #[test]
+    fn memory_rows_show_their_buttons_once_and_only_the_newest_undo_stays_live() {
+        let mut chat_conversation = ChatConversation::default();
+        let first_undo_row_id = chat_conversation.append_memory_row("Remembered: a".into(), Some(MemoryChatRowAction::UndoMemoryChange));
+        chat_conversation.resolve_undo_memory_rows();
+        let second_undo_row_id = chat_conversation.append_memory_row("Remembered: b".into(), Some(MemoryChatRowAction::UndoMemoryChange));
+        assert_eq!(chat_conversation.take_unresolved_memory_row_action(first_undo_row_id), None);
+        assert_eq!(chat_conversation.take_unresolved_memory_row_action(second_undo_row_id), Some(MemoryChatRowAction::UndoMemoryChange));
+        // A second press does nothing.
+        assert_eq!(chat_conversation.take_unresolved_memory_row_action(second_undo_row_id), None);
+
+        let save_tag = MemoryTag::Remember { section: crate::memory_store::MemoryProfileSection::About, text: "My bank is X".into() };
+        let yes_no_row_id = chat_conversation.append_memory_row("Save?".into(), Some(MemoryChatRowAction::ConfirmSaveSuggestion(save_tag)));
+        let page_json = serde_json::to_value(chat_conversation.messages()).unwrap();
+        assert_eq!(page_json[1]["memoryChatRow"], serde_json::json!({ "buttons": "undo", "isResolved": true }));
+        assert_eq!(page_json[2]["memoryChatRow"], serde_json::json!({ "buttons": "yesNo", "isResolved": false }));
+        assert!(page_json[2]["memoryChatRow"].get("action").is_none());
+        // Ordinary rows have no memory field at all.
+        let reply_id = chat_conversation.append(false, "hi".into(), false);
+        assert!(serde_json::to_value(chat_conversation.messages()).unwrap()[3].get("memoryChatRow").is_none());
+        assert_eq!(chat_conversation.take_unresolved_memory_row_action(reply_id), None);
+        assert!(chat_conversation.take_unresolved_memory_row_action(yes_no_row_id).is_some());
+    }
+
+    #[test]
+    fn restored_tabs_keep_their_ids_rows_and_history() {
+        let restored_conversation = ChatConversation::from_restored_exchanges(&[("q1".into(), "a1".into()), (String::new(), "a2".into())]);
+        let restored_texts: Vec<(bool, &str)> = restored_conversation.messages().iter().map(|message| (message.is_from_user, message.text.as_str())).collect();
+        assert_eq!(restored_texts, vec![(true, "q1"), (false, "a1"), (false, "a2")]);
+
+        let mut chat_tabs = ChatTabs::restored(vec![11, 22], 22, vec![(11, restored_conversation, ConversationHistory::default())]);
+        assert_eq!(chat_tabs.tab_ids_in_order(), &[11, 22]);
+        let mut active_conversation = ChatConversation::default();
+        let mut active_history = ConversationHistory::default();
+        assert!(chat_tabs.switch_to_tab(11, &mut active_conversation, &mut active_history));
+        assert_eq!(active_conversation.messages().len(), 3);
+        // New ids are random and fit a JavaScript number.
+        let new_tab_id = chat_tabs.insert_empty_tab_after_active();
+        assert!(new_tab_id > 0 && new_tab_id < (1u64 << 53));
+        assert_ne!(ChatTabs::default().active_tab_id(), ChatTabs::default().active_tab_id());
     }
 
     #[test]

@@ -38,6 +38,45 @@
   // Tells Rust the page is alive; silence means its web process died and it gets reloaded.
   setInterval(() => invoke('orb_page_heartbeat'), 2000);
 
+  // "Memory paused": a small pause badge in the top-right corner (the Mac's
+  // pause.circle.fill in white at 85%). It never takes a click.
+  let isMemoryPausedMarkerVisible = false;
+  let memoryPausedMarkerElement = null;
+  function createMemoryPausedMarker() {
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const markerElement = document.createElementNS(svgNamespace, 'svg');
+    markerElement.setAttribute('viewBox', '0 0 14 14');
+    markerElement.setAttribute('aria-label', 'Memory paused');
+    markerElement.style.cssText = 'position:fixed;top:4px;right:4px;width:14px;height:14px;pointer-events:none;z-index:2;';
+    const backgroundCircle = document.createElementNS(svgNamespace, 'circle');
+    backgroundCircle.setAttribute('cx', '7');
+    backgroundCircle.setAttribute('cy', '7');
+    backgroundCircle.setAttribute('r', '7');
+    backgroundCircle.setAttribute('fill', 'rgba(255,255,255,0.85)');
+    markerElement.appendChild(backgroundCircle);
+    for (const barX of ['4.6', '7.9']) {
+      const pauseBar = document.createElementNS(svgNamespace, 'rect');
+      pauseBar.setAttribute('x', barX);
+      pauseBar.setAttribute('y', '4');
+      pauseBar.setAttribute('width', '1.5');
+      pauseBar.setAttribute('height', '6');
+      pauseBar.setAttribute('rx', '0.5');
+      pauseBar.setAttribute('fill', '#101211');
+      markerElement.appendChild(pauseBar);
+    }
+    return markerElement;
+  }
+  window.hbSetMemoryPausedMarkerVisible = (shouldShowMarker) => {
+    isMemoryPausedMarkerVisible = shouldShowMarker;
+    if (!document.body) return;
+    if (!memoryPausedMarkerElement) {
+      memoryPausedMarkerElement = createMemoryPausedMarker();
+      document.body.appendChild(memoryPausedMarkerElement);
+    }
+    memoryPausedMarkerElement.style.display = shouldShowMarker ? 'block' : 'none';
+  };
+  window.addEventListener('DOMContentLoaded', () => window.hbSetMemoryPausedMarkerVisible(isMemoryPausedMarkerVisible));
+
   window.addEventListener('DOMContentLoaded', () => {
     const fadeStyle = document.createElement('style');
     // The pointing hand says the orb can be clicked; the fade matches the Mac's 0.3 s window alpha animation.

@@ -14,6 +14,8 @@
     <img class="panel-logo" src="logo.png" width="22" height="22" alt="">
     <h1>bhai</h1>
     <span class="header-status-text" id="status-line">Ready</span>
+    <!-- One click from opening the panel: pauses or resumes memory (the Mac's header pause button). -->
+    <button class="memory-pause-button" id="memory-pause-button" type="button" title="Pause memory" aria-label="Pause memory"></button>
     <button class="close-button" id="close-button" type="button" title="Close" aria-label="Close">
       <svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1 1 9 9M9 1 1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
@@ -174,6 +176,32 @@
           </div>
         </div>
         <p class="row-footnote" id="orb-style-footnote" hidden>Size and color apply to the orb style</p>
+      </section>
+    </div>
+
+    <!-- Memory (the Mac's PanelMemorySection) -->
+    <div class="tab-page" data-tab="memory" hidden>
+      <section class="settings-section">
+        <h2 class="section-label">Memory</h2>
+        <p class="memory-explanation">bhai saves what you ask it to remember ("yaad rakhna", "remember") and your recent chats (60 days) in plain files on this computer. What it remembers is sent with each request to your own Claude or Codex login. Forgetting can't reach your OS backups or your AI provider's copies.</p>
+        <p class="memory-problem" id="memory-problem" hidden></p>
+        <label class="settings-row clickable-row" for="memory-paused-toggle">
+          <span class="row-text"><span class="row-label">Pause memory</span><span class="row-subtitle" id="memory-paused-subtitle"></span></span>
+          <input class="toggle" id="memory-paused-toggle" type="checkbox" role="switch">
+        </label>
+        <button class="settings-row clickable-row row-button" id="open-memory-folder-button" type="button">
+          <span class="row-label">Open memory folder</span>
+        </button>
+        <button class="settings-row clickable-row row-button" id="undo-memory-change-button" type="button">
+          <span class="row-label">Undo last change</span>
+        </button>
+        <button class="settings-row clickable-row row-button" id="forget-today-button" type="button">
+          <span class="row-label">Forget today</span>
+        </button>
+        <button class="settings-row clickable-row row-button" id="forget-everything-button" type="button">
+          <span class="row-label" id="forget-everything-label">Forget everything</span>
+        </button>
+        <p class="row-footnote" id="memory-action-result" hidden></p>
       </section>
     </div>
   </div>

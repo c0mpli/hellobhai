@@ -468,6 +468,16 @@ impl OrbWindow {
         }
     }
 
+    /// A small pause badge in the orb's top-right corner while memory is paused
+    /// (Mac `setMemoryPausedMarkerVisible`). Drawn by `ui/orb-host-bridge.js`.
+    pub fn apply_memory_paused_marker(&self) {
+        let memory_paused = self.settings.read().unwrap().memory_paused;
+        if let Some(orb_window) = self.app.get_webview_window(ORB_WINDOW_LABEL) {
+            // A plain boolean, so nothing user-controlled is ever evaluated.
+            let _ = orb_window.eval(format!("window.hbSetMemoryPausedMarkerVisible && window.hbSetMemoryPausedMarkerVisible({memory_paused})"));
+        }
+    }
+
     // ---- Showing ----
 
     fn should_be_shown(&self) -> bool {
@@ -591,6 +601,7 @@ impl OrbWindow {
             state.applied_opacity = None;
         }
         self.apply_orb_color();
+        self.apply_memory_paused_marker();
         self.apply_state_to_page_and_window();
     }
 

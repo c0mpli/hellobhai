@@ -1,6 +1,6 @@
 # Memory and personalization plan
 
-Status: phase 1 is being built (Mac side done, see "Phase 1 Mac build notes" in §6); phases 2-4 are plan only. This is revision 2 (2026-11-02). It replaces the first draft and applies the security and simplicity critiques. When a critique was not adopted, the reason is given where the topic comes up.
+Status: phase 1 is built on the Mac and ported to Windows/Linux (see "Phase 1 Mac build notes" and "Phase 1 Tauri build notes" in §6; the Tauri side is compile-checked and unit-tested, not yet run on real hardware); phases 2-4 are plan only. This is revision 2 (2026-11-02). It replaces the first draft and applies the security and simplicity critiques. When a critique was not adopted, the reason is given where the topic comes up.
 
 ## 1. Goal and principles
 
@@ -439,6 +439,17 @@ Each phase ships on the Mac, then Tauri, before the next phase starts. Phases 1 
 - The closing-idea rule is not edited in the voice prompt (that would change the exported base prompt); the static memory instructions say how each `closing_idea` value overrides it. The memory instructions are exported as `tauri/generated/prompts/memory_instructions.txt`.
 - Trigger lists include Devanagari spellings of the English triggers ("रिमेंबर", "डिलीट"), because Whisper writes Hinglish in Devanagari. The scrub's bare "pass" only fires before "is", ":" or "=", since "mere pass" is everyday Hinglish.
 - Not built yet on the Mac: the Settings switch that puts `episodes/` back into Time Machine, applying `speech_speed` in the TTS (phase 3 per §6), the shared test-vector files in `tauri/generated/memory-sample/`, the cache and `mdfind` checks, and the onboarding is a one-time chat row plus the Settings > Memory text instead of a separate sheet.
+
+**Phase 1 Tauri build notes (2026-11-02):**
+
+- `memory_store.rs` ports `MemoryStore.swift` function for function. Its tests repeat every `MemorySelfCheck` vector, plus a golden episode/patch line test and a byte-for-byte check of the rendered empty profile. Extra vectors (the Devanagari 6-character minimum, a vowel sign after a FORGET match, JSON escapes of control characters, "pin 1234", "pass: x") were run through the Swift code first and the Rust tests assert the same results. Swift's `String.count` counts graphemes, so caps, cuts and the FORGET minimum use `unicode-segmentation`; Rust's `regex` has no lookaround, so whole-word matching and the "number before otp" scrub are written without it.
+- Prompts: `claude -p` on Tauri reads `--system-prompt-file`, so the voice, board, notes and 3D prompt files are rewritten with the memory block or style excerpt when a request starts, after a request that applied tags (at its end, so every step uses the prompt as it was at the start, like the Mac), after a chat-row button or a Settings > Memory action, and on pause. This replaces the plan's separate `rewrite_composed_prompts()`.
+- Tags are stripped by `memory_store::extract_memory_tags` before `response_tags::parse_reply`, as on the Mac, instead of adding vectors to `parse_reply`.
+- Tab ids are random numbers below 2^53 (kept as settings `savedChatTabIds`/`savedActiveChatTabId`); the episode `tab` field is the decimal id, where the Mac writes a UUID. The field stays an opaque string.
+- `app` is the executable name on Windows ("chrome", "Code") and `/proc/<pid>/comm` on X11, not the display name the Mac records; null on Wayland.
+- Pause passes the Mac's `--disallowedTools "Read(//<path>/**)"`; Windows paths are written in Claude Code's POSIX form (`C:\Users\x` -> `//c/Users/x`). Not tested on Windows or Linux. Tauri voice turns have Read, Glob and Grep; Claude Code documents Read deny rules as also covering Glob and Grep, which is also unverified here. There is no Bash tool on Tauri, so the Mac's `open` URL question does not arise; `[OPEN]` targets are still checked by `computer_control::allowed_open_target`.
+- No backup exclusion: Windows File History and Linux backup tools are not controlled by the app, as §4.4 says.
+- Not built on Tauri, matching the Mac: `speech_speed` in the TTS (phase 3), the shared test-vector files in `tauri/generated/memory-sample/` (the vectors are duplicated in the Rust tests instead), and the cache check. The onboarding is the same one-time chat row as the Mac, plus the Memory tab text.
 
 **Done when:**
 

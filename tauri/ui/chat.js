@@ -64,7 +64,39 @@ function createReplyTextElement(chatMessage, speechProgress) {
   return replyText;
 }
 
+const MEMORY_ROW_ICON_SVG = '<svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true"><path d="M4.4 2.2a2 2 0 0 0-2 2 1.9 1.9 0 0 0-.9 3.3 2 2 0 0 0 2.4 2.6 1.6 1.6 0 0 0 2.1.4 1.6 1.6 0 0 0 2.1-.4 2 2 0 0 0 2.4-2.6 1.9 1.9 0 0 0-.9-3.3 2 2 0 0 0-2-2A1.7 1.7 0 0 0 6 3a1.7 1.7 0 0 0-1.6-.8ZM6 3v7.4" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+/// The app's own memory notes (the Mac's memoryRow): smaller, in a quiet card,
+/// with Undo or Yes / No until one is pressed.
+function renderMemoryRow(chatMessage) {
+  const memoryRow = createElement('div', 'memory-row');
+  const memoryRowLine = createElement('div', 'memory-row-line');
+  const memoryRowIcon = createElement('span', 'memory-row-icon');
+  memoryRowIcon.innerHTML = MEMORY_ROW_ICON_SVG;
+  memoryRowLine.append(memoryRowIcon, createElement('div', 'memory-row-text', chatMessage.text));
+  memoryRow.append(memoryRowLine);
+  const { buttons, isResolved } = chatMessage.memoryChatRow;
+  if (buttons && !isResolved) {
+    const memoryRowButtons = createElement('div', 'memory-row-buttons');
+    const addButton = (buttonLabel, userAccepted) => {
+      const rowButton = createElement('button', 'suggestion-chip', buttonLabel);
+      rowButton.type = 'button';
+      rowButton.addEventListener('click', () => invoke('respond_to_memory_chat_row', { messageId: chatMessage.id, userAccepted }));
+      memoryRowButtons.append(rowButton);
+    };
+    if (buttons === 'undo') {
+      addButton('Undo', true);
+    } else {
+      addButton('Yes', true);
+      addButton('No', false);
+    }
+    memoryRow.append(memoryRowButtons);
+  }
+  return memoryRow;
+}
+
 function renderMessageRow(chatMessage, previousMessage, speechProgress) {
+  if (chatMessage.memoryChatRow) return renderMemoryRow(chatMessage);
   if (chatMessage.isFromUser) {
     const userRow = createElement('div', 'user-row');
     // Extra space above each new question, so a question and its answer read as one group.

@@ -25,3 +25,10 @@ pub fn models_directory(app: &AppHandle) -> PathBuf {
 pub fn prompts_directory(app: &AppHandle) -> PathBuf {
     app_local_data_subdirectory(app, "prompts")
 }
+
+/// `app_local_data_dir/Memory`: bhai's memory (`memory_store.rs`). Not created
+/// here: `MemoryStore` creates it readable by the user only.
+pub fn memory_directory(app: &AppHandle) -> PathBuf {
+    let local_data_directory = app.path().app_local_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("hellobhai"));
+    local_data_directory.join("Memory")
+}

@@ -2,7 +2,9 @@
 //! box gets typing, and before [TYPE]/[KEY] or on minimize the focus goes back to
 //! the window the user was working in (the Mac's `giveKeyboardFocusBackToFrontmostApp`).
 
-use windows::Win32::Foundation::HWND;
+use windows::core::PWSTR;
+use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, IsWindow, SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -24,6 +26,31 @@ pub fn foreground_window_id() -> Option<isize> {
         return None;
     }
     Some(foreground_window.0 as isize)
+}
+
+/// The program behind the focused window, for bhai's memory episodes (the
+/// Mac's frontmost app name): the executable's name without ".exe", like
+/// "chrome" or "Code". None for bhai's own windows or when it can't be read.
+pub fn foreground_app_name() -> Option<String> {
+    let foreground_window = unsafe { GetForegroundWindow() };
+    if foreground_window.0.is_null() {
+        return None;
+    }
+    let mut owning_process_id: u32 = 0;
+    unsafe { GetWindowThreadProcessId(foreground_window, Some(&mut owning_process_id)) };
+    if owning_process_id == 0 || owning_process_id == std::process::id() {
+        return None;
+    }
+    let process_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, owning_process_id) }.ok()?;
+    let mut executable_path_buffer = [0u16; 1024];
+    let mut executable_path_length = executable_path_buffer.len() as u32;
+    let query_result = unsafe {
+        QueryFullProcessImageNameW(process_handle, PROCESS_NAME_WIN32, PWSTR(executable_path_buffer.as_mut_ptr()), &mut executable_path_length)
+    };
+    let _ = unsafe { CloseHandle(process_handle) };
+    query_result.ok()?;
+    let executable_path = String::from_utf16_lossy(&executable_path_buffer[..executable_path_length as usize]);
+    std::path::Path::new(&executable_path).file_stem().map(|file_stem| file_stem.to_string_lossy().to_string())
 }
 
 /// Puts an always-on-top window back at the very top of the topmost band.

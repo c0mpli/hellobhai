@@ -35,6 +35,29 @@ pub fn foreground_window_id() -> Option<isize> {
     .flatten()
 }
 
+/// The program behind the focused window, for bhai's memory episodes (the
+/// Mac's frontmost app name): the process name from /proc/<_NET_WM_PID>/comm,
+/// like "firefox" or "code". None on Wayland, for bhai's own windows, or when
+/// the window doesn't say its process.
+pub fn foreground_app_name() -> Option<String> {
+    if is_wayland_session() {
+        return None;
+    }
+    let owning_process_id = with_x11_connection(|connection| {
+        let active_windows = read_long_list_property(connection, connection.root_window, "_NET_ACTIVE_WINDOW");
+        let active_window_id = active_windows.first().copied().filter(|window_id| *window_id != 0)?;
+        read_long_list_property(connection, active_window_id as xlib::Window, "_NET_WM_PID").first().copied()
+    })
+    .ok()
+    .flatten()?;
+    if owning_process_id == 0 || owning_process_id == std::process::id() as u64 {
+        return None;
+    }
+    let process_name = std::fs::read_to_string(format!("/proc/{owning_process_id}/comm")).ok()?;
+    let trimmed_process_name = process_name.trim();
+    (!trimmed_process_name.is_empty()).then(|| trimmed_process_name.to_string())
+}
+
 /// Raises an always-on-top window above the other always-on-top ones.
 /// gtk_window_set_keep_above(TRUE) on a window that already has it doesn't
 /// restack it, so the orb could stay over the chat after being re-shown.
