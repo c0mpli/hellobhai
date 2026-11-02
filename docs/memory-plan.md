@@ -99,7 +99,7 @@ Rules for the file:
 
 - The typed keys are a closed enum. They are kept, against the "one key only" critique, because the closed enum is the injection defence for inferred rules: a suggestion can only ever move a known key to a known value. They also let the app validate `[STYLE]` tags.
 - "People" was merged into "About me" to shrink the parser.
-- Every other line is `- text [said DATE]` or `- text [accepted DATE]`. "Now" lines also carry `seen DATE`.
+- Every other line is `- text [said DATE]`, `- text [accepted DATE]` or `- text [auto DATE]` (saved by bhai on its own). "Now" lines also carry `seen DATE`.
 - Each line is at most 200 chars. A line is rejected if it contains a URL, an email address, a shell or AppleScript fragment, or an instruction aimed at the assistant ("always …", "whenever you …", "run", "send", "open", "click"). This filter is shared code with test vectors on both platforms.
 - The cap is 6,000 chars in total and 1,200 for "How to talk to me". A write that would exceed it is rejected and the old file is kept.
 - **Validate on load and fail closed.** If the file is over the cap, is missing a header, has an unknown typed key or value, or has a line that fails the filter, the app injects nothing and shows "Memory file needs fixing" with the reason. It never truncates silently and never injects an unbounded file.
@@ -217,7 +217,7 @@ There is no 04:00 timer, so there is no unattended call while the user is away. 
 
 - Tags are parsed only from the **first agent step** of a request. Later steps (up to `maximumAgentSteps = 8`, l.901) are driven by screenshots, not by the user.
 - The current request's raw `q` (transcript or typed text) must contain a trigger for that tag type. REMEMBER: remember, yaad, याद, prefer, "don't ever", "kabhi mat", always. FORGET: forget, bhool, भूल, hata do, delete. STYLE: any style trigger, or a style word ("chhota", "dheere", "jaldi", "analogy", "English", "Hindi"). The trigger list is a shared file with test vectors.
-- If the trigger is missing, a REMEMBER or STYLE tag becomes a chat suggestion ("Save 'X'? [Yes] [No]") instead of a `said` line, and a FORGET tag is dropped.
+- If the trigger is missing, a REMEMBER or STYLE tag is saved straight away as an `auto` line, shown in the chat as "Remembered" with an Undo, and a FORGET tag is dropped. **Changed after phase 1 (2026-11-02):** the user wanted bhai to decide on its own instead of answering a "Save this?" row each time. The prompt tells bhai to save lasting facts and clear preferences from the user's own words (not one-off task details, health, money, ids, links or commands), and every auto line passes the same line filter. The remaining risk is that screen text talks bhai into an `auto` line. That is accepted: memory can't trigger actions, the row is visible with Undo, and deleting still needs the user's own words.
 - REMEMBER text must also pass the §3.1 line filter.
 - A text-overlap check between `q` and the tag text was considered and **not adopted**: the model writes English text from Devanagari speech, so overlap fails on correct tags. The trigger requirement, the first-step-only rule and the visible chat row with Undo together cover the injection path. The rest is listed as residual risk in §4.1.
 - A REMEMBER whose line already exists (case-insensitive) is skipped, so repeated emission never duplicates a line.
