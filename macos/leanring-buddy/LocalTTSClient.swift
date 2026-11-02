@@ -203,7 +203,8 @@ final class LocalTTSClient: ObservableObject {
     /// Starts speaking `text` and returns immediately. Synthesizes one
     /// sentence at a time and prepares the next sentence while the current
     /// one plays, so speech starts fast and has no gaps.
-    func speakText(_ text: String) {
+    func speakText(_ replyText: String) {
+        let text = Self.textWithoutLinksForSpeech(replyText)
         stopPlayback()
         playbackGeneration += 1
         let thisPlaybackGeneration = playbackGeneration
@@ -349,9 +350,21 @@ final class LocalTTSClient: ObservableObject {
         text.unicodeScalars.contains { (0x0900...0x097F).contains($0.value) }
     }
 
+    /// Replies are spoken, so links are never read out: a "Sources:" section
+    /// (Claude's web search asks for one) is dropped up to the end, a markdown
+    /// link keeps only its name, and a bare URL is removed. Same rules as the
+    /// Rust `text_without_links_for_speech`.
+    static func textWithoutLinksForSpeech(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: #"(?ims)^[ \t]*\**sources?\**[ \t]*:.*\z"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)\b(?:https?://|www\.)\S+"#, with: "", options: .regularExpression)
+    }
+
     /// Also used by CompanionManager to know how many sentences a reply has
     /// when recording an interruption.
-    static func splitIntoSentences(_ text: String) -> [String] {
+    static func splitIntoSentences(_ replyText: String) -> [String] {
+        let text = textWithoutLinksForSpeech(replyText)
         let sentenceTokenizer = NLTokenizer(unit: .sentence)
         sentenceTokenizer.string = text
         return sentenceTokenizer.tokens(for: text.startIndex..<text.endIndex)

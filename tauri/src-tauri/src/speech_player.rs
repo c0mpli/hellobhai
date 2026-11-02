@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter};
 use crate::app_paths;
 use crate::downloads::{download_file_if_missing, extract_archive_entries};
 use crate::platform;
-use crate::sentence_splitter::split_into_sentences;
+use crate::sentence_splitter::{split_into_sentences, text_without_links_for_speech};
 use crate::supertonic::{language_code_for_sentence, load_voice_style, SupertonicEngine, SupertonicVoice, VoiceStyle};
 
 /// Pinned Hugging Face revision of Supertone/supertonic-3.
@@ -206,7 +206,8 @@ impl SpeechPlayer {
         let this_playback_generation = self.playback_generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.set_speaking(true);
         let _ = self.synthesis_thread_sender.send(SynthesisThreadCommand::Speak {
-            text,
+            // The system-voice fallback speaks the whole text, so clean it here too.
+            text: text_without_links_for_speech(&text),
             playback_generation: this_playback_generation,
             voice,
         });

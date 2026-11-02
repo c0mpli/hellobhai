@@ -1,15 +1,32 @@
 //! Splits a reply into sentences so speech can start after the first one and
 //! the next is synthesized while the current one plays.
 
+use regex::Regex;
+use std::sync::LazyLock;
+
 fn is_sentence_terminator(character: char) -> bool {
     matches!(character, '.' | '!' | '?' | '।' | '॥')
+}
+
+/// Replies are spoken, so links are never read out: a "Sources:" section
+/// (Claude's web search asks for one) is dropped up to the end, a markdown link
+/// keeps only its name, and a bare URL is removed. Same rules as the Mac's
+/// `LocalTTSClient.textWithoutLinksForSpeech`.
+pub fn text_without_links_for_speech(text: &str) -> String {
+    static SOURCES_SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?ims)^[ \t]*\**sources?\**[ \t]*:.*\z").unwrap());
+    static MARKDOWN_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\([^)]*\)").unwrap());
+    static BARE_URL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:https?://|www\.)\S+").unwrap());
+    let without_sources = SOURCES_SECTION.replace(text, "");
+    let without_markdown_links = MARKDOWN_LINK.replace_all(&without_sources, "$1");
+    BARE_URL.replace_all(&without_markdown_links, "").into_owned()
 }
 
 /// Splits after . ! ? । ॥ followed by whitespace or the end; trims; drops empties.
 /// Line breaks also end a sentence (the Mac's NLTokenizer does the same), so
 /// list items without punctuation are spoken one by one.
 // ponytail: "e.g. this" splits after "e.g."; harmless for speech, add an abbreviation list if it ever sounds off.
-pub fn split_into_sentences(text: &str) -> Vec<String> {
+pub fn split_into_sentences(reply_text: &str) -> Vec<String> {
+    let text = text_without_links_for_speech(reply_text);
     let mut sentences = Vec::new();
     let mut current_sentence = String::new();
     let mut characters = text.chars().peekable();
@@ -33,6 +50,13 @@ pub fn split_into_sentences(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_and_sources_are_never_spoken() {
+        let reply = "Found it: a Learjet 60, per [CBS](https://cbsnews.com/x). More at www.ntsb.gov today.\n\nSources: [CNN](https://cnn.com/a), [KOMO](https://komonews.com/b)";
+        assert_eq!(split_into_sentences(reply), vec!["Found it: a Learjet 60, per CBS.", "More at  today."]);
+        assert_eq!(text_without_links_for_speech("No links here: just text."), "No links here: just text.");
+    }
 
     #[test]
     fn splits_english_sentences() {
