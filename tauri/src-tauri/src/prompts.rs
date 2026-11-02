@@ -48,6 +48,14 @@ fn system_prompt_text(kind: SystemPromptKind) -> &'static str {
 /// Writes every system prompt to its own file so claude gets `--system-prompt-file`.
 pub fn write_prompt_files(prompts_directory: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(prompts_directory)?;
+    // The voice prompt file carries the whole memory profile, so the folder is
+    // the user's only (0700), like Memory. Set every launch: older installs
+    // made it 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(prompts_directory, std::fs::Permissions::from_mode(0o700))?;
+    }
     for kind in ALL_SYSTEM_PROMPT_KINDS {
         write_prompt_file_with_memory(prompts_directory, kind, "")?;
     }
@@ -68,7 +76,11 @@ pub fn write_prompt_file_with_memory(prompts_directory: &Path, kind: SystemPromp
     let _one_write_at_a_time = PROMPT_FILE_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let prompt_file = prompt_file_path(prompts_directory, kind);
     let temporary_prompt_file = prompt_file.with_extension("txt.partial");
-    std::fs::write(&temporary_prompt_file, prompt_file_text(kind) + appended_memory_text)?;
+    // A leftover temporary file would keep its old mode; a fresh one is 0600.
+    let _ = std::fs::remove_file(&temporary_prompt_file);
+    let mut temporary_file = crate::memory_store::open_private_file(&temporary_prompt_file, false)?;
+    std::io::Write::write_all(&mut temporary_file, (prompt_file_text(kind) + appended_memory_text).as_bytes())?;
+    drop(temporary_file);
     std::fs::rename(&temporary_prompt_file, &prompt_file)
 }
 
@@ -236,6 +248,12 @@ mod tests {
         );
         // Paused or forgotten: the file is the plain prompt again.
         write_prompt_file_with_memory(&prompts_directory, SystemPromptKind::VoiceResponse, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&prompts_directory).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&voice_prompt_file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
         assert!(!std::fs::read_to_string(&voice_prompt_file).unwrap().contains("<user_memory>"));
         std::fs::remove_dir_all(&prompts_directory).unwrap();
     }

@@ -686,8 +686,9 @@ fn create_directory_private(directory: &Path) {
 }
 
 /// Opens a file for writing that only the user can read (0600 on Linux; the
-/// per-user local data folder already limits it on Windows).
-fn open_private_file(file_path: &Path, appends: bool) -> std::io::Result<File> {
+/// per-user local data folder already limits it on Windows). Also used for the
+/// prompt files and Codex instructions, which carry the profile.
+pub(crate) fn open_private_file(file_path: &Path, appends: bool) -> std::io::Result<File> {
     let mut open_options = OpenOptions::new();
     open_options.create(true);
     if appends {
