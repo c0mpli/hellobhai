@@ -26,6 +26,12 @@ final class ClaudeCLI {
     /// A per-call effort (the panels ask for "low") takes precedence.
     var reasoningEffort: String?
 
+    /// Set while memory is paused: claude -p is told not to Read anything in
+    /// bhai's memory folder. Tested on CLI 2.1.316: print mode honours a
+    /// path deny only with the "//" absolute-path prefix. Bash tools
+    /// (osascript, ls) can still reach the folder, which the docs say.
+    var memoryDirectoryPathDeniedWhilePaused: String?
+
     init(model: String = "sonnet") {
         self.model = model
     }
@@ -89,8 +95,13 @@ final class ClaudeCLI {
             "--no-session-persistence"
         ] + (allowsMacTools ? Self.macToolArguments : ["--tools", ""])
           + ((effort ?? reasoningEffort).map { ["--effort", $0] } ?? [])
+          + (memoryDirectoryPathDeniedWhilePaused.map { ["--disallowedTools", "Read(/\($0)/**)"] } ?? [])
         // Run from an empty temp dir so no project CLAUDE.md gets picked up.
         process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        // bhai keeps its own memory; the CLI must not grow a second, hidden one.
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+        process.environment = processEnvironment
 
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()

@@ -42,8 +42,8 @@ awk '
 ' "$mac_sources_directory/CompanionManager.swift" > "$build_directory/ExportedPrompts.swift"
 
 exported_prompt_count=$(grep -c '^    static let ' "$build_directory/ExportedPrompts.swift" || true)
-if [ "$exported_prompt_count" -ne 6 ]; then
-    echo "error: expected 6 prompts in CompanionManager.swift, found $exported_prompt_count" >&2
+if [ "$exported_prompt_count" -ne 7 ]; then
+    echo "error: expected 7 prompts in CompanionManager.swift, found $exported_prompt_count" >&2
     exit 1
 fi
 

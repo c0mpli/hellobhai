@@ -120,6 +120,14 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
     private var isHiddenBecauseSystemPointerIsHidden = false
     private var isClickThroughForComputerActions = false
     private var systemPointerVisibilityTimer: Timer?
+    /// A small pause badge on the orb while memory is paused.
+    private var memoryPausedMarkerView: NSImageView?
+    private var isMemoryPausedMarkerVisible = false
+
+    func setMemoryPausedMarkerVisible(_ shouldShowMarker: Bool) {
+        isMemoryPausedMarkerVisible = shouldShowMarker
+        memoryPausedMarkerView?.isHidden = !shouldShowMarker
+    }
 
     private static func bundledResourceData(named resourceName: String, withExtension fileExtension: String) -> Data? {
         guard let resourceURL = Bundle.main.url(forResource: resourceName, withExtension: fileExtension),
@@ -496,9 +504,27 @@ final class OrbWindowManager: NSObject, ObservableObject, WKNavigationDelegate {
         let mouseHandlingView = OrbMouseHandlingView(frame: contentFrame, orbWindowManager: self)
         mouseHandlingView.autoresizingMask = [.width, .height]
 
+        // Top-right corner, scaling with the orb. Below the mouse view so it
+        // never takes a click.
+        let markerSideLength: CGFloat = 14
+        let createdMemoryPausedMarkerView = NSImageView(frame: NSRect(
+            x: contentFrame.width - markerSideLength - 4,
+            y: contentFrame.height - markerSideLength - 4,
+            width: markerSideLength,
+            height: markerSideLength
+        ))
+        createdMemoryPausedMarkerView.image = NSImage(systemSymbolName: "pause.circle.fill", accessibilityDescription: "Memory paused")
+        createdMemoryPausedMarkerView.contentTintColor = NSColor.white.withAlphaComponent(0.85)
+        createdMemoryPausedMarkerView.imageScaling = .scaleProportionallyUpOrDown
+        createdMemoryPausedMarkerView.autoresizingMask = [.minXMargin, .minYMargin]
+        createdMemoryPausedMarkerView.toolTip = "Memory paused"
+        createdMemoryPausedMarkerView.isHidden = !isMemoryPausedMarkerVisible
+
         let containerView = NSView(frame: contentFrame)
         containerView.addSubview(createdWebView)
+        containerView.addSubview(createdMemoryPausedMarkerView)
         containerView.addSubview(mouseHandlingView)
+        memoryPausedMarkerView = createdMemoryPausedMarkerView
         createdPanel.contentView = containerView
 
         panel = createdPanel

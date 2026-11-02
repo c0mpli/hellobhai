@@ -349,7 +349,9 @@ final class LocalTTSClient: ObservableObject {
         text.unicodeScalars.contains { (0x0900...0x097F).contains($0.value) }
     }
 
-    private static func splitIntoSentences(_ text: String) -> [String] {
+    /// Also used by CompanionManager to know how many sentences a reply has
+    /// when recording an interruption.
+    static func splitIntoSentences(_ text: String) -> [String] {
         let sentenceTokenizer = NLTokenizer(unit: .sentence)
         sentenceTokenizer.string = text
         return sentenceTokenizer.tokens(for: text.startIndex..<text.endIndex)

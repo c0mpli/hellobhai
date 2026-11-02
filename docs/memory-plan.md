@@ -1,6 +1,6 @@
 # Memory and personalization plan
 
-Status: plan only. Nothing here is built yet. This is revision 2 (2026-11-02). It replaces the first draft and applies the security and simplicity critiques. When a critique was not adopted, the reason is given where the topic comes up.
+Status: phase 1 is being built (Mac side done, see "Phase 1 Mac build notes" in §6); phases 2-4 are plan only. This is revision 2 (2026-11-02). It replaces the first draft and applies the security and simplicity critiques. When a critique was not adopted, the reason is given where the topic comes up.
 
 ## 1. Goal and principles
 
@@ -429,6 +429,16 @@ Each phase ships on the Mac, then Tauri, before the next phase starts. Phases 1 
 - `claude_cli.rs`: the env var and pause deny flags. No `--add-dir <Memory>` (home is already added).
 - Audit the log file for transcript content.
 - `tray_and_settings.rs` plus the settings page: the Memory tab and onboarding. The paused marker on the orb.
+
+**Phase 1 Mac build notes (2026-11-02):**
+
+- **Deny test, CLI 2.1.316, print mode** (prompt on stdin, `--strict-mcp-config --setting-sources project --no-session-persistence`, model haiku). `echo` stood in for `open` so nothing launched a browser:
+  - `--allowedTools "Bash(echo:*)" --disallowedTools "Bash(echo http*)"`: `echo https://example.com` was refused ("Permission to use Bash with command echo https://example.com has been denied."), while `echo hello-control` ran. So `--disallowedTools 'Bash(open http*)'` should be honoured. **Per the user's decision it is not applied yet**; voice turns can still `open` URLs.
+  - `--disallowedTools "Read(<abs path>/**)"` (one leading slash) was **not** honoured: the file was read. `"Read(/<abs path>/**)"` (so the rule starts with `//`) **was** honoured, including a path with a space ("File is in a directory that is denied by your permission settings."). Pause uses the `//` form. Bash tools (`osascript`, `ls`) can still reach the folder, which the docs say.
+- Episode lines are written with **sorted keys** (`a, app, error, id, mode, q, steps, tab, tags, ts, v, visual`), so Swift and Rust can produce byte-identical lines; the patch line is `{"interrupted":{"of":5,"sentence":2},"patch":"<id>","v":1}`. `tab` is the `ChatTab` UUID, which is now saved across launches.
+- The closing-idea rule is not edited in the voice prompt (that would change the exported base prompt); the static memory instructions say how each `closing_idea` value overrides it. The memory instructions are exported as `tauri/generated/prompts/memory_instructions.txt`.
+- Trigger lists include Devanagari spellings of the English triggers ("रिमेंबर", "डिलीट"), because Whisper writes Hinglish in Devanagari. The scrub's bare "pass" only fires before "is", ":" or "=", since "mere pass" is everyday Hinglish.
+- Not built yet on the Mac: the Settings switch that puts `episodes/` back into Time Machine, applying `speech_speed` in the TTS (phase 3 per §6), the shared test-vector files in `tauri/generated/memory-sample/`, the cache and `mdfind` checks, and the onboarding is a one-time chat row plus the Settings > Memory text instead of a separate sheet.
 
 **Done when:**
 

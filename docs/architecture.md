@@ -114,3 +114,10 @@ What leaves the machine is the same as on the Mac. The first-launch downloads (a
 ## What leaves your Mac
 
 Only what goes to Claude: your words, the screenshots and recent chat, sent through your own Claude Code login. Listening, speaking, screenshots, drawing and 3D all run locally. There are no hellobhai servers, no analytics and no auto-updater. On first launch it downloads about 1GB of speech models from Hugging Face, once.
+
+**Memory (Mac; Windows and Linux to follow).** bhai keeps a memory folder at `~/Library/Application Support/hellobhai/Memory.noindex/` (folder 0700, files 0600; `.noindex` keeps Spotlight out): `profile.md` (what you asked it to remember and your style settings, capped at 6,000 characters), `profile.md.bak` (for Undo) and `episodes/` (one line per request with your words and bhai's reply, best-effort scrubbed of card, Aadhaar, PAN, UPI, phone, email, OTP and password-like text, kept 60 days and excluded from Time Machine). On top of the above, what leaves your Mac is:
+
+- `profile.md`, inside the voice and chat system prompt on every request (and three style settings plus your style lines in the whiteboard, notes and 3D prompts);
+- the reloaded recent turns of a chat tab after a relaunch, the same way recent chat is always sent.
+
+Episodes themselves are not sent in this version. What your AI provider keeps and whether it trains on it depends on your Claude or OpenAI account settings; hellobhai can't delete their copies, and "forget" can't reach your OS backups. "Memory paused" (Settings > Memory) stops injection and every write and tells `claude -p` not to Read the folder, but bhai's Bash tools (`osascript`, `ls`) can still technically reach it, since they can read your home folder. bhai's `claude -p` runs with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` so the CLI keeps no second memory of its own. The app's log no longer prints your transcript, bhai's replies or the profile.

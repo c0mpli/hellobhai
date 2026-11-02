@@ -109,6 +109,9 @@ func tauriOrbPageHTML() -> String {
         "live_notes": ExportedPrompts.liveNotesSystemPrompt,
         "model3d": ExportedPrompts.model3DSystemPrompt,
         "onboarding_demo": ExportedPrompts.onboardingDemoSystemPrompt,
+        // Appended after voice_response together with the user's profile;
+        // it ends with the guard line that goes right before <user_memory>.
+        "memory_instructions": ExportedPrompts.memoryInstructionsSystemPrompt,
     ]
 
     let substitutionsFilePath = repositoryRoot + "/tauri/prompt-substitutions.json"
