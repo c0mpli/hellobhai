@@ -58,14 +58,14 @@ fn command_line_tool_candidates(command_name: &str, extra_candidates: Vec<PathBu
     candidates
 }
 
-/// `--tools Read,Glob,Grep` (all read-only, allowed without asking) plus `--add-dir`
+/// `--tools Read,Glob,Grep,WebSearch` (all read-only, allowed without asking) plus `--add-dir`
 /// for the home folder and the shared Start menu folder, so Glob can list
 /// installed apps. No shell tool on purpose: a PowerShell allowlist can't be
 /// made tight (`Start-Process` runs any program, `Where-Object { }` runs any
 /// script block). Opening apps, files and links is the `[OPEN:target]` tag,
 /// checked in Rust (`computer_control::allowed_open_target`).
 pub fn voice_turn_tool_arguments(home_directory: &Path) -> Vec<String> {
-    let mut arguments: Vec<String> = ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir"]
+    let mut arguments: Vec<String> = ["--tools", "Read,Glob,Grep,WebSearch", "--allowedTools", "Read", "Glob", "Grep", "WebSearch", "--add-dir"]
         .iter()
         .map(|argument| argument.to_string())
         .collect();
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn voice_turns_get_only_read_only_tools() {
         let arguments = voice_turn_tool_arguments(Path::new(r"C:\Users\bhai"));
-        assert_eq!(&arguments[..8], ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir", r"C:\Users\bhai"]);
+        assert_eq!(&arguments[..10], ["--tools", "Read,Glob,Grep,WebSearch", "--allowedTools", "Read", "Glob", "Grep", "WebSearch", "--add-dir", r"C:\Users\bhai"]);
         assert!(!arguments.iter().any(|argument| argument.contains("PowerShell")));
     }
 }

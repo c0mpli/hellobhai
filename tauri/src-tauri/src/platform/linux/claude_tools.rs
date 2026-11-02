@@ -73,11 +73,11 @@ fn last_absolute_path_line(shell_output: &str) -> Option<PathBuf> {
     (resolved_path.is_absolute() && resolved_path.is_file()).then_some(resolved_path)
 }
 
-/// `--tools Read,Glob,Grep` (all read-only, allowed without asking) plus
+/// `--tools Read,Glob,Grep,WebSearch` (all read-only, allowed without asking) plus
 /// `--add-dir` for the home folder and the system application folders, so Glob
 /// can list installed apps (their .desktop files).
 pub fn voice_turn_tool_arguments(home_directory: &Path) -> Vec<String> {
-    let mut arguments: Vec<String> = ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir"]
+    let mut arguments: Vec<String> = ["--tools", "Read,Glob,Grep,WebSearch", "--allowedTools", "Read", "Glob", "Grep", "WebSearch", "--add-dir"]
         .iter()
         .map(|argument| argument.to_string())
         .collect();
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn voice_turns_get_only_read_only_tools() {
         let arguments = voice_turn_tool_arguments(Path::new("/home/bhai"));
-        assert_eq!(&arguments[..8], ["--tools", "Read,Glob,Grep", "--allowedTools", "Read", "Glob", "Grep", "--add-dir", "/home/bhai"]);
+        assert_eq!(&arguments[..10], ["--tools", "Read,Glob,Grep,WebSearch", "--allowedTools", "Read", "Glob", "Grep", "WebSearch", "--add-dir", "/home/bhai"]);
         assert!(!arguments.iter().any(|argument| argument.contains("Bash")));
     }
 

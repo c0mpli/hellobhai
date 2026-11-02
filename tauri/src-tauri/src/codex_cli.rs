@@ -22,7 +22,7 @@ const CODEX_NOT_FOUND_MESSAGE: &str = "couldn't find the codex CLI. install it, 
 /// Codex has no command allowlist, so voice turns run without any tools; this
 /// note (added to the voice prompt only) steers it to on-screen actions, like
 /// the Mac's `codexCannotRunMacToolsNote`.
-pub const CODEX_CANNOT_USE_FILE_TOOLS_NOTE: &str = "\n\nimportant: in this session you cannot run commands or read files, so the file tools above (Glob, Grep, Read) are not available. open apps, files and links with [OPEN:...], and do everything else with on-screen actions ([CLICK], [TYPE], [KEY]).";
+pub const CODEX_CANNOT_USE_FILE_TOOLS_NOTE: &str = "\n\nimportant: in this session you cannot run commands or read files, so the file tools above (Glob, Grep, Read) and WebSearch are not available. open apps, files and links with [OPEN:...], and do everything else with on-screen actions ([CLICK], [TYPE], [KEY]).";
 
 /// The full `codex exec` argument list, in the Mac's order.
 pub fn codex_exec_arguments(

@@ -198,7 +198,7 @@ final class ClaudeCLI {
     /// powerful one — it's what sends messages and controls apps — so the
     /// system prompt requires a spoken yes before anything irreversible.
     private static let macToolArguments: [String] = [
-        "--tools", "Bash,Read",
+        "--tools", "Bash,Read,WebSearch",
         "--allowedTools",
         "Bash(osascript:*)",
         "Bash(open:*)",
@@ -206,6 +206,8 @@ final class ClaudeCLI {
         "Bash(shortcuts:*)",
         "Bash(ls:*)",
         "Read",
+        // Web search runs on Anthropic's side; only the query leaves, no page is fetched.
+        "WebSearch",
         // Home folder access so it can find files like recent recordings.
         "--add-dir", FileManager.default.homeDirectoryForCurrentUser.path
     ]
