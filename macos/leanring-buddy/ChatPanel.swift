@@ -53,6 +53,9 @@ final class ChatPanelManager: ObservableObject {
     /// Minimized, the chat shrinks to a small tab sticking out of the screen
     /// edge; clicking the tab brings the full chat back.
     @Published private(set) var isMinimized = false
+    /// Bumped each time the chat is opened or expanded, so the message list
+    /// jumps to the newest message.
+    @Published private(set) var chatOpenCount = 0
     /// A reply arrived while minimized, so the tab shows a dot.
     @Published private(set) var hasUnreadReply = false
 
@@ -109,6 +112,7 @@ final class ChatPanelManager: ObservableObject {
         isMinimized = false
         hasUnreadReply = false
         isClosingPanel = false
+        chatOpenCount += 1
         let targetFrame = onScreenFrame(on: currentScreen)
         if !panel.isVisible {
             panel.setFrame(offScreenFrame(for: targetFrame), display: false)
@@ -156,6 +160,7 @@ final class ChatPanelManager: ObservableObject {
     func expandFromMinimized() {
         guard let panel, isMinimized else { return }
         isMinimized = false
+        chatOpenCount += 1
         hasUnreadReply = false
         refreshCurrentScreenIfDisconnected()
         panel.makeKeyAndOrderFront(nil)
@@ -410,8 +415,20 @@ struct ChatPanelView: View {
                     scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
                 }
             }
+            // Opening the chat (or switching tabs) starts at the newest message.
+            .onAppear { scrollToNewestMessage(scrollProxy) }
+            .onChange(of: chatPanelManager.chatOpenCount) { _, _ in scrollToNewestMessage(scrollProxy) }
+            .onChange(of: companionManager.activeChatTabID) { _, _ in scrollToNewestMessage(scrollProxy) }
         }
         .frame(maxHeight: .infinity)
+    }
+
+    private func scrollToNewestMessage(_ scrollProxy: ScrollViewProxy) {
+        guard let lastMessage = companionManager.chatMessages.last else { return }
+        // Next run loop, once the rows have been laid out.
+        DispatchQueue.main.async {
+            scrollProxy.scrollTo(lastMessage.id, anchor: .bottom)
+        }
     }
 
     private var emptyState: some View {

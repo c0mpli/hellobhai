@@ -167,7 +167,11 @@ function applyChatState(chatState) {
   }
   renderTabs(chatState.tabs, chatState.activeChatTabId);
   renderMessages(chatState.messages, chatState.speechProgress);
-  if (chatState.isShown && !chatState.isMinimized && !wasShownAndExpanded) composerInputElement.focus();
+  if (chatState.isShown && !chatState.isMinimized && !wasShownAndExpanded) {
+    composerInputElement.focus();
+    // Opening or expanding the chat starts at the newest message.
+    messageListElement.scrollTop = messageListElement.scrollHeight;
+  }
 }
 
 async function refreshChatState() {
