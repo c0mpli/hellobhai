@@ -40,6 +40,11 @@ sha2 = "0.10"
 # already in the tree through zip.
 tar = { version = "0.4", default-features = false }
 flate2 = "1"
+# Memory (memory_store.rs): local timestamps with the UTC offset, like the Mac's
+# episode lines, and grapheme counts so caps and cuts match Swift's String.count.
+# Both already in the tree through tauri.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+unicode-segmentation = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

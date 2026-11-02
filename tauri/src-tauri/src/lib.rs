@@ -37,6 +37,7 @@ pub mod claude_cli;
 pub mod codex_cli;
 pub mod companion_brain;
 pub mod conversation_history;
+pub mod memory_store;
 pub mod narrated_step_queue;
 pub mod prompts;
 pub mod response_tags;
@@ -54,6 +55,7 @@ use crate::app_state::AppState;
 use crate::board_panel::BoardPanel;
 use crate::chat_panel::ChatPanel;
 use crate::companion_brain::CompanionBrain;
+use crate::memory_store::MemoryStore;
 use crate::model3d_window::Model3DWindow;
 use crate::orb_window::OrbWindow;
 use crate::speech_player::SpeechPlayer;
@@ -89,6 +91,9 @@ pub fn run() {
             chat_panel::open_new_chat_tab,
             chat_panel::switch_to_chat_tab,
             chat_panel::close_chat_tab,
+            chat_panel::respond_to_memory_chat_row,
+            ui_commands::get_memory_status,
+            ui_commands::run_memory_action,
             chat_panel::minimize_chat,
             chat_panel::expand_chat,
             chat_panel::close_chat,
@@ -119,6 +124,11 @@ pub fn run() {
             let (hotkey_sender, hotkey_receiver) = tokio::sync::mpsc::unbounded_channel();
             let orb_window = OrbWindow::new(app_handle.clone(), shared_settings.clone(), hotkey_sender.clone());
             let chat_panel = ChatPanel::new(app_handle.clone(), shared_settings.clone());
+            let memory_store = Arc::new(MemoryStore::new(
+                app_paths::memory_directory(&app_handle),
+                shared_settings.read().unwrap().memory_paused,
+            ));
+            memory_store.start();
 
             let companion_brain = CompanionBrain::new(
                 app_handle.clone(),
@@ -128,7 +138,12 @@ pub fn run() {
                 board_panel.clone(),
                 model3d_window.clone(),
                 chat_panel.clone(),
+                memory_store.clone(),
             );
+            // Pause deny flag, and the prompt files with the current memory.
+            companion_brain.set_memory_paused(memory_store.is_paused());
+            companion_brain.restore_chat_tabs_from_memory();
+            companion_brain.show_memory_introduction_once();
 
             app.manage(AppState {
                 settings: shared_settings.clone(),

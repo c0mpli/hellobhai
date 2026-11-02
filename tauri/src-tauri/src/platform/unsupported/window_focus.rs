@@ -4,6 +4,10 @@ pub fn foreground_window_id() -> Option<isize> {
     None
 }
 
+pub fn foreground_app_name() -> Option<String> {
+    None
+}
+
 pub fn bring_window_to_foreground(window_id: isize) -> Result<(), PlatformError> {
     Err(PlatformError::Unsupported)
 }

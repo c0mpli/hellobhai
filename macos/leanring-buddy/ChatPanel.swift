@@ -401,7 +401,10 @@ struct ChatPanelView: View {
                             textPointSize: companionManager.chatTextSize.pointSize,
                             currentlySpokenSentenceCharacterRange: companionManager.chatSpeechProgress?.chatMessageID == chatMessage.id
                                 ? companionManager.chatSpeechProgress?.currentSentenceCharacterRange
-                                : nil
+                                : nil,
+                            onMemoryChatRowButton: { userAccepted in
+                                companionManager.respondToMemoryChatRow(chatMessageID: chatMessage.id, userAccepted: userAccepted)
+                            }
                         )
                             .padding(.top, isQuestionAfterReply ? 12 : 0)
                             .id(chatMessage.id)
@@ -578,6 +581,8 @@ private struct ChatMessageRow: View {
     /// stays normal, the current sentence is lit in the accent colour and the
     /// rest is dimmed until bhai gets to it.
     var currentlySpokenSentenceCharacterRange: Range<Int>? = nil
+    /// Undo, or Yes (true) / No (false), on a memory row.
+    var onMemoryChatRowButton: (Bool) -> Void = { _ in }
 
     private var replyText: Text {
         guard let sentenceRange = currentlySpokenSentenceCharacterRange,
@@ -593,7 +598,9 @@ private struct ChatMessageRow: View {
     }
 
     var body: some View {
-        if chatMessage.isFromUser {
+        if let memoryChatRow = chatMessage.memoryChatRow {
+            memoryRow(memoryChatRow)
+        } else if chatMessage.isFromUser {
             HStack {
                 Spacer(minLength: 40)
                 Text(chatMessage.text)
@@ -627,6 +634,42 @@ private struct ChatMessageRow: View {
                 Spacer(minLength: 16)
             }
         }
+    }
+
+    /// The app's own memory notes: smaller, in a quiet card, with Undo or
+    /// Yes / No until one is pressed.
+    private func memoryRow(_ memoryChatRow: MemoryChatRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "brain")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.top, 1)
+                Text(chatMessage.text)
+                    .font(.system(size: max(textPointSize - 1, 11)))
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let rowAction = memoryChatRow.action, !memoryChatRow.isResolved {
+                HStack(spacing: 6) {
+                    if rowAction == .undoMemoryChange {
+                        ChatSuggestionChip(text: "Undo") { onMemoryChatRowButton(true) }
+                    } else {
+                        ChatSuggestionChip(text: "Yes") { onMemoryChatRowButton(true) }
+                        ChatSuggestionChip(text: "No") { onMemoryChatRowButton(false) }
+                    }
+                }
+                .padding(.leading, 17)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
     }
 }
 

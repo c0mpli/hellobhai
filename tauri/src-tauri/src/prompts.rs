@@ -14,6 +14,9 @@ pub const MODEL3D_SYSTEM_PROMPT: &str = include_str!("../../generated/prompts/mo
 pub const ONBOARDING_DEMO_SYSTEM_PROMPT: &str = include_str!("../../generated/prompts/onboarding_demo.txt");
 /// Sent instead of a transcript on every agent round after the first.
 pub const AGENT_CONTINUATION_PROMPT: &str = include_str!("../../generated/prompts/agent_continuation.txt");
+/// The memory section the Mac appends after the voice prompt; it ends with the
+/// guard line that goes right before <user_memory> (`MemoryStore::prompt_block`).
+pub const MEMORY_INSTRUCTIONS_SYSTEM_PROMPT: &str = include_str!("../../generated/prompts/memory_instructions.txt");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SystemPromptKind {
@@ -45,10 +48,40 @@ fn system_prompt_text(kind: SystemPromptKind) -> &'static str {
 /// Writes every system prompt to its own file so claude gets `--system-prompt-file`.
 pub fn write_prompt_files(prompts_directory: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(prompts_directory)?;
+    // The voice prompt file carries the whole memory profile, so the folder is
+    // the user's only (0700), like Memory. Set every launch: older installs
+    // made it 0755.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(prompts_directory, std::fs::Permissions::from_mode(0o700))?;
+    }
     for kind in ALL_SYSTEM_PROMPT_KINDS {
-        std::fs::write(prompt_file_path(prompts_directory, kind), prompt_file_text(kind))?;
+        write_prompt_file_with_memory(prompts_directory, kind, "")?;
     }
     Ok(())
+}
+
+/// One prompt file at a time, so two requests starting together never rename
+/// over each other's temporary file.
+static PROMPT_FILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Rewrites one prompt file as the prompt plus `appended_memory_text` (the
+/// memory block for the voice prompt, the style excerpt for the board, notes
+/// and 3D, empty while memory is paused), through a temporary file and a
+/// rename so a claude starting meanwhile never reads half a file. The Mac
+/// appends the same text to the prompt string it passes; claude here reads a
+/// file (`--system-prompt-file`), and Codex copies the same file.
+pub fn write_prompt_file_with_memory(prompts_directory: &Path, kind: SystemPromptKind, appended_memory_text: &str) -> std::io::Result<()> {
+    let _one_write_at_a_time = PROMPT_FILE_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let prompt_file = prompt_file_path(prompts_directory, kind);
+    let temporary_prompt_file = prompt_file.with_extension("txt.partial");
+    // A leftover temporary file would keep its old mode; a fresh one is 0600.
+    let _ = std::fs::remove_file(&temporary_prompt_file);
+    let mut temporary_file = crate::memory_store::open_private_file(&temporary_prompt_file, false)?;
+    std::io::Write::write_all(&mut temporary_file, (prompt_file_text(kind) + appended_memory_text).as_bytes())?;
+    drop(temporary_file);
+    std::fs::rename(&temporary_prompt_file, &prompt_file)
 }
 
 /// The prompt as written to its file: Linux swaps the Windows wording for its own.
@@ -197,6 +230,31 @@ mod tests {
         for kind in ALL_SYSTEM_PROMPT_KINDS {
             assert_eq!(std::fs::read_to_string(prompt_file_path(&prompts_directory, kind)).unwrap(), prompt_file_text(kind));
         }
+        std::fs::remove_dir_all(&prompts_directory).unwrap();
+    }
+
+    #[test]
+    fn memory_is_appended_to_the_prompt_file_and_removed_again() {
+        // The exported memory section ends with the guard line that sits right before <user_memory>.
+        assert!(MEMORY_INSTRUCTIONS_SYSTEM_PROMPT.starts_with("memory:\n"));
+        assert!(MEMORY_INSTRUCTIONS_SYSTEM_PROMPT.trim_end().ends_with("say where it came from in a few words."));
+        let prompts_directory = std::env::temp_dir().join(format!("hellobhai-memory-prompts-test-{}", std::process::id()));
+        write_prompt_files(&prompts_directory).unwrap();
+        let voice_prompt_file = prompt_file_path(&prompts_directory, SystemPromptKind::VoiceResponse);
+        write_prompt_file_with_memory(&prompts_directory, SystemPromptKind::VoiceResponse, "\n\n<user_memory>\nx</user_memory>").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&voice_prompt_file).unwrap(),
+            prompt_file_text(SystemPromptKind::VoiceResponse) + "\n\n<user_memory>\nx</user_memory>"
+        );
+        // Paused or forgotten: the file is the plain prompt again.
+        write_prompt_file_with_memory(&prompts_directory, SystemPromptKind::VoiceResponse, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&prompts_directory).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&voice_prompt_file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert!(!std::fs::read_to_string(&voice_prompt_file).unwrap().contains("<user_memory>"));
         std::fs::remove_dir_all(&prompts_directory).unwrap();
     }
 }

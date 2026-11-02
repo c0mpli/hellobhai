@@ -50,6 +50,15 @@ pub struct Settings {
     pub selected_orb_color: u8,
     /// Global physical pixels of the orb's top-left corner after the user dragged it; None = default spot.
     pub orb_window_origin: Option<(i32, i32)>,
+    /// "Memory paused" (Mac `memoryPaused`): no memory in prompts, no tags, no
+    /// episodes, no session restore. Memory is on by default.
+    pub memory_paused: bool,
+    /// The one-time chat row that says bhai now has memory (Mac `hasShownMemoryIntroduction`).
+    pub has_shown_memory_introduction: bool,
+    /// The chat tabs open at quit and the active one (Mac `savedChatTabIDs`,
+    /// `savedActiveChatTabID`), so session restore can put their recent turns back.
+    pub saved_chat_tab_ids: Vec<u64>,
+    pub saved_active_chat_tab_id: Option<u64>,
 }
 
 impl Default for Settings {
@@ -70,6 +79,10 @@ impl Default for Settings {
             orb_side_length: DEFAULT_ORB_SIDE_LENGTH,
             selected_orb_color: DEFAULT_ORB_COLOR,
             orb_window_origin: None,
+            memory_paused: false,
+            has_shown_memory_introduction: false,
+            saved_chat_tab_ids: Vec::new(),
+            saved_active_chat_tab_id: None,
         }
     }
 }
@@ -144,6 +157,10 @@ mod tests {
                 "orbSideLength": 88.0,
                 "selectedOrbColor": 8,
                 "orbWindowOrigin": null,
+                "memoryPaused": false,
+                "hasShownMemoryIntroduction": false,
+                "savedChatTabIds": [],
+                "savedActiveChatTabId": null,
             })
         );
 

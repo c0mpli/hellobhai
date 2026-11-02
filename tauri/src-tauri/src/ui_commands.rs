@@ -105,6 +105,8 @@ pub enum SettingChange {
     OrbSideLength(f64),
     SelectedOrbColor(u8),
     PushToTalkShortcut(PushToTalkShortcutOption),
+    /// "Memory paused": the pause button in the panel header or Settings > Memory.
+    MemoryPaused(bool),
 }
 
 /// Applies a change after checking it; an invalid value changes nothing and
@@ -147,6 +149,7 @@ pub fn apply_setting_change(settings: &mut Settings, setting_change: SettingChan
             }
             settings.push_to_talk_shortcut = push_to_talk_shortcut;
         }
+        SettingChange::MemoryPaused(memory_paused) => settings.memory_paused = memory_paused,
     }
     true
 }
@@ -207,8 +210,62 @@ pub async fn change_setting(change: SettingChange, app: AppHandle) {
         SettingChange::VoiceBuddyStyle(_) => state.orb_window.apply_voice_buddy_style(),
         SettingChange::OrbSideLength(_) => state.orb_window.apply_orb_size(),
         SettingChange::SelectedOrbColor(_) => state.orb_window.apply_orb_color(),
+        SettingChange::MemoryPaused(memory_paused) => {
+            state.companion_brain.set_memory_paused(memory_paused);
+            state.orb_window.apply_memory_paused_marker();
+        }
         SettingChange::SpeaksVoiceReplies(_) | SettingChange::PushToTalkShortcut(_) => {}
     }
+}
+
+/// For Settings > Memory: re-reads profile.md (picking up edits made in an
+/// editor) and says whether it needs fixing.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryStatusSnapshot {
+    pub profile_problem_description: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_memory_status(state: State<'_, AppState>) -> MemoryStatusSnapshot {
+    let memory_store = state.companion_brain.memory_store();
+    let _ = memory_store.load_validated_profile();
+    MemoryStatusSnapshot { profile_problem_description: memory_store.profile_problem_description() }
+}
+
+/// The Settings > Memory buttons. Returns the line shown under them, if any.
+/// "Forget everything" asks for a second click in the page first.
+#[tauri::command]
+pub fn run_memory_action(action: String, state: State<'_, AppState>) -> Option<String> {
+    let memory_store = state.companion_brain.memory_store();
+    let result_text = match action.as_str() {
+        "openFolder" => {
+            memory_store.start();
+            if let Err(open_error) = platform::open_with_shell(&memory_store.memory_directory().to_string_lossy()) {
+                eprintln!("memory: couldn't open the memory folder: {open_error}");
+            }
+            return None;
+        }
+        "undo" => {
+            if memory_store.undo_last_change() {
+                "Undone."
+            } else {
+                "Nothing to undo."
+            }
+        }
+        "forgetToday" => {
+            memory_store.forget_today();
+            "Today's chats were removed from bhai's memory."
+        }
+        "forgetEverything" => {
+            memory_store.forget_everything();
+            "Everything was removed from bhai's memory."
+        }
+        _ => return None,
+    };
+    // The prompt files on disk must not keep what was just removed.
+    state.companion_brain.rewrite_memory_prompt_files();
+    Some(result_text.to_string())
 }
 
 #[tauri::command]
@@ -323,6 +380,11 @@ mod tests {
         assert_eq!(change, SettingChange::PushToTalkShortcut(PushToTalkShortcutOption::CtrlWin));
         let change: SettingChange = serde_json::from_str(r#"{"name":"chatTextSize","value":"extraLarge"}"#).unwrap();
         assert_eq!(change, SettingChange::ChatTextSize(ChatTextSize::ExtraLarge));
+        let change: SettingChange = serde_json::from_str(r#"{"name":"memoryPaused","value":true}"#).unwrap();
+        assert_eq!(change, SettingChange::MemoryPaused(true));
+        let mut settings = Settings::default();
+        assert!(apply_setting_change(&mut settings, change));
+        assert!(settings.memory_paused);
         // An unknown text size never reaches the settings.
         assert!(serde_json::from_str::<SettingChange>(r#"{"name":"chatTextSize","value":"huge"}"#).is_err());
     }

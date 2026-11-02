@@ -5,11 +5,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::conversation_history::ConversationEntry;
+use crate::memory_store::memory_directory_read_deny_rule;
 use crate::platform;
 use crate::stream_json::{build_stdin_message, fold_history_into_prompt, parse_output_line, ClaudeOutputEvent, LabeledImage};
 
@@ -28,8 +29,16 @@ pub struct ClaudeRequest<'a> {
 
 const CLAUDE_NOT_FOUND_MESSAGE: &str = "couldn't find the claude CLI. install claude code and run `claude` once to log in.";
 
+/// Set while memory is paused (Mac `memoryDirectoryPathDeniedWhilePaused`):
+/// every claude call is told not to Read anything in bhai's memory folder.
+static MEMORY_DIRECTORY_DENIED_WHILE_PAUSED: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+pub fn set_memory_directory_denied_while_paused(memory_directory: Option<PathBuf>) {
+    *MEMORY_DIRECTORY_DENIED_WHILE_PAUSED.lock().unwrap() = memory_directory;
+}
+
 /// Every argument after the executable, in the Mac's order.
-fn claude_arguments(request: &ClaudeRequest<'_>, home_directory: &Path) -> Vec<String> {
+fn claude_arguments(request: &ClaudeRequest<'_>, home_directory: &Path, memory_directory_denied_while_paused: Option<&Path>) -> Vec<String> {
     let mut arguments: Vec<String> = [
         "-p",
         "--input-format",
@@ -60,6 +69,9 @@ fn claude_arguments(request: &ClaudeRequest<'_>, home_directory: &Path) -> Vec<S
     if let Some(effort) = request.effort {
         arguments.extend(["--effort".to_string(), effort.to_string()]);
     }
+    if let Some(memory_directory) = memory_directory_denied_while_paused {
+        arguments.extend(["--disallowedTools".to_string(), memory_directory_read_deny_rule(memory_directory)]);
+    }
     arguments
 }
 
@@ -82,9 +94,12 @@ pub async fn run_claude_streaming(
     let prompt_text = fold_history_into_prompt(&request.history, &request.user_prompt);
     let stdin_message = build_stdin_message(&request.images, &prompt_text);
 
+    let memory_directory_denied_while_paused = MEMORY_DIRECTORY_DENIED_WHILE_PAUSED.lock().unwrap().clone();
     let mut command = tokio::process::Command::new(&claude_executable);
     command
-        .args(claude_arguments(&request, &home_directory()))
+        .args(claude_arguments(&request, &home_directory(), memory_directory_denied_while_paused.as_deref()))
+        // bhai keeps its own memory; the CLI must not grow a second, hidden one.
+        .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
         // Run from the temp dir so no project CLAUDE.md gets picked up.
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
@@ -174,7 +189,7 @@ mod tests {
             effort: Some("low"),
             model: "sonnet".to_string(),
         };
-        let arguments = claude_arguments(&request, Path::new("home"));
+        let arguments = claude_arguments(&request, Path::new("home"), None);
         let mut expected_arguments: Vec<String> = [
             "-p",
             "--input-format",
@@ -207,5 +222,13 @@ mod tests {
             .map(|argument| argument.to_string()),
         );
         assert_eq!(arguments, expected_arguments);
+
+        // Memory paused: the Read deny rule goes last, with the "//" absolute-path form.
+        let paused_arguments = claude_arguments(&request, Path::new("home"), Some(Path::new("/home/jash/.local/share/ai.hellobhai.desktop/Memory")));
+        assert_eq!(
+            paused_arguments[paused_arguments.len() - 2..],
+            ["--disallowedTools".to_string(), "Read(//home/jash/.local/share/ai.hellobhai.desktop/Memory/**)".to_string()]
+        );
+        assert_eq!(paused_arguments[..paused_arguments.len() - 2], arguments[..]);
     }
 }

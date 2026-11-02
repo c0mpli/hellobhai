@@ -109,6 +109,8 @@ struct CompanionPanelView: View {
                 chatSection
             case .buddy:
                 buddySection
+            case .memory:
+                PanelMemorySection(companionManager: companionManager, memoryStore: companionManager.memoryStore)
             }
         }
         .padding(16)
@@ -137,6 +139,8 @@ struct CompanionPanelView: View {
             Text(statusText)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
+
+            PanelHeaderMemoryPauseButton(companionManager: companionManager, memoryStore: companionManager.memoryStore)
 
             Button(action: {
                 NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
@@ -812,6 +816,125 @@ private struct PanelVoiceSection: View {
     }
 }
 
+// MARK: - Memory Section
+
+/// One click from opening the panel: pauses or resumes memory. Observes
+/// MemoryStore itself so the icon follows the Settings > Memory toggle too.
+private struct PanelHeaderMemoryPauseButton: View {
+    let companionManager: CompanionManager
+    @ObservedObject var memoryStore: MemoryStore
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: {
+            companionManager.setMemoryPaused(!memoryStore.isPaused)
+        }) {
+            Image(systemName: memoryStore.isPaused ? "pause.circle.fill" : "pause.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(memoryStore.isPaused ? DS.Colors.warning : DS.Colors.textTertiary)
+                .frame(width: 20, height: 20)
+                .background(
+                    Circle()
+                        .fill(Color.white.opacity(isHovered ? 0.14 : 0.0))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(memoryStore.isPaused ? "Memory paused. Click to resume." : "Pause memory")
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+    }
+}
+
+/// Its own view so it can observe MemoryStore directly (pause state and
+/// "file needs fixing" change without CompanionManager publishing).
+private struct PanelMemorySection: View {
+    let companionManager: CompanionManager
+    @ObservedObject var memoryStore: MemoryStore
+    /// "Forget everything" needs a second click to confirm.
+    @State private var isConfirmingForgetEverything = false
+    @State private var lastActionResultText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            PanelSectionLabel(title: "Memory")
+
+            Text("bhai saves what you ask it to remember (\"yaad rakhna\", \"remember\") and your recent chats (60 days) in plain files on this Mac. What it remembers is sent with each request to your own Claude or Codex login. Forgetting can't reach your OS backups or your AI provider's copies.")
+                .font(.system(size: 11))
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 6)
+
+            if let profileProblemDescription = memoryStore.profileProblemDescription {
+                Text("Memory file needs fixing: \(profileProblemDescription). Until then bhai uses no saved memory.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(DS.Colors.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 6)
+            }
+
+            PanelSettingsRow(iconName: "pause.circle", label: "Pause memory", subtitle: memoryStore.isPaused ? "bhai isn't using or saving memory" : "bhai uses and saves memory") {
+                Toggle("", isOn: Binding(
+                    get: { memoryStore.isPaused },
+                    set: { shouldPause in companionManager.setMemoryPaused(shouldPause) }
+                ))
+                .toggleStyle(.switch)
+                .tint(DS.Colors.overlayCursorColor)
+                .controlSize(.mini)
+                .labelsHidden()
+                .pointerCursor()
+            }
+
+            memoryActionRow(iconName: "folder", label: "Open memory folder") {
+                memoryStore.start()
+                NSWorkspace.shared.open(memoryStore.memoryDirectoryURL)
+            }
+            memoryActionRow(iconName: "arrow.uturn.backward", label: "Undo last change") {
+                lastActionResultText = memoryStore.undoLastChange() ? "Undone." : "Nothing to undo."
+            }
+            memoryActionRow(iconName: "calendar.badge.minus", label: "Forget today") {
+                memoryStore.forgetToday()
+                lastActionResultText = "Today's chats were removed from bhai's memory."
+            }
+            memoryActionRow(
+                iconName: "trash",
+                label: isConfirmingForgetEverything ? "Click again to forget everything" : "Forget everything"
+            ) {
+                if isConfirmingForgetEverything {
+                    memoryStore.forgetEverything()
+                    isConfirmingForgetEverything = false
+                    lastActionResultText = "Everything was removed from bhai's memory."
+                } else {
+                    isConfirmingForgetEverything = true
+                }
+            }
+
+            if let lastActionResultText {
+                Text(lastActionResultText)
+                    .font(.system(size: 11))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
+            }
+        }
+        // Picks up edits made in an editor since the panel last opened.
+        .onAppear { _ = memoryStore.loadValidatedProfile() }
+    }
+
+    private func memoryActionRow(iconName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            PanelSettingsRow(iconName: iconName, label: label) {
+                EmptyView()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .panelRowHoverHighlight()
+        .pointerCursor()
+    }
+}
+
 // MARK: - Shared Panel Components
 
 private enum PanelSettingsTab: String, CaseIterable {
@@ -819,6 +942,7 @@ private enum PanelSettingsTab: String, CaseIterable {
     case voice
     case chat
     case buddy
+    case memory
 
     var title: String {
         switch self {
@@ -826,6 +950,7 @@ private enum PanelSettingsTab: String, CaseIterable {
         case .voice: return "Voice"
         case .chat: return "Chat"
         case .buddy: return "Buddy"
+        case .memory: return "Memory"
         }
     }
 }

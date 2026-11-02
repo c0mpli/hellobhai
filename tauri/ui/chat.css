@@ -160,6 +160,27 @@ body.is-minimized .chat-card { display: none; }
 .spoken-sentence { color: var(--accent-text); }
 .not-yet-spoken { color: var(--text-tertiary); }
 
+/* The app's own memory notes ("Remembered: ...", "Save this?"), like the Mac's memoryRow. */
+.memory-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.memory-row-line { display: flex; align-items: flex-start; gap: 6px; }
+.memory-row-icon { color: var(--text-tertiary); display: flex; padding-top: 2px; flex: none; }
+.memory-row-text {
+  font-size: max(calc(var(--chat-text-size) - 1px), 11px);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+  user-select: text;
+}
+.memory-row-buttons { display: flex; gap: 6px; padding-left: 17px; }
+
 .thinking-dots { display: flex; gap: 4px; }
 .thinking-dots span {
   width: 6px;

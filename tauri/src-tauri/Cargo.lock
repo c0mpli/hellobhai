@@ -1579,6 +1579,7 @@ name = "hellobhai"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "cpal",
  "flate2",
  "gtk",
@@ -1603,6 +1604,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tokio",
  "unicode-normalization",
+ "unicode-segmentation",
  "windows",
  "x11-dl",
  "zbus",

@@ -9,6 +9,7 @@
 //! await, which also kills a running `claude` (kill_on_drop). No lock is ever
 //! held across an await.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -21,12 +22,16 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::app_paths;
 use crate::audio_capture::PushToTalkRecorder;
 use crate::board_panel::{BoardPanel, LiveContentKind};
-use crate::chat_conversation::{chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatConversation, ChatHotkeyAction};
+use crate::chat_conversation::{
+    chat_display_text_for_partial_reply, chat_hotkey_action, reply_routing, ChatConversation, ChatHotkeyAction, ChatTabs,
+    MemoryChatRowAction,
+};
 use crate::chat_panel::ChatPanel;
-use crate::claude_cli::{home_directory, ClaudeRequest};
+use crate::claude_cli::{home_directory, set_memory_directory_denied_while_paused, ClaudeRequest};
 use crate::brain_engine::ask_selected_brain;
 use crate::computer_control;
 use crate::conversation_history::{ConversationEntry, ConversationHistory};
+use crate::memory_store::{self, EpisodeRecord, MemoryProfile, MemoryStore, MemoryTag, MemoryTagOutcome};
 use crate::model3d_window::Model3DWindow;
 use crate::narrated_step_queue::{NarratedStepQueue, StreamedLineForwarder};
 use crate::orb_window::OrbClickThroughWhileActing;
@@ -38,6 +43,7 @@ use crate::push_to_talk::HotkeyEvent;
 use crate::response_tags::{parse_point_tag, parse_reply, CircleTag, ComputerAction};
 use crate::screen_capture::{self, ScreenCapture};
 use crate::screen_mapping::{self, PhysicalRect};
+use crate::sentence_splitter::split_into_sentences;
 use crate::settings::{self, SharedSettings};
 use crate::speech_player::{SpeechPlayer, SpeechProgressEvent};
 use crate::stream_json::LabeledImage;
@@ -80,6 +86,11 @@ struct BrainState {
     user_drawn_strokes: Vec<Vec<(i32, i32)>>,
     /// Set on release when strokes exist; a transcript clears it, otherwise "What is this?" is sent.
     user_drawn_strokes_awaiting_request: bool,
+    /// The episode of the most recent request, so an interruption during its
+    /// speech can be recorded against it after the response task has ended.
+    last_episode_id: Option<String>,
+    /// How many sentences the reply being spoken has, for the interruption patch line.
+    sentence_count_of_current_spoken_reply: Option<usize>,
 }
 
 /// Owns the recorder, response and visual task handles, conversation history,
@@ -92,10 +103,133 @@ pub struct CompanionBrain {
     board_panel: Arc<BoardPanel>,
     model3d_window: Arc<Model3DWindow>,
     chat_panel: Arc<ChatPanel>,
+    /// bhai's local memory: profile, tags, episodes and session restore.
+    memory_store: Arc<MemoryStore>,
+    /// Sentences started since the current reply began speaking (counted by
+    /// the speech progress observer), for the interruption patch line.
+    sentences_started_in_current_spoken_reply: Arc<AtomicUsize>,
     // In a Mutex so the brain stays Sync whatever channel the recorder holds inside.
     push_to_talk_recorder: Mutex<PushToTalkRecorder>,
     state: Mutex<BrainState>,
 }
+
+/// What one request has done so far, for its episode line.
+#[derive(Default)]
+struct EpisodeInProgress {
+    final_replies: Vec<String>,
+    agent_steps_run: usize,
+    visual_kind: Option<&'static str>,
+    memory_tag_names: Vec<String>,
+    error_description: Option<String>,
+    /// False when the request was cancelled (an abort drops the task first).
+    finished: bool,
+}
+
+/// Writes exactly one episode line however the request ends (finished, failed,
+/// or aborted by the hotkey, a new request or a tab switch), like the Mac's
+/// `defer` at the top of the response task. A request that changed memory also
+/// rewrites the prompt files, so the next request sees the change.
+struct EpisodeWriteGuard {
+    brain: Arc<CompanionBrain>,
+    episode_id: String,
+    start_time: chrono::DateTime<chrono::Local>,
+    tab_id: String,
+    is_typed_chat: bool,
+    request_text: String,
+    frontmost_app_name: Option<String>,
+    episode: EpisodeInProgress,
+}
+
+impl Drop for EpisodeWriteGuard {
+    fn drop(&mut self) {
+        let error_description = if self.episode.finished { self.episode.error_description.take() } else { Some("cancelled".to_string()) };
+        let request_applied_memory_tags = !self.episode.memory_tag_names.is_empty();
+        self.brain.memory_store.append_episode(EpisodeRecord {
+            episode_id: &self.episode_id,
+            start_time: self.start_time,
+            tab_id: &self.tab_id,
+            is_typed_chat: self.is_typed_chat,
+            request_text: &self.request_text,
+            reply_text: &self.episode.final_replies.join(" "),
+            frontmost_app_name: self.frontmost_app_name.take(),
+            visual_kind: self.episode.visual_kind.map(str::to_string),
+            agent_step_count: self.episode.agent_steps_run,
+            memory_tag_names: std::mem::take(&mut self.episode.memory_tag_names),
+            error_description,
+        });
+        // Not mid-request: like the Mac, every step of a request uses the
+        // prompt as it was when the request started.
+        if request_applied_memory_tags {
+            self.brain.rewrite_memory_prompt_files();
+        }
+    }
+}
+
+/// Apps whose name is never written into an episode: the Mac's list plus the
+/// Windows and Linux names of the same password managers and the system
+/// credential prompts. Compared without case.
+const APP_NAMES_NEVER_RECORDED_IN_EPISODES: &[&str] = &[
+    "1Password", "1Password 7", "Bitwarden", "Dashlane", "Enpass", "KeePassXC", "Keeper Password Manager", "Keychain Access", "LastPass",
+    "Passwords", "Proton Pass", "SecurityAgent", "KeePass", "keepassxc", "keeper", "ProtonPass", "CredentialUIBroker", "consent", "seahorse",
+    "kwalletmanager5", "kwalletmanager6", "polkit-gnome-authentication-agent-1",
+];
+
+fn app_name_for_episode(foreground_app_name: Option<String>) -> Option<String> {
+    foreground_app_name.filter(|app_name| {
+        !APP_NAMES_NEVER_RECORDED_IN_EPISODES.iter().any(|never_recorded_name| never_recorded_name.eq_ignore_ascii_case(app_name))
+    })
+}
+
+/// The chat row for the result of a memory tag or a row button (Mac
+/// `appendMemoryChatRow`); None when the result shows no row.
+fn memory_chat_row_for_outcome(memory_tag_outcome: MemoryTagOutcome) -> Option<(String, Option<MemoryChatRowAction>)> {
+    match memory_tag_outcome {
+        MemoryTagOutcome::Remembered { text } => Some((format!("Remembered: {text}"), Some(MemoryChatRowAction::UndoMemoryChange))),
+        MemoryTagOutcome::StyleSet { key, value } => Some((format!("Saved setting: {key} {value}"), Some(MemoryChatRowAction::UndoMemoryChange))),
+        MemoryTagOutcome::StyleAlreadySet { key, value } => Some((format!("Setting already saved: {key} {value}"), None)),
+        MemoryTagOutcome::Forgot { removed_line_texts } => Some((
+            format!(
+                "Removed from bhai's memory: {}. Copies in your OS backups and at your AI provider are not affected.",
+                removed_line_texts.join("; ")
+            ),
+            Some(MemoryChatRowAction::UndoMemoryChange),
+        )),
+        MemoryTagOutcome::NeedsSaveConfirmation(memory_tag) => {
+            let row_text = match &memory_tag {
+                MemoryTag::Remember { text, .. } => format!("Save \"{text}\" to bhai's memory?"),
+                MemoryTag::Style { key, value } => format!("Save setting {key} {value}?"),
+                MemoryTag::Forget { .. } => return None,
+            };
+            Some((row_text, Some(MemoryChatRowAction::ConfirmSaveSuggestion(memory_tag))))
+        }
+        MemoryTagOutcome::NeedsRemoveAllConfirmation { matching_bullet_lines, forget_match_text } => {
+            let matching_line_list: Vec<String> = matching_bullet_lines
+                .iter()
+                .map(|bullet_line| format!("- {}", MemoryProfile::line_text_of_bullet_line(bullet_line).unwrap_or_else(|| bullet_line.clone())))
+                .collect();
+            Some((
+                format!("Remove all {} from bhai's memory?\n{}", matching_bullet_lines.len(), matching_line_list.join("\n")),
+                Some(MemoryChatRowAction::ConfirmRemoveMatchingLines { matching_bullet_lines, forget_match_text }),
+            ))
+        }
+        MemoryTagOutcome::NothingMatched { match_text } => Some((
+            if match_text.is_empty() {
+                "Nothing matched in bhai's memory.".to_string()
+            } else {
+                format!("Nothing matched \"{match_text}\" in bhai's memory.")
+            },
+            None,
+        )),
+        MemoryTagOutcome::Rejected { reason } => Some((format!("Not saved to memory: {reason}."), None)),
+        MemoryTagOutcome::AlreadyRemembered | MemoryTagOutcome::DroppedWithoutTrigger => None,
+    }
+}
+
+/// Memory is on by default, so the first launch with it says what is stored,
+/// where, and what is sent (the Mac's text, "this Mac" made "this computer").
+const MEMORY_INTRODUCTION_TEXT: &str = "bhai now has memory. Say \"yaad rakhna\" or \"remember\" and it saves that in a plain file on this computer. Your chats come back after a restart (kept 60 days). What bhai remembers is sent with each request to your own Claude or Codex login, the same way your questions are. Pause it, undo, or forget everything in Settings > Memory.";
+/// Same cap as the live conversation history.
+const MAXIMUM_RESTORED_EXCHANGES_PER_TAB: usize = 20;
 
 /// Finishes this request's chat rows however the request ends, including an
 /// abort (which drops the future before any code after an await could run):
@@ -194,15 +328,22 @@ impl CompanionBrain {
         board_panel: Arc<BoardPanel>,
         model3d_window: Arc<Model3DWindow>,
         chat_panel: Arc<ChatPanel>,
+        memory_store: Arc<MemoryStore>,
     ) -> Arc<Self> {
         let app_for_audio_level = app.clone();
         let push_to_talk_recorder = PushToTalkRecorder::new(Box::new(move |audio_level| {
             emit_to_overlays(&app_for_audio_level, "audio-level", json!({ "level": audio_level }));
         }));
-        // The chat follows along while a reply is spoken (Mac `onSentenceStartedPlaying`).
+        // The chat follows along while a reply is spoken (Mac `onSentenceStartedPlaying`),
+        // and the count says how far bhai got if the user cuts it off.
         let chat_panel_for_speech_progress = chat_panel.clone();
+        let sentences_started_in_current_spoken_reply = Arc::new(AtomicUsize::new(0));
+        let sentences_started_for_speech_progress = sentences_started_in_current_spoken_reply.clone();
         speech_player.set_speech_progress_observer(Box::new(move |speech_progress_event| match speech_progress_event {
-            SpeechProgressEvent::SentenceStartedPlaying(sentence) => chat_panel_for_speech_progress.advance_chat_speech_progress(sentence),
+            SpeechProgressEvent::SentenceStartedPlaying(sentence) => {
+                sentences_started_for_speech_progress.fetch_add(1, Ordering::SeqCst);
+                chat_panel_for_speech_progress.advance_chat_speech_progress(sentence)
+            }
             SpeechProgressEvent::SpeechStopped => chat_panel_for_speech_progress.clear_chat_speech_progress(),
         }));
         Arc::new(CompanionBrain {
@@ -213,6 +354,8 @@ impl CompanionBrain {
             board_panel,
             model3d_window,
             chat_panel,
+            memory_store,
+            sentences_started_in_current_spoken_reply,
             push_to_talk_recorder: Mutex::new(push_to_talk_recorder),
             state: Mutex::new(BrainState {
                 voice_state: VoiceState::Idle,
@@ -226,8 +369,145 @@ impl CompanionBrain {
                 conversation_history: ConversationHistory::new(),
                 user_drawn_strokes: Vec::new(),
                 user_drawn_strokes_awaiting_request: false,
+                last_episode_id: None,
+                sentence_count_of_current_spoken_reply: None,
             }),
         })
+    }
+
+    pub fn memory_store(&self) -> &MemoryStore {
+        &self.memory_store
+    }
+
+    // MARK: Memory (Mac `setMemoryPaused`, `recordInterruptionIfSpeaking`, `respondToMemoryChatRow`)
+
+    /// Writes the voice, board, notes and 3D prompt files with the current
+    /// memory (or none while paused). Called when a request starts, after any
+    /// memory change, on pause and on forget, so the files on disk never hold
+    /// memory the user removed.
+    pub fn rewrite_memory_prompt_files(&self) {
+        let prompts_directory = app_paths::prompts_directory(&self.app);
+        let style_excerpt = self.memory_store.style_excerpt();
+        let prompt_files_with_memory = [
+            (SystemPromptKind::VoiceResponse, self.memory_store.prompt_block(prompts::MEMORY_INSTRUCTIONS_SYSTEM_PROMPT)),
+            (SystemPromptKind::VisualExplanation, style_excerpt.clone()),
+            (SystemPromptKind::LiveNotes, style_excerpt.clone()),
+            (SystemPromptKind::Model3D, style_excerpt),
+        ];
+        for (system_prompt_kind, appended_memory_text) in prompt_files_with_memory {
+            if let Err(write_error) = prompts::write_prompt_file_with_memory(&prompts_directory, system_prompt_kind, &appended_memory_text) {
+                eprintln!("memory: couldn't write the {system_prompt_kind:?} prompt file: {write_error}");
+            }
+        }
+    }
+
+    /// Pause: no memory in prompts, no tags, no episodes, and claude -p is told
+    /// not to Read the memory folder. Files are kept. The setting itself is
+    /// saved by `change_setting`.
+    pub fn set_memory_paused(&self, should_pause: bool) {
+        self.memory_store.set_paused(should_pause);
+        set_memory_directory_denied_while_paused(should_pause.then(|| self.memory_store.memory_directory().to_path_buf()));
+        self.rewrite_memory_prompt_files();
+    }
+
+    /// Speech outlives the response task (chat replies aren't awaited and
+    /// narrated steps speak from the visual task), so an interruption is
+    /// recorded here, at the moment the user cuts bhai off.
+    fn record_interruption_if_speaking(&self) {
+        if !self.speech_player.is_speaking() {
+            return;
+        }
+        let (last_episode_id, sentence_count_of_current_spoken_reply) = {
+            let state = self.state.lock().unwrap();
+            (state.last_episode_id.clone(), state.sentence_count_of_current_spoken_reply)
+        };
+        let Some(last_episode_id) = last_episode_id else { return };
+        let sentences_started = self.sentences_started_in_current_spoken_reply.load(Ordering::SeqCst);
+        self.memory_store.append_interruption_patch(&last_episode_id, sentences_started.max(1), sentence_count_of_current_spoken_reply);
+    }
+
+    fn append_memory_chat_row(&self, memory_tag_outcome: MemoryTagOutcome) {
+        if let Some((row_text, row_action)) = memory_chat_row_for_outcome(memory_tag_outcome) {
+            self.chat_panel.append_memory_row(row_text, row_action);
+        }
+    }
+
+    /// A button on a memory row: Undo, or Yes / No.
+    pub fn respond_to_memory_chat_row(&self, message_id: u64, user_accepted: bool) {
+        let Some(row_action) = self.chat_panel.take_unresolved_memory_row_action(message_id) else { return };
+        if !user_accepted {
+            return;
+        }
+        match row_action {
+            MemoryChatRowAction::UndoMemoryChange => {
+                let did_undo = self.memory_store.undo_last_change();
+                self.chat_panel.append_memory_row(if did_undo { "Undone." } else { "Nothing to undo." }.to_string(), None);
+            }
+            MemoryChatRowAction::ConfirmSaveSuggestion(memory_tag) => {
+                self.append_memory_chat_row(self.memory_store.apply_confirmed_suggestion(&memory_tag));
+            }
+            MemoryChatRowAction::ConfirmRemoveMatchingLines { matching_bullet_lines, forget_match_text } => {
+                self.append_memory_chat_row(self.memory_store.remove_bullet_lines(&matching_bullet_lines, Some(&forget_match_text)));
+            }
+        }
+        self.rewrite_memory_prompt_files();
+    }
+
+    /// Memory is on by default, so the first launch with it says what is
+    /// stored, where, and what is sent.
+    pub fn show_memory_introduction_once(&self) {
+        let updated_settings = {
+            let mut settings = self.settings.write().unwrap();
+            if settings.has_shown_memory_introduction {
+                return;
+            }
+            settings.has_shown_memory_introduction = true;
+            settings.clone()
+        };
+        settings::save_settings(&self.app, &updated_settings);
+        self.chat_panel.append_memory_row(MEMORY_INTRODUCTION_TEXT.to_string(), None);
+    }
+
+    /// Puts back the tabs that were open at quit, each with its last exchanges
+    /// from the episode files. Tabs with nothing recorded are left out. Saves
+    /// the open tabs either way, so this launch's first tab can be restored next time.
+    pub fn restore_chat_tabs_from_memory(&self) {
+        let (saved_chat_tab_ids, saved_active_chat_tab_id) = {
+            let settings = self.settings.read().unwrap();
+            (settings.saved_chat_tab_ids.clone(), settings.saved_active_chat_tab_id)
+        };
+        // Pause means no reads of memory, so nothing is put back.
+        let mut restored_tabs: Vec<(u64, ChatConversation, ConversationHistory)> = Vec::new();
+        if !self.memory_store.is_paused() && !saved_chat_tab_ids.is_empty() {
+            let saved_tab_id_strings: Vec<String> = saved_chat_tab_ids.iter().map(u64::to_string).collect();
+            let exchanges_by_tab_id = self.memory_store.recent_exchanges_by_tab_id(&saved_tab_id_strings, MAXIMUM_RESTORED_EXCHANGES_PER_TAB);
+            for saved_chat_tab_id in &saved_chat_tab_ids {
+                let Some(restored_exchanges) = exchanges_by_tab_id.get(&saved_chat_tab_id.to_string()).filter(|exchanges| !exchanges.is_empty()) else {
+                    continue;
+                };
+                let mut restored_history = ConversationHistory::new();
+                for (request_text, reply_text) in restored_exchanges {
+                    restored_history.append(ConversationEntry { user_text: request_text.clone(), assistant_response: reply_text.clone() });
+                }
+                restored_tabs.push((*saved_chat_tab_id, ChatConversation::from_restored_exchanges(restored_exchanges), restored_history));
+            }
+        }
+        if restored_tabs.is_empty() {
+            // Nothing to put back; this just saves the current tab ids.
+            self.chat_panel.change_chat_tabs(|_, _| ());
+            return;
+        }
+        let restored_tab_ids: Vec<u64> = restored_tabs.iter().map(|(tab_id, _, _)| *tab_id).collect();
+        let restored_active_tab_id =
+            saved_active_chat_tab_id.filter(|tab_id| restored_tab_ids.contains(tab_id)).unwrap_or(restored_tab_ids[0]);
+        let active_tab_index = restored_tabs.iter().position(|(tab_id, _, _)| *tab_id == restored_active_tab_id).unwrap_or(0);
+        let (_, active_conversation, active_history) = restored_tabs.remove(active_tab_index);
+        eprintln!("memory: restored {} chat tab(s)", restored_tab_ids.len());
+        self.state.lock().unwrap().conversation_history = active_history;
+        self.chat_panel.change_chat_tabs(move |chat_tabs, conversation| {
+            *chat_tabs = ChatTabs::restored(restored_tab_ids, restored_active_tab_id, restored_tabs);
+            *conversation = active_conversation;
+        });
     }
 
     fn set_voice_state(&self, voice_state: VoiceState) {
@@ -258,7 +538,10 @@ impl CompanionBrain {
     /// Speaks a reply that is also a chat row, so the chat lights up each
     /// sentence as its audio starts.
     fn speak_chat_reply(&self, reply_text: String, chat_message_id: u64) {
+        let sentence_count = split_into_sentences(&reply_text).len();
         self.speech_player.speak_text(reply_text);
+        self.sentences_started_in_current_spoken_reply.store(0, Ordering::SeqCst);
+        self.state.lock().unwrap().sentence_count_of_current_spoken_reply = Some(sentence_count);
         // After speak_text, which replaces any earlier playback.
         self.chat_panel.begin_speaking_chat_reply(chat_message_id);
     }
@@ -307,6 +590,7 @@ impl CompanionBrain {
     /// speech and annotations, so nothing talks over or acts past the user.
     /// The hotkey is the documented way to stop bhai in both modes.
     fn stop_everything_in_progress_for_hotkey_press(&self) {
+        self.record_interruption_if_speaking();
         {
             let mut state = self.state.lock().unwrap();
             abort_task(&mut state.response_task);
@@ -369,7 +653,12 @@ impl CompanionBrain {
         if tab_count == 1 {
             self.stop_everything_in_progress_for_hotkey_press();
             self.state.lock().unwrap().conversation_history = ConversationHistory::new();
-            self.chat_panel.change_chat_tabs(|_, active_conversation| *active_conversation = ChatConversation::default());
+            // A fresh tab id, so session restore finds no episodes for it and
+            // the closed chat doesn't come back after a relaunch.
+            self.chat_panel.change_chat_tabs(|chat_tabs, active_conversation| {
+                *chat_tabs = ChatTabs::default();
+                *active_conversation = ChatConversation::default();
+            });
             return;
         }
         if closed_tab_id == active_tab_id {
@@ -475,7 +764,8 @@ impl CompanionBrain {
             };
             let trimmed_transcript = transcript.trim();
             if !trimmed_transcript.is_empty() {
-                eprintln!("transcript: {trimmed_transcript}");
+                // Lengths only: the log must not become a second, unmanaged memory.
+                eprintln!("transcript: {} characters", trimmed_transcript.chars().count());
                 brain.send_transcript(trimmed_transcript.to_string());
             } else if should_send_drawing_alone {
                 brain.send_transcript(DRAWING_WITHOUT_SPEECH_PROMPT.to_string());
@@ -528,7 +818,17 @@ impl CompanionBrain {
             prompts::typed_reply_language_note(replies_are_spoken)
         } else {
             prompts::reply_language_note(&transcript).to_string()
-        };
+        } + &self.memory_store.style_restate_note();
+        // Written once per request, so the prompt files hold the profile as it is now.
+        self.rewrite_memory_prompt_files();
+        self.record_interruption_if_speaking();
+
+        let episode_id = memory_store::new_episode_id(chrono::Local::now());
+        let episode_start_time = chrono::Local::now();
+        let episode_tab_id = self.chat_panel.active_chat_tab_id().to_string();
+        let frontmost_app_name_for_episode = app_name_for_episode(platform::foreground_app_name());
+        self.state.lock().unwrap().last_episode_id = Some(episode_id.clone());
+
         let user_circled_regions: Vec<PhysicalRect> = {
             let mut state = self.state.lock().unwrap();
             abort_task(&mut state.response_task);
@@ -546,6 +846,17 @@ impl CompanionBrain {
 
         let brain = self.clone();
         let response_task = tauri::async_runtime::spawn(async move {
+            // Dropped last (declared first), after the chat rows are finished.
+            let mut episode_write_guard = EpisodeWriteGuard {
+                brain: brain.clone(),
+                episode_id,
+                start_time: episode_start_time,
+                tab_id: episode_tab_id,
+                is_typed_chat: is_typed_chat_message,
+                request_text: transcript.clone(),
+                frontmost_app_name: frontmost_app_name_for_episode,
+                episode: EpisodeInProgress::default(),
+            };
             let mut streaming_chat_rows_guard = StreamingChatRowsGuard { chat_panel: brain.chat_panel.clone(), message_ids: Vec::new() };
             let agent_loop_result = brain
                 .run_agent_loop(
@@ -554,10 +865,13 @@ impl CompanionBrain {
                     &user_circled_regions,
                     replies_are_spoken,
                     &mut streaming_chat_rows_guard.message_ids,
+                    &mut episode_write_guard.episode,
                 )
                 .await;
+            episode_write_guard.episode.finished = true;
             if let Err(claude_error) = agent_loop_result {
                 eprintln!("companion response error: {claude_error}");
+                episode_write_guard.episode.error_description = Some(claude_error.chars().take(200).collect());
                 brain.chat_panel.finish_streaming_messages(&streaming_chat_rows_guard.message_ids);
                 brain.chat_panel.append_message(false, CLAUDE_UNREACHABLE_MESSAGE.to_string(), false);
                 if replies_are_spoken {
@@ -578,9 +892,11 @@ impl CompanionBrain {
         user_circled_regions: &[PhysicalRect],
         replies_are_spoken: bool,
         reply_chat_message_ids: &mut Vec<u64>,
+        episode_in_progress: &mut EpisodeInProgress,
     ) -> Result<(), String> {
         let mut previous_step_action_summaries: Vec<String> = Vec::new();
         for agent_step_number in 1..=MAXIMUM_AGENT_STEPS {
+            episode_in_progress.agent_steps_run = agent_step_number;
             self.set_voice_state(VoiceState::Processing);
             let screen_captures = capture_all_screens_off_the_async_threads(&self.app).await?;
             let labeled_images = labeled_images_for_captures(&screen_captures);
@@ -646,10 +962,23 @@ impl CompanionBrain {
                 },
             )
             .await?;
-            eprintln!("claude replied: {}", full_response_text.chars().take(400).collect::<String>());
+            eprintln!("claude replied ({} characters)", full_response_text.chars().count());
 
-            let parsed_reply = parse_reply(&full_response_text);
+            // Memory tags come out of every step's text, but only the first
+            // step's are applied: later steps are driven by screenshots, not by the user.
+            let (response_text_without_memory_tags, memory_tags) = memory_store::extract_memory_tags(&full_response_text);
+            let memory_tags_to_apply = memory_store::memory_tags_to_apply(memory_tags, agent_step_number, self.memory_store.is_paused());
+            episode_in_progress.memory_tag_names.extend(memory_tags_to_apply.iter().map(|memory_tag| memory_tag.tag_name().to_string()));
+
+            let parsed_reply = parse_reply(&response_text_without_memory_tags);
             let spoken_text = parsed_reply.spoken_text.clone();
+            if parsed_reply.model3d_request.is_some() {
+                episode_in_progress.visual_kind = Some("model3d");
+            } else if parsed_reply.show_request.is_some() {
+                episode_in_progress.visual_kind = Some("show");
+            } else if parsed_reply.notes_request.is_some() {
+                episode_in_progress.visual_kind = Some("notes");
+            }
 
             // [CLOSE_DRAWING] dismisses the whiteboard (and stops any narration on it).
             if parsed_reply.close_drawing {
@@ -710,6 +1039,12 @@ impl CompanionBrain {
                 self.chat_panel.remove_message(streaming_reply_message_id);
             } else {
                 self.chat_panel.update_message(streaming_reply_message_id, final_reply_text.clone(), false);
+                episode_in_progress.final_replies.push(final_reply_text.clone());
+            }
+            for memory_tag in &memory_tags_to_apply {
+                self.append_memory_chat_row(self.memory_store.apply_memory_tag(memory_tag, transcript));
+            }
+            if !final_reply_text.is_empty() {
                 if replies_are_spoken {
                     // Let the previous round's narration finish rather than cutting it off.
                     self.wait_until_not_speaking().await;
@@ -864,7 +1199,7 @@ impl CompanionBrain {
     ) {
         abort_task(&mut self.state.lock().unwrap().visual_task);
         self.board_panel.begin_live_content(&self.app, live_content_kind);
-        eprintln!("{:?}: {content_description}", live_content_kind);
+        eprintln!("{live_content_kind:?}: {} characters", content_description.chars().count());
 
         let board_panel_for_drawing = self.board_panel.clone();
         let narrated_step_queue = NarratedStepQueue::new(Box::new(move |drawing_command_line| {
@@ -924,7 +1259,7 @@ impl CompanionBrain {
             focus_screenshot_point.0,
             focus_screenshot_point.1,
         );
-        eprintln!("building 3D model: {model_description}");
+        eprintln!("building 3D model");
 
         let model3d_window_for_drawing = self.model3d_window.clone();
         let narrated_step_queue = NarratedStepQueue::new(Box::new(move |model_command_line| {
@@ -992,7 +1327,7 @@ impl CompanionBrain {
                     for remaining_line in streamed_line_forwarder.remaining_lines(&full_script) {
                         queue_for_streaming.receive_line(&remaining_line);
                     }
-                    eprintln!("narrated script streamed:\n{full_script}");
+                    eprintln!("narrated script streamed ({} lines)", full_script.lines().count());
                 }
                 Err(script_error) => eprintln!("narrated script failed: {script_error}"),
             }

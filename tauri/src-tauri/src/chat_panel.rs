@@ -22,6 +22,7 @@ use crate::app_state::AppState;
 use crate::brain_engine::BrainEngine;
 use crate::chat_conversation::{
     chat_model_label, find_spoken_sentence_byte_range, utf16_offset_for_byte_offset, ChatConversation, ChatMessage, ChatTabSummary, ChatTabs,
+    MemoryChatRowAction,
 };
 use crate::page_bridge::{locked_down_window_builder, monitor_containing_point};
 use crate::platform::{self, PlatformError};
@@ -312,13 +313,58 @@ impl ChatPanel {
 
     /// Runs a change on the tabs and the active tab's rows, then redraws the page.
     pub fn change_chat_tabs<ChangeResult>(&self, change: impl FnOnce(&mut ChatTabs, &mut ChatConversation) -> ChangeResult) -> ChangeResult {
-        let change_result = {
+        let (change_result, tab_ids_in_order, active_tab_id) = {
             let mut state = self.state.lock().unwrap();
             let state = &mut *state;
-            change(&mut state.chat_tabs, &mut state.conversation)
+            let change_result = change(&mut state.chat_tabs, &mut state.conversation);
+            (change_result, state.chat_tabs.tab_ids_in_order().to_vec(), state.chat_tabs.active_tab_id())
         };
+        self.save_chat_tab_ids_for_session_restore(tab_ids_in_order, active_tab_id);
         self.emit_chat_state();
         change_result
+    }
+
+    /// The open tabs are saved whenever they change (Mac: `chatTabs` didSet),
+    /// so session restore knows which tabs to put back.
+    fn save_chat_tab_ids_for_session_restore(&self, tab_ids_in_order: Vec<u64>, active_tab_id: u64) {
+        let updated_settings = {
+            let mut settings = self.settings.write().unwrap();
+            if settings.saved_chat_tab_ids == tab_ids_in_order && settings.saved_active_chat_tab_id == Some(active_tab_id) {
+                return;
+            }
+            settings.saved_chat_tab_ids = tab_ids_in_order;
+            settings.saved_active_chat_tab_id = Some(active_tab_id);
+            settings.clone()
+        };
+        crate::settings::save_settings(&self.app, &updated_settings);
+    }
+
+    pub fn active_chat_tab_id(&self) -> u64 {
+        self.state.lock().unwrap().chat_tabs.active_tab_id()
+    }
+
+    // MARK: Memory rows (Mac `appendMemoryChatRow` / `respondToMemoryChatRow`)
+
+    /// Adds one of the app's memory rows to the active tab. A new Undo row
+    /// turns off every older one, in every tab.
+    pub fn append_memory_row(&self, text: String, action: Option<MemoryChatRowAction>) -> u64 {
+        let message_id = {
+            let mut state = self.state.lock().unwrap();
+            if action == Some(MemoryChatRowAction::UndoMemoryChange) {
+                state.conversation.resolve_undo_memory_rows();
+                state.chat_tabs.resolve_undo_memory_rows_in_parked_tabs();
+            }
+            state.conversation.append_memory_row(text, action)
+        };
+        self.emit_chat_state();
+        message_id
+    }
+
+    /// A button on a memory row: returns what it does (once) and greys the row's buttons.
+    pub fn take_unresolved_memory_row_action(&self, message_id: u64) -> Option<MemoryChatRowAction> {
+        let row_action = self.state.lock().unwrap().conversation.take_unresolved_memory_row_action(message_id);
+        self.emit_chat_state();
+        row_action
     }
 
     // MARK: Following speech (Mac `speakChatReply` / `advanceChatSpeechProgress`)
@@ -734,6 +780,12 @@ pub fn switch_to_chat_tab(tab_id: u64, state: State<'_, AppState>) {
 #[tauri::command]
 pub fn close_chat_tab(tab_id: u64, state: State<'_, AppState>) {
     state.companion_brain.close_chat_tab(tab_id);
+}
+
+/// Undo, or Yes (true) / No (false), on a memory row.
+#[tauri::command]
+pub fn respond_to_memory_chat_row(message_id: u64, user_accepted: bool, state: State<'_, AppState>) {
+    state.companion_brain.respond_to_memory_chat_row(message_id, user_accepted);
 }
 
 #[tauri::command]

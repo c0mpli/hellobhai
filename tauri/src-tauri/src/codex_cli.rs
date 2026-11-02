@@ -178,7 +178,16 @@ impl CodexCallFolder {
             CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
         );
         let path = std::env::temp_dir().join(format!("hellobhai-codex-{unique_suffix}"));
-        std::fs::create_dir_all(&path)?;
+        // The user's only (0700): it holds the system prompt with the memory
+        // profile and the screenshots.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut directory_builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory_builder.mode(0o700);
+        }
+        directory_builder.create(&path)?;
         Ok(CodexCallFolder { path })
     }
 }
@@ -224,7 +233,9 @@ pub async fn run_codex_streaming(
         system_prompt_text.push_str(CODEX_CANNOT_USE_FILE_TOOLS_NOTE);
     }
     let instructions_file = call_folder.path.join("instructions.md");
-    std::fs::write(&instructions_file, system_prompt_text).map_err(|write_error| format!("couldn't write codex instructions: {write_error}"))?;
+    crate::memory_store::open_private_file(&instructions_file, false)
+        .and_then(|mut instructions_file_handle| std::io::Write::write_all(&mut instructions_file_handle, system_prompt_text.as_bytes()))
+        .map_err(|write_error| format!("couldn't write codex instructions: {write_error}"))?;
 
     let mut image_file_paths = Vec::new();
     let mut image_labels = Vec::new();

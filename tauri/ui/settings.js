@@ -10,6 +10,7 @@ const SETTINGS_TABS = [
   { optionID: 'voice', label: 'Voice' },
   { optionID: 'chat', label: 'Chat' },
   { optionID: 'buddy', label: 'Buddy' },
+  { optionID: 'memory', label: 'Memory' },
 ];
 const CLAUDE_MODEL_OPTIONS = [
   { optionID: 'fable', label: 'Fable' },
@@ -214,9 +215,51 @@ function renderBuddySection(settingsSnapshot) {
   element('orb-color-swatch').style.background = `linear-gradient(135deg, ${selectedColorVariant.swatchGradientHexColors.join(', ')})`;
 }
 
+const PAUSE_CIRCLE_ICON_SVG = '<svg viewBox="0 0 14 14" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="5.9" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.6 4.8v4.4M8.4 4.8v4.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+const PAUSE_CIRCLE_FILLED_ICON_SVG = '<svg viewBox="0 0 14 14" width="13" height="13" aria-hidden="true"><circle cx="7" cy="7" r="6.6" fill="currentColor"/><path d="M5.6 4.8v4.4M8.4 4.8v4.4" stroke="#101211" stroke-width="1.4" stroke-linecap="round"/></svg>';
+// "Forget everything" needs a second click to confirm, like the Mac panel.
+let isConfirmingForgetEverything = false;
+
+function renderMemorySection(settingsSnapshot) {
+  const isMemoryPaused = settingsSnapshot.memoryPaused;
+  const pauseButton = element('memory-pause-button');
+  pauseButton.innerHTML = isMemoryPaused ? PAUSE_CIRCLE_FILLED_ICON_SVG : PAUSE_CIRCLE_ICON_SVG;
+  pauseButton.classList.toggle('is-paused', isMemoryPaused);
+  const pauseButtonTitle = isMemoryPaused ? 'Memory paused. Click to resume.' : 'Pause memory';
+  pauseButton.title = pauseButtonTitle;
+  pauseButton.setAttribute('aria-label', pauseButtonTitle);
+  element('memory-paused-toggle').checked = isMemoryPaused;
+  element('memory-paused-subtitle').textContent = isMemoryPaused ? "bhai isn't using or saving memory" : 'bhai uses and saves memory';
+  element('forget-everything-label').textContent = isConfirmingForgetEverything ? 'Click again to forget everything' : 'Forget everything';
+}
+
+/// Re-reads profile.md (an edit made in an editor shows up here) and says if it needs fixing.
+async function refreshMemoryStatus() {
+  try {
+    const memoryStatus = await invoke('get_memory_status');
+    const problemElement = element('memory-problem');
+    problemElement.hidden = !memoryStatus.profileProblemDescription;
+    problemElement.textContent = memoryStatus.profileProblemDescription
+      ? `Memory file needs fixing: ${memoryStatus.profileProblemDescription}. Until then bhai uses no saved memory.`
+      : '';
+    fitWindowToPanel();
+  } catch (statusError) { /* app is shutting down */ }
+}
+
+async function runMemoryAction(memoryAction) {
+  const resultText = await invoke('run_memory_action', { action: memoryAction });
+  const resultElement = element('memory-action-result');
+  if (resultText) {
+    resultElement.textContent = resultText;
+    resultElement.hidden = false;
+  }
+  refreshMemoryStatus();
+}
+
 function renderSettings(settingsSnapshot) {
   latestSettingsSnapshot = settingsSnapshot;
   renderIntro(settingsSnapshot);
+  renderMemorySection(settingsSnapshot);
 
   renderSegmentedControl(
     element('bhai-mode-picker'),
@@ -357,6 +400,7 @@ async function startSettingsPanel() {
   renderTabs();
   renderSettings(await invoke('get_settings'));
   await refreshStatus();
+  refreshMemoryStatus();
 
   await listen('settings-changed', (event) => renderSettings(event.payload));
   await listen('status-changed', (event) => renderStatus(event.payload));
@@ -369,6 +413,7 @@ async function startSettingsPanel() {
     if (document.visibilityState === 'visible') {
       renderSettings(await invoke('get_settings'));
       refreshStatus();
+      refreshMemoryStatus();
     } else {
       stopShortcutRecording();
     }
@@ -397,6 +442,20 @@ async function startSettingsPanel() {
   element('replay-onboarding-button').addEventListener('click', () => invoke('replay_onboarding'));
   element('start-button').addEventListener('click', () => invoke('replay_onboarding'));
   element('quit-button').addEventListener('click', () => invoke('quit_app'));
+  element('memory-pause-button').addEventListener('click', () => changeSetting('memoryPaused', !latestSettingsSnapshot.memoryPaused));
+  element('memory-paused-toggle').addEventListener('change', (event) => changeSetting('memoryPaused', event.target.checked));
+  element('open-memory-folder-button').addEventListener('click', () => runMemoryAction('openFolder'));
+  element('undo-memory-change-button').addEventListener('click', () => runMemoryAction('undo'));
+  element('forget-today-button').addEventListener('click', () => runMemoryAction('forgetToday'));
+  element('forget-everything-button').addEventListener('click', () => {
+    if (isConfirmingForgetEverything) {
+      isConfirmingForgetEverything = false;
+      runMemoryAction('forgetEverything');
+    } else {
+      isConfirmingForgetEverything = true;
+    }
+    renderMemorySection(latestSettingsSnapshot);
+  });
   element('close-button').addEventListener('click', () => { stopShortcutRecording(); getCurrentWindow().hide(); });
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
