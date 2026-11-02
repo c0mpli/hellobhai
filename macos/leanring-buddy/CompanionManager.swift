@@ -93,7 +93,7 @@ enum MemoryChatRowAction: Equatable {
     /// "Yes" / "No": a tag whose trigger word was missing from the request.
     case confirmSaveSuggestion(MemoryTag)
     /// "Yes" / "No": a FORGET that matched more than one line.
-    case confirmRemoveMatchingLines([String])
+    case confirmRemoveMatchingLines([String], forgetMatchText: String)
 }
 
 enum CompanionVoiceState {
@@ -1092,6 +1092,8 @@ final class CompanionManager: ObservableObject {
         case .styleSet(let styleKey, let styleValue):
             rowText = "Saved setting: \(styleKey) \(styleValue)"
             rowAction = .undoMemoryChange
+        case .styleAlreadySet(let styleKey, let styleValue):
+            rowText = "Setting already saved: \(styleKey) \(styleValue)"
         case .forgot(let removedLineTexts):
             rowText = "Removed from bhai's memory: \(removedLineTexts.joined(separator: "; ")). Copies in your OS backups and at your AI provider are not affected."
             rowAction = .undoMemoryChange
@@ -1102,10 +1104,10 @@ final class CompanionManager: ObservableObject {
             case .forget: return
             }
             rowAction = .confirmSaveSuggestion(memoryTag)
-        case .needsRemoveAllConfirmation(let matchingBulletLines):
+        case .needsRemoveAllConfirmation(let matchingBulletLines, let forgetMatchText):
             let matchingLineTexts = matchingBulletLines.map { MemoryProfile.lineText(ofBulletLine: $0) ?? $0 }
             rowText = "Remove all \(matchingBulletLines.count) from bhai's memory?\n" + matchingLineTexts.map { "- " + $0 }.joined(separator: "\n")
-            rowAction = .confirmRemoveMatchingLines(matchingBulletLines)
+            rowAction = .confirmRemoveMatchingLines(matchingBulletLines, forgetMatchText: forgetMatchText)
         case .nothingMatched(let matchText):
             rowText = matchText.isEmpty ? "Nothing matched in bhai's memory." : "Nothing matched \"\(matchText)\" in bhai's memory."
         case .rejected(let reason):
@@ -1113,7 +1115,24 @@ final class CompanionManager: ObservableObject {
         case .alreadyRemembered, .droppedWithoutTrigger:
             return
         }
+        // Undo restores the single .bak (the state before the newest change),
+        // so only the newest change's row keeps a working Undo button.
+        if rowAction == .undoMemoryChange {
+            resolveEveryUndoMemoryChatRow()
+        }
         chatMessages.append(CompanionChatMessage(isFromUser: false, text: rowText, memoryChatRow: MemoryChatRow(action: rowAction)))
+    }
+
+    private func resolveEveryUndoMemoryChatRow() {
+        func resolveUndoRows(in chatMessagesToResolve: inout [CompanionChatMessage]) {
+            for messageIndex in chatMessagesToResolve.indices where chatMessagesToResolve[messageIndex].memoryChatRow?.action == .undoMemoryChange {
+                chatMessagesToResolve[messageIndex].memoryChatRow?.isResolved = true
+            }
+        }
+        resolveUndoRows(in: &chatMessages)
+        for parkedChatTabID in parkedChatTabConversations.keys {
+            resolveUndoRows(in: &parkedChatTabConversations[parkedChatTabID]!.chatMessages)
+        }
     }
 
     /// A button on a memory row: Undo, or Yes / No.
@@ -1130,8 +1149,8 @@ final class CompanionManager: ObservableObject {
             chatMessages.append(CompanionChatMessage(isFromUser: false, text: didUndo ? "Undone." : "Nothing to undo.", memoryChatRow: MemoryChatRow(action: nil)))
         case .confirmSaveSuggestion(let memoryTag):
             appendMemoryChatRow(for: memoryStore.applyConfirmedSuggestion(memoryTag))
-        case .confirmRemoveMatchingLines(let matchingBulletLines):
-            appendMemoryChatRow(for: memoryStore.removeBulletLines(matchingBulletLines))
+        case .confirmRemoveMatchingLines(let matchingBulletLines, let forgetMatchText):
+            appendMemoryChatRow(for: memoryStore.removeBulletLines(matchingBulletLines, forgetMatchText: forgetMatchText))
         }
     }
 
@@ -1163,6 +1182,8 @@ final class CompanionManager: ObservableObject {
     /// exchanges from the episode files. Tabs with nothing recorded are
     /// left out.
     private func restoreChatTabsFromMemory() {
+        // Pause means no reads of memory, so nothing is put back.
+        guard !memoryStore.isPaused else { return }
         let savedChatTabIDs = (UserDefaults.standard.stringArray(forKey: Self.savedChatTabIDsUserDefaultsKey) ?? []).compactMap(UUID.init(uuidString:))
         guard !savedChatTabIDs.isEmpty else { return }
         let savedActiveChatTabID = UserDefaults.standard.string(forKey: Self.savedActiveChatTabIDUserDefaultsKey).flatMap(UUID.init(uuidString:))
@@ -1234,7 +1255,11 @@ final class CompanionManager: ObservableObject {
             stopEverythingInProgressForHotkeyPress()
             chatMessages = []
             conversationHistory = []
-            chatTabs[0].title = ChatTab.newChatTitle
+            // A fresh id, so session restore finds no episodes for it and
+            // the closed chat doesn't come back after a relaunch.
+            let freshChatTab = ChatTab()
+            chatTabs = [freshChatTab]
+            activeChatTabID = freshChatTab.id
             return
         }
         if chatTabID == activeChatTabID {

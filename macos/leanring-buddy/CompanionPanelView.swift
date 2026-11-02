@@ -140,6 +140,8 @@ struct CompanionPanelView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(DS.Colors.textTertiary)
 
+            PanelHeaderMemoryPauseButton(companionManager: companionManager, memoryStore: companionManager.memoryStore)
+
             Button(action: {
                 NotificationCenter.default.post(name: .hellobhaiDismissPanel, object: nil)
             }) {
@@ -815,6 +817,33 @@ private struct PanelVoiceSection: View {
 }
 
 // MARK: - Memory Section
+
+/// One click from opening the panel: pauses or resumes memory. Observes
+/// MemoryStore itself so the icon follows the Settings > Memory toggle too.
+private struct PanelHeaderMemoryPauseButton: View {
+    let companionManager: CompanionManager
+    @ObservedObject var memoryStore: MemoryStore
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: {
+            companionManager.setMemoryPaused(!memoryStore.isPaused)
+        }) {
+            Image(systemName: memoryStore.isPaused ? "pause.circle.fill" : "pause.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(memoryStore.isPaused ? DS.Colors.warning : DS.Colors.textTertiary)
+                .frame(width: 20, height: 20)
+                .background(
+                    Circle()
+                        .fill(Color.white.opacity(isHovered ? 0.14 : 0.0))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(memoryStore.isPaused ? "Memory paused. Click to resume." : "Pause memory")
+        .onHover { isHovered = $0 }
+        .pointerCursor()
+    }
+}
 
 /// Its own view so it can observe MemoryStore directly (pause state and
 /// "file needs fixing" change without CompanionManager publishing).
